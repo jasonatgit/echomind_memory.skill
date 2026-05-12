@@ -1,6 +1,6 @@
 name: echomind_memory
-version: 1.0.0
-description: "A persistent memory system that lets your AI remember user preferences, tasks, knowledge, and self-learned experiences. Supports OpenClaw, Hermes, Claude Code, and OpenCode ecosystems."
+version: 1.1.0
+description: "A persistent memory system that remembers user preferences, coding style, research knowledge, and self-learned experiences. Zero external dependencies — uses SQLite. Compatible with OpenClaw, Hermes-Agent, Claude Code (Cursor), and OpenCode ecosystems."
 author: "Your Name"
 license: MIT
 entry: main.py
@@ -11,6 +11,7 @@ tags:
   - rl-optimization
   - agent-enhancement
   - code-memory
+  - research-memory
 
 tools:
   - name: retrieve_memory
@@ -103,7 +104,7 @@ tools:
         - task_status
 
   - name: record_feedback
-    description: "Record user feedback (👍/👎) on a memory retrieval result to improve future performance."
+    description: "Record user feedback (positive/negative) on a memory retrieval result to improve future performance."
     parameters:
       type: object
       properties:
@@ -134,7 +135,7 @@ tools:
         - retrieved_memories
 
   - name: sync_code_memory
-    description: "Syncs user preferences and coding experience to .echomind/ folder in project root. Enables Claude Code (Cursor) to remember your style and past fixes."
+    description: "Syncs user preferences and research knowledge to .echomind/ folder in project root. Enables Claude Code (Cursor) and OpenCode to remember your style and past work."
     parameters:
       type: object
       properties:
@@ -162,34 +163,13 @@ tools:
 
 dependencies:
   - pydantic>=2.7
-  - chromadb>=0.5
-  - redis>=5.0
-  - numpy>=1.26
   - python-dotenv>=1.0
-  - asyncpg>=0.29
+  - numpy>=1.26
 
 config_schema:
   type: object
   properties:
-    postgres_url:
+    db_path:
       type: string
-      description: "PostgreSQL connection string"
-      default: "postgresql://agent:agent123@localhost:5432/agent_memory"
-    chroma_path:
-      type: string
-      description: "Path to ChromaDB persistent storage"
-      default: "./echomind_chroma"
-    redis_host:
-      type: string
-      description: "Redis server host"
-      default: "localhost"
-    redis_port:
-      type: integer
-      default: 6379
-    enable_rl_optimizer:
-      type: boolean
-      description: "Whether to enable RL self-improvement"
-      default: true
-    max_context_tokens:
-      type: integer
-      default: 4096
+      description: "Path to SQLite database file (default: ~/.echomind/memory.db)"
+      default: "~/.echomind/memory.db"

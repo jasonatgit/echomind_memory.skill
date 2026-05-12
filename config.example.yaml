@@ -1,6 +1,0 @@
-postgres_url: "postgresql://agent:agent123@localhost:5432/agent_memory"
-chroma_path: "./echomind_chroma"
-redis_host: "localhost"
-redis_port: 6379
-enable_rl_optimizer: true
-max_context_tokens: 4096
