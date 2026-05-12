@@ -173,19 +173,16 @@ AI 不是工具，是协作者。
 EchoMind 让你的 AI：
 
 记得你讨厌空行、喜欢 docstring
+
 记得你修复过 auth.py 的 XSS 漏洞
+
 记得你偏好用 半参数模型而不是协方差建模
+
 记得你曾因为某个因子痛苦了 3 小时 → 下次自动避开
+
 这不是一个插件，这是 AI 的多智能体记忆神经网络。
 
-## 🔧 高级配置：config.example.yaml
-postgres_url: "postgresql://agent:agent123@localhost:5432/agent_memory"
-chroma_path: "./echomind_chroma"
-redis_host: "localhost"
-redis_port: 6379
-enable_rl_optimizer: true
-max_context_tokens: 4096
-✅ 变更 enable_rl_optimizer: false 可关闭自学习（用于生产稳定）
+
 
 
 
