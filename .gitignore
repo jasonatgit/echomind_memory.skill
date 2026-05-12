@@ -3,6 +3,7 @@ __pycache__/
 *.pyo
 *.pyd
 env/
+doc/
 .venv/
 venv/
 ENV/
