@@ -23,6 +23,7 @@ from models.task import TaskMemory
 from models.user import UserMemory
 from models.knowledge import KnowledgeEntry
 from models.experience import ExperienceEntry
+from models.research import ResearchPaper, ResearchNote
 
 
 class MemoryRecord(BaseModel):
@@ -245,6 +246,96 @@ from learning.rl_weight_optimizer import RLWeightOptimizer
 from storage.postgres import PostgresStore
 
 # ========================
+# 研究记忆 Agent（新增：管理科学与工程领域）
+# ========================
+
+
+class ResearchMemoryAgent:
+    def __init__(self):
+        self.papers: Dict[str, ResearchPaper] = {}
+        self.notes: Dict[str, ResearchNote] = {}
+        self.ms_domains = [
+            "operations_research", "supply_chain", "decision_analysis",
+            "optimization", "simulation", "queuing_theory",
+            "game_theory", "forecasting", "project_management",
+            "quality_management", "data_analytics", "system_dynamics",
+        ]
+
+    async def add_paper(self, paper: ResearchPaper) -> str:
+        self.papers[paper.id] = paper
+        logger.info(f"[Research] 添加论文: {paper.title}")
+        return paper.id
+
+    async def search_papers(
+        self, query: str, domain: str = None, top_k: int = 5
+    ) -> List[Dict[str, Any]]:
+        results = []
+        q_lower = query.lower()
+        for p in self.papers.values():
+            if domain and p.domain != domain:
+                continue
+            relevance = 0.0
+            if q_lower in p.title.lower():
+                relevance = 0.9
+            elif any(kw in q_lower for kw in p.keywords):
+                relevance = 0.8
+            elif q_lower in p.abstract.lower():
+                relevance = 0.6
+            elif any(kw in p.keywords for kw in query.split()):
+                relevance = 0.4
+            if relevance > 0:
+                results.append({
+                    "id": p.id,
+                    "title": p.title,
+                    "abstract": p.abstract,
+                    "keywords": p.keywords,
+                    "domain": p.domain,
+                    "paper_type": p.paper_type,
+                    "key_points": p.key_points,
+                    "importance_score": p.importance_score,
+                    "relevance": relevance,
+                })
+        results.sort(key=lambda x: x["relevance"] * x["importance_score"], reverse=True)
+        return results[:top_k]
+
+    async def add_note(self, note: ResearchNote) -> str:
+        self.notes[note.id] = note
+        logger.info(f"[Research] 添加笔记: {note.topic}")
+        return note.id
+
+    async def search_notes(
+        self, query: str, tags: List[str] = None, top_k: int = 3
+    ) -> List[Dict]:
+        results = []
+        q_lower = query.lower()
+        for n in self.notes.values():
+            if tags and not any(t in n.tags for t in tags):
+                continue
+            relevance = 1.0 if q_lower in n.content.lower() else 0.3
+            results.append({
+                "id": n.id,
+                "topic": n.topic,
+                "content": n.content,
+                "tags": n.tags,
+                "relevance": relevance,
+            })
+        results.sort(key=lambda x: x["relevance"], reverse=True)
+        return results[:top_k]
+
+    async def get_domain_overview(self, domain: str) -> List[Dict]:
+        papers = [p for p in self.papers.values() if p.domain == domain]
+        return [
+            {
+                "title": p.title,
+                "keywords": p.keywords,
+                "paper_type": p.paper_type,
+                "key_points": p.key_points,
+            }
+            for p in papers[:10]
+        ]
+
+
+# ========================
 # 主控 Agent
 # ========================
 
@@ -256,6 +347,7 @@ class MainMemoryAgent:
         self.user_agent = UserMemoryAgent()
         self.knowledge_agent = KnowledgeMemoryAgent()
         self.experience_agent = ExperienceMemoryAgent()
+        self.research_agent = ResearchMemoryAgent()
         self.pg = PostgresStore(dsn)
         self.rl_optimizer = RLWeightOptimizer(
             initial_weights={
@@ -278,6 +370,12 @@ class MainMemoryAgent:
             logger.info("PostgreSQL persistence enabled")
 
     async def _extract_task_features(self, task_context: str) -> Dict[str, Any]:
+        research_keywords = [
+            "管理科学", "运筹学", "供应链", "决策分析", "优化模型",
+            "simulation", "queueing", "game theory", "forecasting",
+            "operations research", "supply chain", "系统工程",
+            "管理科学与工程", "论文", "文献", "研究综述",
+        ]
         features = {
             "requires_knowledge": any(
                 k in task_context.lower() for k in ["分析", "报告", "数据", "研究"]
@@ -301,8 +399,30 @@ class MainMemoryAgent:
                 if any(k in task_context.lower() for k in ["分析", "报告"])
                 else "general"
             ),
+            "requires_research": any(
+                k in task_context.lower() for k in research_keywords
+            ),
+            "research_domain": self._detect_research_domain(task_context),
         }
         return features
+
+    def _detect_research_domain(self, text: str) -> str:
+        domain_map = {
+            "operations_research": ["运筹学", "线性规划", "整数规划", "operations research"],
+            "supply_chain": ["供应链", "库存", "物流", "supply chain"],
+            "decision_analysis": ["决策分析", "多准则", "ahp", "decision analysis"],
+            "optimization": ["优化", "最优", "梯度", "optimization"],
+            "simulation": ["仿真", "模拟", "蒙特卡洛", "simulation"],
+            "game_theory": ["博弈论", "纳什均衡", "game theory"],
+            "forecasting": ["预测", "时间序列", "forecasting"],
+            "project_management": ["项目管理", "关键路径", "project management"],
+            "queuing_theory": ["排队论", "队列", "queuing"],
+        }
+        t = text.lower()
+        for domain, keywords in domain_map.items():
+            if any(k in t for k in keywords):
+                return domain
+        return "general"
 
     async def retrieve_for_task(
         self, task_context: str, user_id: str, task_id: Optional[str] = None
@@ -338,12 +458,22 @@ class MainMemoryAgent:
                         user_id=user_id, task_type=features["task_type"], limit=5
                     )
                 )
+        if features.get("requires_research"):
+            tasks.append(
+                self.research_agent.search_papers(
+                    query=task_context,
+                    domain=features.get("research_domain"),
+                    top_k=5,
+                )
+            )
 
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
         retrieved = {}
-        keys = ["user", "knowledge", "experience", "task_progress", "task_history"]
-        for key, result in zip(keys, results):
+        all_keys = ["user", "knowledge", "experience", "task_progress", "task_history"]
+        if features.get("requires_research"):
+            all_keys.append("research")
+        for key, result in zip(all_keys, results):
             if not isinstance(result, Exception) and result is not None:
                 retrieved[key] = result
 
@@ -451,6 +581,22 @@ class MainMemoryAgent:
                         MemoryRecord(
                             source=source,
                             content=f"Previous task: {mem['title']} ({mem['status']})",
+                            importance=round(score, 3),
+                            metadata=mem,
+                        )
+                    )
+
+            elif source == "research":
+                for mem in memories:
+                    score = (
+                        mem["relevance"] * current_weights["relevance"]
+                        + mem["importance_score"] * 0.3
+                    )
+                    key_points_str = "; ".join(mem.get("key_points", [])[:3])
+                    scored.append(
+                        MemoryRecord(
+                            source=source,
+                            content=f"[{mem.get('domain','general')}] {mem['title']}: {key_points_str}",
                             importance=round(score, 3),
                             metadata=mem,
                         )
@@ -577,6 +723,10 @@ class MainMemoryAgent:
 
         for exp in exp_mem[:2]:
             summary += f"\n▸ 你曾成功修复：{exp['summary']}\n"
+
+        research_papers = list(self.research_agent.papers.values())[:3]
+        for rp in research_papers:
+            summary += f"\n▸ 研究论文：{rp.title}（{rp.domain}）\n"
 
         (echomind_dir / "README.md").write_text(summary, encoding="utf-8")
 

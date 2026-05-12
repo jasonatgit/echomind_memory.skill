@@ -3,10 +3,10 @@
 [![Claude Code Supported](https://img.shields.io/badge/Claude%20Code-Supported-orange)](https://claude.ai/code)
 [![OpenCode Compatible](https://img.shields.io/badge/OpenCode-Compatible-red)](https://github.com/open-code-ai)
 
-# 🌟 EchoMind Skill —— 让你的 AI 拥有永久记忆与代码风格学习能力
+# 🌟 EchoMind Skill —— 让你的 AI 拥有永久记忆与个人知识风格学习能力
 
 > **全球首个支持 OpenClaw、Hermes-Agent、Claude Code (Cursor) 和 OpenCode 生态的长期记忆 Skill。**  
-> 让你的 AI 不再“失忆”——记得你的偏好、修复过的 Bug、编码风格，甚至自我进化。
+> 让你的 AI 不再“失忆”——记得你的偏好、研究方法、编码风格，甚至自我进化。
 
 ![Echomind Logo Concept](docs/logo-concept.png)
 
@@ -34,8 +34,10 @@ Star 它，让 AI 记得你。
 |------|------|
 | 🧠 **五类记忆系统** | Context / Task / User / Knowledge / Experience —— 完全遵循权威架构 |
 | 📈 **强化学习自动优化** | 根据用户 👍/👎 反馈，AI 自动调整记忆权重，越用越聪明 |
+| 🚀 **研究方向记忆** | 记录你的论文元数据、理论模型、算法方法、以及研究笔记 |
+| 🧠 **研究方向高度扩展** | 可根据用户需要，扩展研究领域，用的越久越懂你的研究 |
 | 🧑‍💻 **代码风格记忆** | 记录你是否喜欢 type hint、注释风格、函数长度、折行策略 |
-| 🔁 **经验沉淀与复用** | “你上次修复了这个异常” → 下次自动推荐相同解决方案 |
+| 🔁 **经验沉淀与复用** | “你上次修复了这个异常” “你经常用的研究模型” → 下次自动推荐相同解决方案 |
 | 🗃️ **工业级持久化存储** | PostgreSQL（结构化） + ChromaDB（语义向量） + Redis（缓存） |
 | 🚀 **一键部署** | `docker-compose up` 3秒启动全部依赖 |
 | 🌐 **跨框架兼容** | 独立于任何 LLM，适配任何支持 Function Calling 的 Agent |
@@ -163,7 +165,7 @@ async def main():
 asyncio.run(main())
 ```
 
-## 🌐 项目愿景
+## 🌐 愿景
 
 AI 不是工具，是协作者。
 协作者不应该每次见面都“重新认识你”。
@@ -172,9 +174,9 @@ EchoMind 让你的 AI：
 
 记得你讨厌空行、喜欢 docstring
 记得你修复过 auth.py 的 XSS 漏洞
-记得你偏好用 pandas 而不是 numpy
-记得你曾因为某个错误痛苦了 3 小时 → 下次自动避开
-这不是一个插件，这是 AI 的记忆神经网络。
+记得你偏好用 半参数模型而不是协方差建模
+记得你曾因为某个因子痛苦了 3 小时 → 下次自动避开
+这不是一个插件，这是 AI 的多智能体记忆神经网络。
 
 ## 🔧 高级配置：config.example.yaml
 postgres_url: "postgresql://agent:agent123@localhost:5432/agent_memory"

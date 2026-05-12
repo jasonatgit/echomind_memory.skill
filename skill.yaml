@@ -44,7 +44,7 @@ tools:
             properties:
               source:
                 type: string
-                enum: [user, knowledge, experience, task_progress, task_history, context]
+                enum: [user, knowledge, experience, task_progress, task_history, context, research]
               content:
                 type: string
               importance:
