@@ -1,0 +1,33 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "EchoMind Code Memory",
+  "type": "object",
+  "properties": {
+    "user_id": { "type": "string" },
+    "project_id": { "type": "string" },
+    "preferences": {
+      "type": "object",
+      "properties": {
+        "code_style": { "enum": ["concise", "detailed", "standard"] },
+        "max_line_length": { "type": "integer", "minimum": 70, "maximum": 120 },
+        "comment_style": { "enum": ["docstring", "inline", "none"] }
+      }
+    },
+    "experience": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "action": { "enum": ["fix", "refactor", "add", "remove"] },
+          "location": { "type": "string" },
+          "summary": { "type": "string" },
+          "success": { "type": "boolean" },
+          "created_at": { "type": "string", "format": "date-time" }
+        },
+        "required": ["action", "location", "summary", "success"]
+      }
+    },
+    "updated_at": { "type": "string", "format": "date-time" }
+  },
+  "required": ["user_id", "project_id", "preferences", "experience", "updated_at"]
+}

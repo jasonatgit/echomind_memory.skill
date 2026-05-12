@@ -1,0 +1,6 @@
+pydantic>=2.7
+chromadb>=0.5
+redis>=5.0
+numpy>=1.26
+python-dotenv>=1.0
+asyncpg>=0.29
