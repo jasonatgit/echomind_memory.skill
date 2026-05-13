@@ -1,98 +1,126 @@
-# echomind_memory.skill/main.py
+# echomind_memory — FastAPI 服务入口 (v2, SQLite)
+# 基于上游更新：github.com/jasonatgit/echomind_memory.skill
 
 import json
 import os
-from typing import Any, Dict, List
+import sys
+from typing import Any, Dict, List, Optional
+from contextlib import asynccontextmanager
+
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+import uvicorn
+
 from memory_agent import MainMemoryAgent
 
-
+# ── Init ──
 memory_agent = MainMemoryAgent()
 
 
-def init():
+@asynccontextmanager
+async def lifespan(app: FastAPI):
     memory_agent.enable_persistence()
+    yield
 
 
-def retrieve_memory(
-    user_id: str, query: str, task_id: str = None, max_results: int = 5
-) -> Dict[str, Any]:
+app = FastAPI(title="EchoMind Memory", version="2.0.0", lifespan=lifespan)
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+
+
+# ── Health ──
+@app.get("/health")
+async def health():
+    return {"status": "ok", "storage": "sqlite", "db": str(memory_agent.db.db_path)}
+
+
+# ── Models ──
+class RetrieveRequest(BaseModel):
+    user_id: str
+    query: str
+    task_id: Optional[str] = None
+    max_results: int = 5
+
+class ContextMessage(BaseModel):
+    role: str
+    content: str
+
+class StoreRequest(BaseModel):
+    user_id: str
+    task_id: str
+    context: List[ContextMessage]
+    task_status: str
+    success: bool = False
+    experience_summary: Optional[str] = None
+
+class FeedbackRequest(BaseModel):
+    user_id: str
+    task_id: str
+    feedback: str
+    retrieved_memories: List[Dict[str, Any]]
+
+class SyncCodeRequest(BaseModel):
+    project_root: str
+    user_id: str
+
+
+# ── Routes ──
+@app.post("/api/memory/retrieve")
+async def api_retrieve(req: RetrieveRequest):
     try:
-        result = memory_agent.retrieve_for_task(query, user_id, task_id)
-        confidence = sum(m.importance for m in result["working_memory"]) / (
-            len(result["working_memory"]) or 1
+        result = memory_agent.retrieve_for_task(req.query, req.user_id, req.task_id)
+        working = [
+            {"source": m.source, "content": m.content,
+             "importance": m.importance, "metadata": m.metadata}
+            for m in result["working_memory"][:req.max_results]
+        ]
+        confidence = (
+            sum(m.importance for m in result["working_memory"])
+            / max(len(result["working_memory"]), 1)
         )
         return {
-            "working_memory": [
-                {
-                    "source": m.source,
-                    "content": m.content,
-                    "importance": m.importance,
-                    "metadata": m.metadata,
-                }
-                for m in result["working_memory"][:max_results]
-            ],
+            "working_memory": working,
             "confidence_score": float(confidence),
             "used_weights": memory_agent.rl_optimizer.get_current_weights(),
             "feedback_requested": result.get("feedback_request", False),
         }
     except Exception as e:
         return {
-            "working_memory": [],
-            "confidence_score": 0.0,
-            "used_weights": memory_agent.rl_optimizer.get_current_weights(),
-            "feedback_requested": False,
-            "error": str(e),
+            "working_memory": [], "confidence_score": 0.0,
+            "used_weights": {}, "feedback_requested": False, "error": str(e),
         }
 
-
-def store_memory(
-    user_id: str,
-    task_id: str,
-    context: List[Dict],
-    task_status: str,
-    success: bool = False,
-    experience_summary: str = None,
-) -> Dict[str, Any]:
+@app.post("/api/memory/store")
+async def api_store(req: StoreRequest):
     try:
         memory_agent.store(
-            user_id, task_id, context, task_status, success, experience_summary
+            req.user_id, req.task_id,
+            [{"role": m.role, "content": m.content} for m in req.context],
+            req.task_status, req.success, req.experience_summary,
         )
-        return {"status": "stored", "user_id": user_id, "task_id": task_id}
+        return {"status": "stored", "user_id": req.user_id, "task_id": req.task_id}
     except Exception as e:
-        return {"status": "error", "error": str(e)}
+        raise HTTPException(status_code=500, detail=str(e))
 
-
-def record_feedback(
-    user_id: str, task_id: str, feedback: str, retrieved_memories: List[Dict]
-) -> Dict[str, Any]:
+@app.post("/api/memory/feedback")
+async def api_feedback(req: FeedbackRequest):
     try:
-        memory_agent.record_feedback(user_id, task_id, feedback, retrieved_memories)
-        return {"status": "feedback_received", "user_id": user_id, "feedback": feedback}
+        memory_agent.record_feedback(req.user_id, req.task_id, req.feedback, req.retrieved_memories)
+        return {"status": "feedback_received", "user_id": req.user_id}
     except Exception as e:
-        return {"status": "error", "error": str(e)}
+        raise HTTPException(status_code=500, detail=str(e))
 
-
-def sync_code_memory(project_root: str, user_id: str) -> Dict[str, Any]:
+@app.post("/api/memory/sync-code")
+async def api_sync_code(req: SyncCodeRequest):
     try:
-        memory_agent.sync_to_code_project(project_root, user_id)
-        return {"status": "synced", "path": f"{project_root}/.echomind"}
+        memory_agent.sync_to_code_project(req.project_root, req.user_id)
+        return {"status": "synced", "path": f"{req.project_root}/.echomind"}
     except Exception as e:
-        return {"status": "error", "error": str(e)}
+        raise HTTPException(status_code=500, detail=str(e))
 
 
-def call(tool_name: str, **kwargs) -> Dict[str, Any]:
-    if tool_name == "retrieve_memory":
-        return retrieve_memory(**kwargs)
-    elif tool_name == "store_memory":
-        return store_memory(**kwargs)
-    elif tool_name == "record_feedback":
-        return record_feedback(**kwargs)
-    elif tool_name == "sync_code_memory":
-        return sync_code_memory(**kwargs)
-    else:
-        return {"error": f"Unknown tool: {tool_name}"}
-
-
+# ── Entry ──
 if __name__ == "__main__":
-    result = call("retrieve_memory", user_id="testuser", query="写一个Python函数")
-    print(json.dumps(result, indent=2, ensure_ascii=False))
+    port = int(sys.argv[1]) if len(sys.argv) > 1 else 8005
+    print(f"🚀 EchoMind Memory v2 (SQLite) on http://localhost:{port}")
+    uvicorn.run(app, host="0.0.0.0", port=port, log_level="info")

@@ -263,7 +263,88 @@ class MainMemoryAgent:
         self.db.connect()
         self.db.ensure_tables()
         self._persistence_enabled = True
-        logger.info("SQLite persistence enabled")
+        self._load_from_db()  # 启动时加载历史记忆
+        logger.info("SQLite persistence enabled (7 tables, 6 memory types loaded)")
+
+    def _load_from_db(self):
+        """从 SQLite 恢复全部记忆到内存 Agent"""
+        all_data = self.db.load_all()
+        loaded = {"users": 0, "tasks": 0, "experiences": 0, "contexts": 0,
+                   "knowledge": 0, "papers": 0, "notes": 0}
+
+        # 1. 用户记忆
+        for u in all_data.get("users", []):
+            uid = u["user_id"]
+            self.user_agent.store[uid] = UserMemory(
+                user_id=uid, preferences=u["preferences"],
+                habits=u["habits"], history=u["history"],
+                version=u.get("version", 1))
+            self.user_agent.cache[uid] = self.user_agent.store[uid]
+            loaded["users"] += 1
+
+        # 2. 任务记忆
+        for t in all_data.get("tasks", []):
+            task = TaskMemory(
+                user_id=t["user_id"], task_id=t.get("id", ""),
+                title=t.get("title",""), status=t.get("status","pending"),
+                steps=t.get("steps",[]))
+            task.metadata = t.get("metadata", {})
+            self.task_agent.store[t.get("id", "")] = task
+            loaded["tasks"] += 1
+
+        # 3. 经验记忆
+        for e in all_data.get("experiences", []):
+            exp = ExperienceEntry(
+                user_id=e.get("user_id",""), task_type=e.get("task_type","default"),
+                success=bool(e.get("success",0)),
+                steps_sequence=e.get("steps_sequence",[]),
+                summary=e.get("summary",""))
+            self.experience_agent.store[e.get("id","")] = exp
+            loaded["experiences"] += 1
+
+        # 4. 上下文记忆（恢复最近一次会话）
+        for c in all_data.get("contexts", []):
+            messages = c.get("messages", [])
+            for msg in messages:
+                if isinstance(msg, dict) and "role" in msg:
+                    self.context_agent.add_message(msg)
+            loaded["contexts"] += 1
+
+        # 5. 知识记忆
+        for k in all_data.get("knowledge", []):
+            entry = KnowledgeEntry(
+                content=k.get("content",""),
+                metadata=k.get("metadata",{}))
+            entry.id = k.get("id", entry.id)
+            self.knowledge_agent.store[entry.id] = entry
+            loaded["knowledge"] += 1
+
+        # 6. 研究论文
+        for p in all_data.get("research_papers", []):
+            paper = ResearchPaper(
+                id=p.get("id",""), title=p.get("title",""),
+                authors=p.get("authors",[]), year=p.get("year"),
+                journal=p.get("journal",""), abstract=p.get("abstract",""),
+                keywords=p.get("keywords",[]), domain=p.get("domain","general"),
+                paper_type=p.get("paper_type","theory"),
+                key_points=p.get("key_points",[]),
+                importance_score=p.get("importance_score",0.5))
+            self.research_agent.papers[paper.id] = paper
+            loaded["papers"] += 1
+
+        # 7. 研究笔记
+        for n in all_data.get("research_notes", []):
+            note = ResearchNote(id=n.get("id",""), user_id=n.get("user_id",""),
+                topic=n.get("topic",""), content=n.get("content",""),
+                linked_papers=n.get("linked_papers",[]),
+                tags=n.get("tags",[]))
+            self.research_agent.notes[note.id] = note
+            loaded["notes"] += 1
+
+        if sum(loaded.values()) > 0:
+            logger.info(f"Loaded from DB: {loaded}")
+        else:
+            logger.info("Empty DB — fresh start")
 
     def disable_persistence(self):
         self._persistence_enabled = False
@@ -416,9 +497,28 @@ class MainMemoryAgent:
 
         if self._persistence_enabled:
             user_data = self.user_agent.get(user_id)
-            self.db.save_user(user_id, user_data)
+            self.db.save_user(user_id,
+                preferences=user_data.get("preferences", {}),
+                habits=user_data.get("habits", {}),
+                history=user_data.get("history", []))
             self.db.save_task(user_id, task_id, "自动任务", task_status,
                               steps=[{"step": "初始化", "status": task_status}])
+            # 保存上下文记忆
+            self.db.save_context(
+                session_id=f"{user_id}:{task_id}",
+                user_id=user_id,
+                messages=context,
+                token_count=sum(len(m.get("content","")) for m in context) // 4)
+            # 如果有领域关键词，保存知识条目
+            features = self._extract_task_features(
+                " ".join(m.get("content","") for m in context if m.get("role")=="user"))
+            research_domain = features.get("research_domain", "general")
+            if research_domain != "general":
+                self.db.save_knowledge(
+                    knowledge_id=f"{user_id}:{task_id}",
+                    domain=research_domain,
+                    content=experience_summary or "自动提取的知识",
+                    metadata={"source": "task", "task_id": task_id})
 
         if success or experience_summary:
             steps_from_context = [m["content"] for m in context if m["role"] != "system"]

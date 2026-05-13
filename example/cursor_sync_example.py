@@ -1,16 +1,14 @@
-from main import call, init
+from main import call
+import asyncio
 
 
-def main():
-    init()
-
-    call(
+async def main():
+    await call(
         "sync_code_memory",
         project_root="/Users/alice/my-python-project",
         user_id="alice",
     )
-    print("已同步到 .echomind/，请在 Cursor 中查看")
+    print("✅ 已同步到 .echomind/，请在 Cursor 中查看")
 
 
-if __name__ == "__main__":
-    main()
+asyncio.run(main())

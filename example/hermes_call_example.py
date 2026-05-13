@@ -1,12 +1,10 @@
 import json
-from main import call, init
+import asyncio
+from main import call
 
 
-def main():
-    # 初始化 SQLite 持久化
-    init()
-
-    result = call(
+async def main():
+    result = await call(
         "retrieve_memory",
         user_id="alice",
         query="这个函数怎么优化？",
@@ -14,7 +12,7 @@ def main():
     )
     print(json.dumps(result, indent=2, ensure_ascii=False))
 
-    call(
+    await call(
         "store_memory",
         user_id="alice",
         task_id="task123",
@@ -26,7 +24,7 @@ def main():
         success=True,
     )
 
-    call(
+    await call(
         "record_feedback",
         user_id="alice",
         task_id="task123",
@@ -35,5 +33,4 @@ def main():
     )
 
 
-if __name__ == "__main__":
-    main()
+asyncio.run(main())

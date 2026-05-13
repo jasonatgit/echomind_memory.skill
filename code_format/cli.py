@@ -1,0 +1,64 @@
+# echomind_memory.skill/code_format/cli.py
+
+import asyncio
+import json
+import sys
+from datetime import datetime
+from memory_agent import MainMemoryAgent
+
+
+async def main():
+    if len(sys.argv) < 2:
+        print("Usage: echomind-cli [read|write] <user_id> <project_id> [file_path]")
+        sys.exit(1)
+
+    action = sys.argv[1]
+    user_id = sys.argv[2]
+    project_id = sys.argv[3]
+    agent = MainMemoryAgent()
+
+    if action == "read":
+        user_mem = await agent.user_agent.get(user_id)
+        exp_mem = await agent.experience_agent.find_similar_tasks(
+            task_context=f"code style: {user_mem.get('preferences', {}).get('code_style', 'standard')}",
+            task_type="code_review",
+            min_success_rate=0.6,
+        )
+
+        result = {
+            "user_id": user_id,
+            "project_id": project_id,
+            "preferences": user_mem.get("preferences", {}),
+            "experience": [
+                {
+                    "action": "fix",
+                    "location": "unknown",
+                    "summary": m["summary"],
+                    "success": m["success"],
+                    "created_at": datetime.utcnow().isoformat(),
+                }
+                for m in exp_mem
+            ],
+            "updated_at": datetime.utcnow().isoformat(),
+        }
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+
+    elif action == "write":
+        data = json.load(sys.stdin)
+        if "preferences" in data:
+            await agent.user_agent.update(
+                user_id, "preferences", data["preferences"], source="code_cli"
+            )
+        if "experience" in data:
+            for exp in data["experience"]:
+                await agent.experience_agent.store_experience(
+                    task_id=f"code_{exp['location']}",
+                    success=exp["success"],
+                    steps=[exp["summary"]],
+                    summary=exp["summary"],
+                )
+        print(json.dumps({"status": "written"}))
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
