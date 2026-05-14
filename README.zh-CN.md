@@ -18,19 +18,7 @@
 
 ---
 
-## 分层架构（v1.0.8）
 
-```
-core/                          ← 平台无关记忆引擎（纯 Python，零框架依赖）
-├── memory_agent.py            ← 6 Agent + RL 优化
-├── storage/sqlite_store.py    ← 7 表 SQLite（WAL 模式）
-├── models/                    ← Pydantic 数据模型
-└── learning/                  ← RL 权重优化器
-
-adapters/                      ← 平台适配层
-├── hermes_provider.py         ← Hermes MemoryProvider（代码驱动，100% 可靠）
-└── http_api.py                ← FastAPI HTTP（OpenClaw/OpenCode 通过 tool 调用）
-```
 
 ### v1.0.8 新增功能
 

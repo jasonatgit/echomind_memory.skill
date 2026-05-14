@@ -18,19 +18,7 @@
 
 ---
 
-## Layered Architecture (v1.0.8)
 
-```
-core/                          ← Platform-agnostic engine (pure Python)
-├── memory_agent.py            ← 6 Agents + RL optimization
-├── storage/sqlite_store.py    ← 7 SQLite tables (WAL mode)
-├── models/                    ← Pydantic data models
-└── learning/                  ← RL weight optimizer
-
-adapters/                      ← Platform adapters
-├── hermes_provider.py         ← Hermes MemoryProvider (code-driven, 100% reliable)
-└── http_api.py                ← FastAPI HTTP (OpenClaw/OpenCode via tool calls)
-```
 
 ### What's New in v1.0.8
 
