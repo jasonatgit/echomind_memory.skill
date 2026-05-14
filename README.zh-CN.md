@@ -3,13 +3,17 @@
 [![Claude Code Supported](https://img.shields.io/badge/Claude%20Code-Supported-orange)](https://claude.ai/code)
 [![OpenCode Compatible](https://img.shields.io/badge/OpenCode-Compatible-red)](https://github.com/open-code-ai)
 
+<div align="center">
 # EchoMind Skill —— 让你的 AI 拥有永久记忆与个人知识风格学习能力
+
+🌐 **English Version:** [README.md](README.md)
+</div>
 
 > 支持 Hermes-Agent、OpenClaw、OpenCode、Claude Code 生态的长期记忆 Skill。
 > 让你的 AI 不再"失忆"——记得你的偏好、研究方法、编码风格，甚至自我进化。
 
 📦 **项目地址:** https://github.com/jasonatgit/echomind_memory.skill
-🌐 **English Version:** [README.md](README.md)
+
 
 ---
 
