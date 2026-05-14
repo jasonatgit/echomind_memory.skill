@@ -325,6 +325,53 @@ class SqliteStore:
               json.dumps(linked_papers or []), json.dumps(tags or [])))
         self._conn.commit()
 
+    def search_context(self, user_id: str, query: str = None, limit: int = 3) -> List[Dict]:
+        """搜索用户最近的会话上下文"""
+        if not self._conn:
+            return []
+        where = "WHERE user_id = ?"
+        params = [user_id]
+        if query:
+            where += " AND messages LIKE ?"
+            params.append(f"%{query}%")
+        rows = self._conn.execute(
+            f"SELECT * FROM context_memory {where} ORDER BY updated_at DESC LIMIT ?",
+            params + [limit]).fetchall()
+        return [{k: (json.loads(r[k]) if k == "messages" else r[k])
+                 for k in r.keys()} for r in rows]
+
+    def save_rl_weights(self, user_id: str, weights: Dict[str, float]):
+        """持久化 RL 优化器的权重到 user_memory 表"""
+        if not self._conn:
+            return
+        self._conn.execute("""
+            UPDATE user_memory SET preferences = json_set(
+                CASE WHEN json_type(preferences) IS NULL THEN '{}' ELSE preferences END,
+                '$.rl_weights', json(?)
+            ), last_updated = datetime('now')
+            WHERE user_id = ?
+        """, (json.dumps(weights), user_id))
+        self._conn.execute("""
+            INSERT OR IGNORE INTO user_memory (user_id, preferences)
+            VALUES (?, json_object('rl_weights', json(?)))
+        """, (user_id, json.dumps(weights)))
+        self._conn.commit()
+
+    def load_rl_weights(self, user_id: str) -> Optional[Dict[str, float]]:
+        """从 user_memory 加载 RL 权重"""
+        if not self._conn:
+            return None
+        row = self._conn.execute(
+            "SELECT preferences FROM user_memory WHERE user_id = ?", (user_id,)
+        ).fetchone()
+        if row:
+            try:
+                prefs = json.loads(row["preferences"])
+                return prefs.get("rl_weights")
+            except (json.JSONDecodeError, TypeError):
+                pass
+        return None
+
     def close(self):
         if self._conn:
             self._conn.close()

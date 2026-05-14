@@ -346,6 +346,13 @@ class MainMemoryAgent:
         else:
             logger.info("Empty DB — fresh start")
 
+        # 8. RL 权重恢复
+        saved_weights = self.db.load_rl_weights("default")
+        if saved_weights:
+            self.rl_optimizer.weights = saved_weights
+            self.rl_optimizer.ema_weights = saved_weights.copy()
+            logger.info(f"RL weights restored: {saved_weights}")
+
     def disable_persistence(self):
         self._persistence_enabled = False
 
@@ -409,6 +416,12 @@ class MainMemoryAgent:
         if features.get("requires_research"):
             retrieved["research"] = self.research_agent.search_papers(
                 query=task_context, domain=features.get("research_domain"), top_k=5)
+
+        # 6. 上下文记忆检索（总是检索，取最近 2 个会话）
+        if self._persistence_enabled:
+            recent_contexts = self.db.search_context(user_id, limit=2)
+            if recent_contexts:
+                retrieved["context"] = recent_contexts
 
         scored = self._compute_importance(retrieved, task_context, user_id)
         top_memories = sorted(scored, key=lambda x: x.importance, reverse=True)[:8]
@@ -485,6 +498,21 @@ class MainMemoryAgent:
                         importance=round(score, 3), metadata=mem,
                     ))
 
+            elif source == "context":
+                for ctx in memories:
+                    messages = ctx.get("messages", [])
+                    preview = " ".join(
+                        m.get("content", "")[:60] for m in messages
+                        if m.get("role") in ("user", "assistant")
+                    )[:200]
+                    if preview:
+                        scored.append(MemoryRecord(
+                            source="context",
+                            content=f"Previous session: {preview}",
+                            importance=0.7,
+                            metadata={"session_id": ctx.get("session_id", "")},
+                        ))
+
         return scored
 
     def store(self, user_id: str, task_id: str, context: List[Dict],
@@ -530,6 +558,44 @@ class MainMemoryAgent:
                 self.db.save_experience(user_id, "default_task", success, steps_from_context,
                                         experience_summary or "系统自动生成的经验总结")
 
+    def add_research_paper(self, title: str, authors: List[str] = None, year: int = None,
+                           journal: str = None, abstract: str = "", keywords: List[str] = None,
+                           domain: str = "general", paper_type: str = "theory",
+                           key_points: List[str] = None, importance_score: float = 0.5) -> str:
+        """添加研究论文到内存和持久化"""
+        import uuid
+        paper_id = str(uuid.uuid4())[:12]
+        paper = ResearchPaper(
+            id=paper_id, title=title, authors=authors or [], year=year,
+            journal=journal or "", abstract=abstract, keywords=keywords or [],
+            domain=domain, paper_type=paper_type, key_points=key_points or [],
+            importance_score=importance_score)
+        self.research_agent.add_paper(paper)
+        if self._persistence_enabled:
+            self.db.save_research_paper(
+                paper_id=paper_id, title=title, authors=authors, year=year,
+                journal=journal, abstract=abstract, keywords=keywords,
+                domain=domain, paper_type=paper_type, key_points=key_points,
+                importance_score=importance_score)
+        logger.info(f"[Research] Added paper: {title}")
+        return paper_id
+
+    def add_research_note(self, user_id: str, topic: str, content: str,
+                          linked_papers: List[str] = None, tags: List[str] = None) -> str:
+        """添加研究笔记到内存和持久化"""
+        import uuid
+        note_id = str(uuid.uuid4())[:12]
+        note = ResearchNote(id=note_id, user_id=user_id, topic=topic,
+                            content=content, linked_papers=linked_papers or [],
+                            tags=tags or [])
+        self.research_agent.add_note(note)
+        if self._persistence_enabled:
+            self.db.save_research_note(note_id=note_id, user_id=user_id,
+                                       topic=topic, content=content,
+                                       linked_papers=linked_papers, tags=tags)
+        logger.info(f"[Research] Added note: {topic}")
+        return note_id
+
     def _infer_user_preferences(self, context: List[Dict], user_id: str):
         concise_count = sum(1 for msg in context if "简短" in msg["content"] or "简洁" in msg["content"])
         if concise_count >= 2:
@@ -552,6 +618,9 @@ class MainMemoryAgent:
             retrieved_memories=retrieved_memories, user_feedback=feedback,
         )
         self.rl_optimizer.add_feedback(feedback_record)
+        # 持久化 RL 权重
+        if self._persistence_enabled:
+            self.db.save_rl_weights("default", self.rl_optimizer.weights)
         logger.info(f"User {user_id} gave {feedback} feedback on task {task_id}")
 
     def sync_to_code_project(self, project_root: str, user_id: str):

@@ -1,6 +1,11 @@
-postgres_url: "postgresql://agent:agent123@localhost:5432/agent_memory"
-chroma_path: "./echomind_chroma"
-redis_host: "localhost"
-redis_port: 6379
+# EchoMind Memory 配置文件
+# 复制为 config.yaml 并根据需要修改
+
+# SQLite 数据库路径（默认 ~/.echomind/memory.db）
+db_path: "~/.echomind/memory.db"
+
+# RL 自优化开关
 enable_rl_optimizer: true
+
+# 上下文窗口大小（对话记忆保留条数）
 max_context_tokens: 4096

@@ -63,6 +63,25 @@ class SyncCodeRequest(BaseModel):
     project_root: str
     user_id: str
 
+class ResearchPaperRequest(BaseModel):
+    title: str
+    authors: Optional[List[str]] = None
+    year: Optional[int] = None
+    journal: Optional[str] = None
+    abstract: str = ""
+    keywords: Optional[List[str]] = None
+    domain: str = "general"
+    paper_type: str = "theory"
+    key_points: Optional[List[str]] = None
+    importance_score: float = 0.5
+
+class ResearchNoteRequest(BaseModel):
+    user_id: str
+    topic: str
+    content: str
+    linked_papers: Optional[List[str]] = None
+    tags: Optional[List[str]] = None
+
 
 # ── Routes ──
 @app.post("/api/memory/retrieve")
@@ -115,6 +134,28 @@ async def api_sync_code(req: SyncCodeRequest):
     try:
         memory_agent.sync_to_code_project(req.project_root, req.user_id)
         return {"status": "synced", "path": f"{req.project_root}/.echomind"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/research/paper")
+async def api_add_paper(req: ResearchPaperRequest):
+    try:
+        paper_id = memory_agent.add_research_paper(
+            title=req.title, authors=req.authors, year=req.year,
+            journal=req.journal, abstract=req.abstract, keywords=req.keywords,
+            domain=req.domain, paper_type=req.paper_type,
+            key_points=req.key_points, importance_score=req.importance_score)
+        return {"status": "stored", "paper_id": paper_id, "title": req.title}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/research/note")
+async def api_add_note(req: ResearchNoteRequest):
+    try:
+        note_id = memory_agent.add_research_note(
+            user_id=req.user_id, topic=req.topic, content=req.content,
+            linked_papers=req.linked_papers, tags=req.tags)
+        return {"status": "stored", "note_id": note_id, "topic": req.topic}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
