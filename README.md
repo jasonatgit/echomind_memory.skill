@@ -24,11 +24,11 @@
 
 | Feature | Description |
 |---------|-------------|
-| **Hermes MemoryProvider** | Auto-stores every turn via `sync_turn()`, auto-retrieves via `prefetch()`. Code-driven, 0% LLM dependency, 100% reliable |
-| **Platform-aware Memory** | All context memories tagged by platform (hermes/openclaw/opencode); same-platform weight ×1.0, cross-platform ×0.5; preferences isolated per platform |
-| **WAL Concurrency** | SQLite `PRAGMA journal_mode=WAL` + `busy_timeout=5000` — multi-process safe |
-| **Auto Migration** | `ALTER TABLE` adds `platform` column; legacy data marked as 'default' |
-| **Per-platform Preferences** | JSON sub-keys: `_default` shared base, per-platform overrides |
+| **Hermes Adapter Plugin** | Implements Hermes memory interface automatic read and write each cycle. Code-driven, no LLM decision required, 100% reliable |
+| **Platform-aware Memory** | All contextual memories are tagged with the platform (hermes/openclaw/opencode); same platform weight ×1.0, cross-platform ×0.5; user preferences isolated by platform |
+| **WAL Concurrent Mode** | Supports multi-process concurrent read and write |
+| **Automatic Migration** | Automatic migration |
+| **User Preferences Isolated by Platform** | Different users, different applications, different platforms have independent preferences, isolating your memory |
 
 ---
 

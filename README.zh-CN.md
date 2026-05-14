@@ -24,11 +24,11 @@
 
 | 功能 | 说明 |
 |------|------|
-| **Hermes MemoryProvider 插件** | 实现 Hermes 记忆接口：`sync_turn()` 每轮自动存，`prefetch()` 每轮自动取。代码驱动，无需 LLM 决策，100% 可靠 |
+| **Hermes适配插件** | 实现 Hermes Agent记忆接口每轮自动存取。代码驱动，无需 LLM 决策，100% 可靠 |
 | **平台感知记忆** | 所有上下文记忆打上平台标签（hermes/openclaw/opencode）；同平台权重 ×1.0，跨平台 ×0.5；用户偏好按平台隔离 |
-| **WAL 并发模式** | SQLite `PRAGMA journal_mode=WAL` + `busy_timeout=5000`，支持多进程并发读写 |
-| **自动迁移** | `ALTER TABLE` 添加 `platform` 列；旧数据标记为 'default' |
-| **用户偏好按平台隔离** | 偏好 JSON 支持 `_default` / `hermes` / `openclaw` 子键，不同平台独立偏好 |
+| **WAL 并发模式** | 支持多进程并发读写 |
+| **自动迁移** | 自动迁移 |
+| **用户偏好按平台隔离** | 不同用户、不同应用、不同平台独立偏好，隔离你的记忆 |
 
 ---
 
