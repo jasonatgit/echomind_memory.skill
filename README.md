@@ -36,10 +36,10 @@
 
 | Platform | Integration | Reliability |
 |----------|-------------|-------------|
-| **Hermes-Agent** | MemoryProvider plugin (`sync_turn`/`prefetch` auto) | ★★★★★ 100% |
-| **OpenClaw** | `skill.yaml` + HTTP API tool calls | ★★★☆☆ LLM-decision |
-| **OpenCode** | CLI + HTTP API or MCP stdio | ★★★☆☆ LLM-decision |
-| **Claude Code** | MCP stdio or HTTP API | ★★★☆☆ LLM-decision |
+| **Hermes-Agent** | MemoryProvider plugin (auto) | ★★★★★ 100% |
+| **OpenClaw** | `skill.yaml` + HTTP API tool calls | ★★★★☆ LLM-decision |
+| **OpenCode** | CLI + HTTP API or MCP stdio | ★★★★☆ LLM-decision |
+| **Claude Code** | MCP stdio or HTTP API | ★★★★☆ LLM-decision |
 
 ---
 

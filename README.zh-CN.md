@@ -36,10 +36,10 @@
 
 | 框架 | 支持方式 | 可靠性 |
 |------|----------|--------|
-| **Hermes-Agent** | MemoryProvider 插件 (`sync_turn`/`prefetch` 自动) | ★★★★★ 100% |
-| **OpenClaw** | `skill.yaml` + HTTP API 工具调用 | ★★★☆☆ LLM 决策 |
-| **OpenCode** | CLI + HTTP API 或 MCP stdio | ★★★☆☆ LLM 决策 |
-| **Claude Code** | MCP stdio 或 HTTP API | ★★★☆☆ LLM 决策 |
+| **Hermes-Agent** | MemoryProvider 插件 (自动) | ★★★★★ 100% |
+| **OpenClaw** | `skill.yaml` + HTTP API 工具调用 | ★★★★☆ LLM 决策 |
+| **OpenCode** | CLI + HTTP API 或 MCP stdio | ★★★★☆ LLM 决策 |
+| **Claude Code** | MCP stdio 或 HTTP API | ★★★★☆ LLM 决策 |
 
 ---
 
