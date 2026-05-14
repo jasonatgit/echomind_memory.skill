@@ -175,13 +175,14 @@ call("record_feedback",
 ## 架构
 
 ```
-EchoMind Memory System
-├── Context Memory    (对话上下文, 内存)
-├── Task Memory       (任务状态, 内存)
-├── User Memory       (用户偏好/习惯, 内存 + SQLite)
-├── Knowledge Memory  (通用知识, 内存)
-├── Experience Memory (经验总结, 内存 + SQLite)
-└── Research Memory   (研究论文/笔记, 内存 + SQLite)
+EchoMind Memory System (v1.0.5, 纯 SQLite)
+├── User Memory       (偏好/习惯/RL 权重)     → user_memory 表
+├── Task Memory       (任务状态/步骤)          → task_memory 表
+├── Experience Memory (成功/失败经验)          → experience_memory 表
+├── Context Memory    (对话上下文)             → context_memory 表
+├── Knowledge Memory  (领域知识)               → knowledge_memory 表
+├── Research Memory   (论文/笔记)             → research_papers + research_notes
+└── RL Optimizer      (反馈自优化，权重持久化)
 ```
 
 ---
