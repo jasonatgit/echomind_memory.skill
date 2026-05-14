@@ -5,9 +5,9 @@
 
 # EchoMind Memory — Give Your AI Permanent Memory
 
-<div align="center">
+
 🌐 **中文版:** [README.zh-CN.md](README.zh-CN.md) 
-</div>
+
 
 > A cross-platform long-term memory system for AI agents.
 > Your AI remembers your preferences, research methods, coding style — and self-evolves.

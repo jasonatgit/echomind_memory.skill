@@ -6,9 +6,9 @@
 
 # EchoMind Skill —— 让你的 AI 拥有永久记忆与个人知识风格学习能力
 
-<div align="center">
+
 🌐 **English Version:** [README.md](README.md)
-</div>
+
 
 > 支持 Hermes-Agent、OpenClaw、OpenCode、Claude Code 生态的长期记忆 Skill。
 > 让你的 AI 不再"失忆"——记得你的偏好、研究方法、编码风格，甚至自我进化。
