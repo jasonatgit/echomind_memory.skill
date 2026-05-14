@@ -65,12 +65,13 @@ class SqliteStore:
                 frequency INTEGER DEFAULT 1
             );
 
-            -- 4. 上下文记忆：对话上下文、token 计数、会话 ID
+            -- 4. 上下文记忆：对话上下文、token 计数、会话 ID、平台来源
             CREATE TABLE IF NOT EXISTS context_memory (
                 session_id TEXT PRIMARY KEY,
                 user_id TEXT,
                 messages TEXT DEFAULT '[]',
                 token_count INTEGER DEFAULT 0,
+                platform TEXT DEFAULT 'default',
                 created_at TEXT DEFAULT (datetime('now')),
                 updated_at TEXT DEFAULT (datetime('now'))
             );
@@ -129,7 +130,16 @@ class SqliteStore:
         logger.info("All 7 memory tables ensured (user, task, experience, context, knowledge, research_papers, research_notes)")
 
     def _migrate_existing_tables(self):
-        """兼容旧表结构 —— 如果旧表缺少 id 列则添加"""
+        """兼容旧表结构 —— 缺失列自动添加"""
+        try:
+            # 1. 迁移 context_memory: 添加 platform 列（v2.x → v3.0）
+            ctx_cols = [r[1] for r in self._conn.execute("PRAGMA table_info(context_memory)").fetchall()]
+            if "platform" not in ctx_cols:
+                self._conn.execute("ALTER TABLE context_memory ADD COLUMN platform TEXT DEFAULT 'default'")
+                self._conn.commit()
+                logger.info("Migration: added platform column to context_memory")
+        except Exception:
+            pass
         try:
             old_task_cols = [r[1] for r in self._conn.execute("PRAGMA table_info(task_memory)").fetchall()]
             # 如果旧 task_memory 是用 INTEGER AUTOINCREMENT id，创造新的 TEXT id 表并迁移数据
@@ -223,8 +233,23 @@ class SqliteStore:
     # ═══════════════════════════════════════════════════
 
     def save_user(self, user_id: str, preferences: Dict = None, habits: Dict = None,
-                  history: List = None, version: int = 1):
+                  history: List = None, version: int = 1, platform: str = None):
         if not self._conn: return
+        # Platform-aware: 合并 platform-specific preferences
+        if platform:
+            existing = self._get_user_raw(user_id)
+            merged_prefs = existing.get("preferences", {})
+            if "_default" not in merged_prefs:
+                # 迁移旧格式 → {platform: ..., _default: ...}
+                merged_prefs = {"_default": merged_prefs} if merged_prefs else {"_default": {}}
+            merged_prefs[platform] = preferences or {}
+            # 同时更新 _default
+            merged_prefs["_default"].update(preferences or {})
+            preferences = merged_prefs
+        else:
+            # 无 platform: 直接写 _default
+            preferences = {"_default": preferences or {}}
+
         self._conn.execute("""
             INSERT INTO user_memory (user_id, preferences, habits, history, last_updated, version)
             VALUES (?, ?, ?, ?, datetime('now'), ?)
@@ -233,11 +258,28 @@ class SqliteStore:
                 history=excluded.history, last_updated=datetime('now'),
                 version=COALESCE(user_memory.version, 0) + 1
         """, (user_id,
-              json.dumps(preferences or {}),
-              json.dumps(habits or {}),
-              json.dumps(history or []),
+              json.dumps(preferences, ensure_ascii=False),
+              json.dumps(habits or {}, ensure_ascii=False),
+              json.dumps(history or [], ensure_ascii=False),
               version))
         self._conn.commit()
+
+    def _get_user_raw(self, user_id: str) -> Dict:
+        """Get raw user row data (for merging)."""
+        if not self._conn:
+            return {}
+        row = self._conn.execute(
+            "SELECT * FROM user_memory WHERE user_id = ?", (user_id,)
+        ).fetchone()
+        if not row:
+            return {}
+        result = {k: row[k] for k in row.keys()}
+        for k in ('preferences', 'habits', 'history'):
+            try:
+                result[k] = json.loads(result[k])
+            except (json.JSONDecodeError, TypeError, KeyError):
+                result[k] = {} if k in ('preferences', 'habits') else []
+        return result
 
     def save_task(self, user_id: str, task_id: str, title: str, status: str,
                   steps: List = None, metadata: Dict = None):
@@ -267,15 +309,18 @@ class SqliteStore:
         """, (eid, user_id, task_type, int(success), json.dumps(steps), summary))
         self._conn.commit()
 
-    def save_context(self, session_id: str, user_id: str, messages: List, token_count: int = 0):
+    def save_context(self, session_id: str, user_id: str, messages: List,
+                     token_count: int = 0, platform: str = "default"):
         if not self._conn: return
         self._conn.execute("""
-            INSERT INTO context_memory (session_id, user_id, messages, token_count, updated_at)
-            VALUES (?, ?, ?, ?, datetime('now'))
+            INSERT INTO context_memory (session_id, user_id, messages, token_count, platform, updated_at)
+            VALUES (?, ?, ?, ?, ?, datetime('now'))
             ON CONFLICT(session_id) DO UPDATE SET
                 messages=excluded.messages, token_count=excluded.token_count,
+                platform=excluded.platform,
                 updated_at=datetime('now')
-        """, (session_id, user_id, json.dumps(messages, ensure_ascii=False), token_count))
+        """, (session_id, user_id, json.dumps(messages, ensure_ascii=False),
+              token_count, platform))
         self._conn.commit()
 
     def save_knowledge(self, knowledge_id: str, domain: str, content: str,
@@ -325,12 +370,16 @@ class SqliteStore:
               json.dumps(linked_papers or []), json.dumps(tags or [])))
         self._conn.commit()
 
-    def search_context(self, user_id: str, query: str = None, limit: int = 3) -> List[Dict]:
-        """搜索用户最近的会话上下文"""
+    def search_context(self, user_id: str, query: str = None,
+                        platform: str = None, limit: int = 3) -> List[Dict]:
+        """搜索用户最近的会话上下文，可选按平台筛选"""
         if not self._conn:
             return []
         where = "WHERE user_id = ?"
         params = [user_id]
+        if platform:
+            where += " AND platform = ?"
+            params.append(platform)
         if query:
             where += " AND messages LIKE ?"
             params.append(f"%{query}%")

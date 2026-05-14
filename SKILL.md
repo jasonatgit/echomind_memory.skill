@@ -1,6 +1,6 @@
 ---
 name: echomind-memory
-version: 1.0.5
+version: 1.0.8
 description: EchoMind Memory — AI 持久记忆系统。支持 Hermes、OpenCode、OpenClaw、Claude Code 等多平台。7 张 SQLite 表覆盖 6 种记忆类型。
 category: software-development
 platforms:
@@ -15,7 +15,7 @@ tags:
   - sqlite
 ---
 
-# EchoMind Memory v1.0.5
+# EchoMind Memory v1.0.8
 
 ## 概述
 
@@ -156,17 +156,57 @@ uvicorn.run(app, host='0.0.0.0', port=8005, log_level='error')
 │   └── research.py
 ├── learning/
 │   └── rl_weight_optimizer.py
-├── code_format/          ← OpenCode CLI 集成
-│   ├── cli.py
-│   └── memory.schema.json
-├── example/              ← 各平台调用示例
-│   ├── hermes_call_example.py
-│   ├── opencode_call.py
-│   ├── openclaw_call.py
-│   └── cursor_sync_example.py
+├── core/                  ← 平台无关记忆引擎
+│   ├── __init__.py
+│   ├── memory_agent.py    ← 6 Agent + RL
+│   ├── storage/
+│   │   ├── __init__.py
+│   │   └── sqlite_store.py ← 7 表 SQLite (WAL)
+│   ├── models/
+│   │   ├── context.py, task.py, user.py
+│   │   ├── knowledge.py, experience.py
+│   │   └── research.py
+│   └── learning/
+│       └── rl_weight_optimizer.py
+├── adapters/              ← 平台适配层
+│   ├── hermes_provider.py ← Hermes MemoryProvider (sync_turn 自动)
+│   └── http_api.py        ← FastAPI HTTP (OpenClaw/OpenCode)
+├── code_format/           ← OpenCode CLI 集成
+├── example/               ← 各平台调用示例
 ├── config.example.yaml
+├── main.py                ← 统一入口
+├── plugin.yaml            ← Hermes 插件元数据
+├── skill.yaml             ← OpenClaw 工具定义
+├── SKILL.md               ← 本文件
 └── requirements.txt
 ```
+
+## 部署
+
+### Hermes Agent（推荐 — 100% 自动存取）
+
+```bash
+# 安装
+cp -r echomind_memory.skill ~/.hermes/plugins/echomind/
+hermes config set memory.provider echomind
+
+# 启动 Hermes 即自动运行，无需手动操作
+hermes
+```
+
+效果：Hermes 的 agent_loop 每轮之前自动 `prefetch()` 检索记忆，每轮之后自动 `sync_turn()` 存储。LLM 不需要决策，100% 可靠。
+
+### OpenClaw / OpenCode / Claude Code（HTTP 模式）
+
+```bash
+python3 main.py              # 启动 FastAPI 服务 (port 8005)
+```
+
+LLM 通过 tool 调用 HTTP API，依赖 SKILL.md 触发规则。
+
+### Platform-aware 记忆
+
+所有记忆带平台标签存储。检索时同平台记忆权重 ×1.0，跨平台 ×0.5。用户偏好按平台隔离，`_default` 键为公共基础。
 
 ## 已知限制
 

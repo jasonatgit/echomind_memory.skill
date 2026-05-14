@@ -10,12 +10,12 @@ import logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("MemoryAgent")
 
-from models.context import ContextMessage, ContextMemory
-from models.task import TaskMemory
-from models.user import UserMemory
-from models.knowledge import KnowledgeEntry
-from models.experience import ExperienceEntry
-from models.research import ResearchPaper, ResearchNote
+from .models.context import ContextMessage, ContextMemory
+from .models.task import TaskMemory
+from .models.user import UserMemory
+from .models.knowledge import KnowledgeEntry
+from .models.experience import ExperienceEntry
+from .models.research import ResearchPaper, ResearchNote
 
 
 class MemoryRecord(BaseModel):
@@ -86,16 +86,31 @@ class UserMemoryAgent:
         self.store: Dict[str, UserMemory] = {}
         self.cache: Dict[str, UserMemory] = {}
 
-    def get(self, user_id: str) -> Dict[str, Any]:
+    def get(self, user_id: str, platform: str = None) -> Dict[str, Any]:
         if user_id in self.cache:
-            return self.cache[user_id].dict()
+            mem = self.cache[user_id]
+            return self._extract_platform_prefs(mem, platform)
         if user_id not in self.store:
             self.store[user_id] = UserMemory(user_id=user_id)
         mem = self.store[user_id]
         self.cache[user_id] = mem
-        return mem.dict()
+        return self._extract_platform_prefs(mem, platform)
 
-    def update(self, user_id: str, key: str, value: Any, source: str = "implicit") -> bool:
+    def _extract_platform_prefs(self, mem: UserMemory, platform: str) -> Dict[str, Any]:
+        """从 platform-aware 的 preferences JSON 中提取当前平台的偏好"""
+        raw = mem.dict()
+        prefs = raw.get("preferences", {})
+        if isinstance(prefs, dict) and "_default" in prefs:
+            # v3.0+ platform-aware 格式
+            merged = dict(prefs.get("_default", {}))
+            if platform and platform in prefs:
+                merged.update(prefs.get(platform, {}))
+            raw["preferences"] = merged
+        # else: pre-v3.0 旧格式，直接返回
+        return raw
+
+    def update(self, user_id: str, key: str, value: Any,
+               source: str = "implicit", platform: str = None) -> bool:
         if user_id not in self.store:
             self.store[user_id] = UserMemory(user_id=user_id)
         mem = self.store[user_id]
@@ -164,8 +179,8 @@ class ExperienceMemoryAgent:
         return similar[:limit]
 
 
-from learning.rl_weight_optimizer import RLWeightOptimizer
-from storage.sqlite_store import SqliteStore
+from .learning.rl_weight_optimizer import RLWeightOptimizer
+from .storage.sqlite_store import SqliteStore
 
 
 class ResearchMemoryAgent:
@@ -393,12 +408,14 @@ class MainMemoryAgent:
                 return domain
         return "general"
 
-    def retrieve_for_task(self, task_context: str, user_id: str, task_id: Optional[str] = None) -> Dict[str, Any]:
+    def retrieve_for_task(self, task_context: str, user_id: str,
+                         task_id: Optional[str] = None,
+                         platform: Optional[str] = None) -> Dict[str, Any]:
         logger.info(f"Retrieving memory for task: {task_context[:50]}...")
         features = self._extract_task_features(task_context)
         retrieved = {}
 
-        retrieved["user"] = self.user_agent.get(user_id)
+        retrieved["user"] = self.user_agent.get(user_id, platform=platform)
 
         if features["requires_knowledge"]:
             retrieved["knowledge"] = self.knowledge_agent.search(
@@ -419,11 +436,11 @@ class MainMemoryAgent:
 
         # 6. 上下文记忆检索（总是检索，取最近 2 个会话）
         if self._persistence_enabled:
-            recent_contexts = self.db.search_context(user_id, limit=2)
+            recent_contexts = self.db.search_context(user_id, platform=platform, limit=2)
             if recent_contexts:
                 retrieved["context"] = recent_contexts
 
-        scored = self._compute_importance(retrieved, task_context, user_id)
+        scored = self._compute_importance(retrieved, task_context, user_id, platform)
         top_memories = sorted(scored, key=lambda x: x.importance, reverse=True)[:8]
 
         return {
@@ -434,7 +451,8 @@ class MainMemoryAgent:
             "retrieved_memories": top_memories,
         }
 
-    def _compute_importance(self, retrieved: Dict[str, Any], query: str, user_id: str) -> List[MemoryRecord]:
+    def _compute_importance(self, retrieved: Dict[str, Any], query: str,
+                            user_id: str, platform: Optional[str] = None) -> List[MemoryRecord]:
         scored = []
         weights = self.rl_optimizer.get_current_weights()
 
@@ -506,17 +524,22 @@ class MainMemoryAgent:
                         if m.get("role") in ("user", "assistant")
                     )[:200]
                     if preview:
+                        # Platform-aware weighting: 同平台 ×1.0, 跨平台 ×0.5
+                        ctx_platform = ctx.get("platform", "")
+                        platform_mult = 1.0 if (not platform or ctx_platform == platform) else 0.5
                         scored.append(MemoryRecord(
                             source="context",
-                            content=f"Previous session: {preview}",
-                            importance=0.7,
-                            metadata={"session_id": ctx.get("session_id", "")},
+                            content=f"[{ctx_platform or 'unknown'}] Previous session: {preview}",
+                            importance=round(0.7 * platform_mult, 3),
+                            metadata={"session_id": ctx.get("session_id", ""),
+                                      "platform": ctx_platform},
                         ))
 
         return scored
 
     def store(self, user_id: str, task_id: str, context: List[Dict],
-              task_status: str, success: bool = False, experience_summary: str = None):
+              task_status: str, success: bool = False, experience_summary: str = None,
+              platform: str = None):
         for msg in context:
             self.context_agent.add_message(msg)
         self.task_agent.create_task(user_id=user_id, task_id=task_id, title="自动任务",
@@ -524,19 +547,21 @@ class MainMemoryAgent:
         self._infer_user_preferences(context, user_id)
 
         if self._persistence_enabled:
-            user_data = self.user_agent.get(user_id)
+            user_data = self.user_agent.get(user_id, platform=platform)
             self.db.save_user(user_id,
                 preferences=user_data.get("preferences", {}),
                 habits=user_data.get("habits", {}),
-                history=user_data.get("history", []))
+                history=user_data.get("history", []),
+                platform=platform)
             self.db.save_task(user_id, task_id, "自动任务", task_status,
                               steps=[{"step": "初始化", "status": task_status}])
-            # 保存上下文记忆
+            # 保存上下文记忆（带 platform 标签）
             self.db.save_context(
                 session_id=f"{user_id}:{task_id}",
                 user_id=user_id,
                 messages=context,
-                token_count=sum(len(m.get("content","")) for m in context) // 4)
+                token_count=sum(len(m.get("content","")) for m in context) // 4,
+                platform=platform or "default")
             # 如果有领域关键词，保存知识条目
             features = self._extract_task_features(
                 " ".join(m.get("content","") for m in context if m.get("role")=="user"))

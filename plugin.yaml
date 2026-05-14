@@ -1,0 +1,15 @@
+name: echomind
+version: "1.0.8"
+description: EchoMind Memory — AI 持久记忆系统 (6 种记忆 + RL 优化)
+author: jasonatgit
+license: MIT
+homepage: https://github.com/jasonatgit/echomind_memory.skill
+
+# Hermes Memory Provider 插件元数据
+# 安装: cp -r . ~/.hermes/plugins/echomind/
+# 激活: hermes config set memory.provider echomind
+
+hermes:
+  type: memory_provider
+  entry: adapters.hermes_provider
+  register: register

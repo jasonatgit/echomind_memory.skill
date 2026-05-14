@@ -3,8 +3,12 @@
 import asyncio
 import json
 import sys
+import os
 from datetime import datetime
-from memory_agent import MainMemoryAgent
+
+# Support both direct run and import from core
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from core.memory_agent import MainMemoryAgent
 
 
 async def main():

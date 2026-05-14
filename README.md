@@ -12,14 +12,27 @@
 GitHub: https://github.com/jasonatgit/echomind_memory.skill
 Star 它，让 AI 记得你。
 
+
+### 新增功能
+
+| 功能 | 说明 |
+|------|------|
+| **Hermes Agent记忆插件** | 实现 Hermes Agent记忆接口每轮自动取。代码驱动，无需 LLM 决策，100% 可靠 |
+| **平台感知记忆** | 所有上下文记忆打上标签（hermes/openclaw/opencode）；同平台权重不变，跨平台降低；用户偏好隔离 |
+| **WAL 并发模式** | 支持多进程并发读写 |
+| **自动迁移，新旧数据区隔** | 自动迁移，旧数据标记 |
+| **用户偏好按平台隔离** | 不同不同龙虾(Openclaw)、Opencode等隔离记忆 |
+
+
+
 ---
 
 ## 支持框架
 
 | 框架 | 支持方式 |
 |------|----------|
-| **OpenClaw** | 通过 `skill.yaml` + `main.py` 工具调用 |
 | **Hermes-Agent** | 通过 `call()` 通用接口 |
+| **OpenClaw** | 通过 `skill.yaml` + `main.py` 工具调用 |
 | **Claude Code (Cursor)** | 自动写入 `.echomind/` 文件，AI 自动读取上下文 |
 | **OpenCode (Devika / CodeAct)** | 通过 CLI + JSON Schema 标准化记忆格式 |
 
@@ -33,11 +46,11 @@ Star 它，让 AI 记得你。
 | **强化学习自动优化** | 根据用户正/负反馈，AI 自动调整记忆权重，越用越聪明 |
 | **研究方向记忆** | 记录论文元数据、理论模型、算法方法以及研究笔记 |
 | **代码风格记忆** | 记录你是否喜欢 type hint、注释风格、函数长度 |
-| **经验沉淀与复用** | 上次修复的问题 / 用过的模型 → 下次自动推荐 |
+| **经验沉淀与复用** | 上次修复的问题 / 用过的算法模型 → 下次自动推荐 |
 | **零依赖本地存储** | SQLite 持久化，无需 Docker / PostgreSQL / Redis |
 | **跨框架兼容** | 独立于任何 LLM，适配 OpenClaw / Hermes / Claude Code / OpenCode |
 
-*记忆系统专门针对管理科学与工程科研方向的记忆进行了优化，对查询的研究论文、理论模型、研究方法进行存储。其他学科均可定制优化。*
+*记忆系统专门针对**管理科学与工程**科研方向的记忆进行了优化，对查询的研究论文、理论模型、研究方法进行存储。**其他学科均可定制优化**。*
 
 ### 自动检索
 
@@ -175,7 +188,7 @@ call("record_feedback",
 ## 架构
 
 ```
-EchoMind Memory System (v1.0.5, 纯 SQLite)
+EchoMind Memory System (v1.0.8, 纯 SQLite)
 ├── User Memory       (偏好/习惯/RL 权重)     → user_memory 表
 ├── Task Memory       (任务状态/步骤)          → task_memory 表
 ├── Experience Memory (成功/失败经验)          → experience_memory 表
@@ -196,5 +209,5 @@ EchoMind 让你的 AI：
 - 记得你讨厌空行、喜欢 docstring
 - 记得你修复过 auth.py 的 XSS 漏洞
 - 记得你偏好用半参数模型而不是协方差建模
-- 记得你曾因为某个因子痛苦了 3 小时 → 下次自动避开
-- 这不是一个插件，这是 AI 的多智能体记忆神经网络。
+- 记得你曾因为某个模型因子痛苦了 3 小时 → 下次自动避开
+- 这不是一个插件，这是 AI 的多智能体记忆神经网络
