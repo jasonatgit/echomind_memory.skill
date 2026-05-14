@@ -3,11 +3,10 @@
 [![Claude Code Supported](https://img.shields.io/badge/Claude%20Code-Supported-orange)](https://claude.ai/code)
 [![OpenCode Compatible](https://img.shields.io/badge/OpenCode-Compatible-red)](https://github.com/open-code-ai)
 
-<div align="center">
 # EchoMind Memory — Give Your AI Permanent Memory
 
+<div align="center">
 🌐 **中文版:** [README.zh-CN.md](README.zh-CN.md) 
-
 </div>
 
 > A cross-platform long-term memory system for AI agents.

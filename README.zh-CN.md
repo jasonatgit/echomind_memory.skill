@@ -3,9 +3,10 @@
 [![Claude Code Supported](https://img.shields.io/badge/Claude%20Code-Supported-orange)](https://claude.ai/code)
 [![OpenCode Compatible](https://img.shields.io/badge/OpenCode-Compatible-red)](https://github.com/open-code-ai)
 
-<div align="center">
+
 # EchoMind Skill —— 让你的 AI 拥有永久记忆与个人知识风格学习能力
 
+<div align="center">
 🌐 **English Version:** [README.md](README.md)
 </div>
 
