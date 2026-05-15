@@ -1,3 +1,7 @@
 pydantic>=2.7
 python-dotenv>=1.0
 numpy>=1.26
+PyYAML>=6.0
+requests>=2.28
+fastapi>=0.100
+uvicorn>=0.20

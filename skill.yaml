@@ -1,5 +1,5 @@
 name: echomind_memory
-version: 1.0.10
+version: 1.1.0
 description: "A persistent memory system that lets your AI remember user preferences, tasks, knowledge, and self-learned experiences. Supports OpenClaw, Hermes, Claude Code, and OpenCode ecosystems."
 author: "jasonatgit"
 license: MIT
@@ -12,15 +12,15 @@ tags:
   - agent-enhancement
   - code-memory
 
-openclaw:
-  call: call  # 使用 main.py 中的 call() 函数调度
-
 tools:
   - name: retrieve_memory
     description: "Retrieve relevant memories based on user query and task context. Returns prioritized content to inject into LLM prompt. Covers 6 memory types: user, task, experience, context, knowledge, research."
     parameters:
       type: object
       properties:
+        config_path:
+          type: string
+          description: "Optional. Path to config file (default: $ECHOMIND_CONFIG or ~/.echomind/echomind_config.yaml)"
         user_id:
           type: string
           description: "Unique identifier for the user. Required for personalized memory."
@@ -73,6 +73,9 @@ tools:
     parameters:
       type: object
       properties:
+        config_path:
+          type: string
+          description: "Optional. Path to config file (default: $ECHOMIND_CONFIG or ~/.echomind/echomind_config.yaml)"
         user_id:
           type: string
         task_id:
@@ -108,6 +111,9 @@ tools:
     parameters:
       type: object
       properties:
+        config_path:
+          type: string
+          description: "Optional. Path to config file (default: $ECHOMIND_CONFIG or ~/.echomind/echomind_config.yaml)"
         user_id:
           type: string
         task_id:
@@ -130,6 +136,9 @@ tools:
     parameters:
       type: object
       properties:
+        config_path:
+          type: string
+          description: "Optional. Path to config file (default: $ECHOMIND_CONFIG or ~/.echomind/echomind_config.yaml)"
         project_root:
           type: string
         user_id:
@@ -143,6 +152,9 @@ tools:
     parameters:
       type: object
       properties:
+        config_path:
+          type: string
+          description: "Optional. Path to config file (default: $ECHOMIND_CONFIG or ~/.echomind/echomind_config.yaml)"
         title:
           type: string
         authors:
@@ -181,6 +193,9 @@ tools:
     parameters:
       type: object
       properties:
+        config_path:
+          type: string
+          description: "Optional. Path to config file (default: $ECHOMIND_CONFIG or ~/.echomind/echomind_config.yaml)"
         user_id:
           type: string
         topic:
@@ -205,6 +220,10 @@ dependencies:
   - pydantic>=2.7
   - python-dotenv>=1.0
   - numpy>=1.26
+  - PyYAML>=6.0
+  - requests>=2.28
+  - fastapi>=0.100
+  - uvicorn>=0.20
 
 config_schema:
   type: object

@@ -1,6 +1,6 @@
-# EchoMind Memory — 核心模块
-# 平台无关的记忆引擎（6 Agent + RL + SQLite）
-# 由 adapters/ 适配层调用，不依赖任何 Web 框架
+# EchoMind Memory — Core module
+# Platform-agnostic memory engine（6 Agent + RL + SQLite）
+# Called by adapters, not dependent on any web framework
 
 from .memory_agent import (
     MainMemoryAgent,

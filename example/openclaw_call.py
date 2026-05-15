@@ -1,52 +1,48 @@
 """
-OpenClaw 集成示例 — 通过 skill.yaml 定义的 MCP tool 调用 EchoMind Memory
+OpenClaw integration example — using call() from main.py
 
-使用方式:
     from echomind_memory.main import call
-
-    result = await call("retrieve_memory", user_id="alice", query="...")
+    result = call("retrieve_memory", user_id="alice", query="...")
 """
-
-import asyncio
 import json
 from main import call
 
 
-async def main():
+def main():
     print("=== EchoMind Memory × OpenClaw ===\n")
 
-    # 1. 检索记忆
-    print("[1] 检索记忆...")
-    result = await call(
+    # 1. Retrieve memory
+    print("[1] Retrieve memory...")
+    result = call(
         "retrieve_memory",
         user_id="alice",
-        query="如何优化数据库查询性能？",
+        query="How to optimize database query performance?",
         task_id="task-openclaw-001",
     )
-    print(f"    置信度: {result.get('confidence_score', 0)}")
-    print(f"    记忆来源: {[m['source'] for m in result.get('working_memory', [])]}")
+    print(f"    Confidence: {result.get('confidence_score', 0)}")
+    print(f"    Memory source: {[m['source'] for m in result.get('working_memory', [])]}")
     for m in result.get("working_memory", []):
         print(f"      [{m['source']}] {m['content'][:60]}...")
 
-    # 2. 存储交互结果
-    print("\n[2] 存储交互...")
-    await call(
+    # 2. Store interaction result
+    print("\n[2] Store interaction...")
+    call(
         "store_memory",
         user_id="alice",
         task_id="task-openclaw-001",
         context=[
-            {"role": "user", "content": "如何优化数据库查询性能？"},
-            {"role": "assistant", "content": "建议添加索引并启用查询缓存。"},
+            {"role": "user", "content": "How to optimize database query performance?"},
+            {"role": "assistant", "content": "Consider adding indexes and enabling query cache."},
         ],
         task_status="completed",
         success=True,
-        experience_summary="通过添加索引和缓存优化了查询性能",
+        experience_summary="Optimized query performance by adding indexes and cache",
     )
-    print("    ✅ 已存储")
+    print("    ✅ Stored")
 
-    # 3. 添加研究论文
-    print("\n[3] 添加论文...")
-    await call(
+    # 3. Add research paper
+    print("\n[3] Add paper...")
+    call(
         "add_research_paper",
         title="Query Optimization in Large-Scale Databases",
         authors=["Chen X", "Liu Y"],
@@ -55,21 +51,21 @@ async def main():
         keywords=["database", "optimization", "indexing"],
         domain="computer_science",
     )
-    print("    ✅ 论文已添加")
+    print("    ✅ Paper added")
 
-    # 4. 记录反馈
-    print("\n[4] 记录反馈...")
-    await call(
+    # 4. Record feedback
+    print("\n[4] Record feedback...")
+    call(
         "record_feedback",
         user_id="alice",
         task_id="task-openclaw-001",
         feedback="positive",
         retrieved_memories=[],
     )
-    print("    ✅ 反馈已记录 (RL 权重已更新)")
+    print("    ✅ Feedback recorded (RL Weights updated)")
 
-    print("\n=== 完成 ===")
+    print("\n=== Completed ===")
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()

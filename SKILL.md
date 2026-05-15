@@ -1,7 +1,7 @@
 ---
 name: echomind-memory
-version: 1.0.10
-description: EchoMind Memory — AI 持久记忆系统。支持 Hermes、OpenCode、OpenClaw、Claude Code 等多平台。7 张 SQLite 表覆盖 6 种记忆类型。
+version: 1.1.0
+description: EchoMind Memory — AI 持久记忆系统。支持 Hermes、OpenCode、OpenClaw、Claude Code 等多平台。9 张 SQLite 表覆盖 6 种记忆类型 + Self-Reflective Agent。
 category: software-development
 platforms:
   - hermes
@@ -13,13 +13,14 @@ tags:
   - long-term-memory
   - rl-optimization
   - sqlite
+  - self-reflection
 ---
 
-# EchoMind Memory v1.0.10
+# EchoMind Memory v1.1.0
 
 ## 概述
 
-EchoMind Memory 是一个纯 SQLite 的 AI 持久记忆系统，无需 PostgreSQL/Redis/ChromaDB。服务运行在 `http://localhost:8005`。
+EchoMind Memory 是一个纯 SQLite 的 AI 持久记忆系统，无需 PostgreSQL/Redis/ChromaDB。v1.1.0 新增 **Self-Reflective Agent**，从 Episodic 记录自动提炼 Semantic 知识和 Procedural 规则。服务运行在 `http://localhost:8005`。
 
 ### 6 种记忆类型
 
@@ -35,6 +36,16 @@ EchoMind Memory 是一个纯 SQLite 的 AI 持久记忆系统，无需 PostgreSQ
 ### RL 自优化
 
 用户反馈（👍/👎）通过 RL 权重优化器调整检索重要性权重。权重持久化到 `user_memory.preferences.rl_weights`，重启后自动恢复。
+
+### Self-Reflective Agent (v1.1.0)
+
+从 Episodic 记忆自动提炼长期知识，实现记忆自我进化。
+
+- **触发**：每 N 次 store 自动标记 `_pending_reflection`
+- **Hermes**：`on_session_end` 自动调 `localhost:9119` → 用户已配 LLM → 零配置
+- **HTTP**：`POST /api/reflect` 端点，调用方自己的 LLM 处理 prompt
+- **输出**：key_insights → knowledge_memory / preferences → user_memory / rules → procedural
+- **安全**：confidence < 0.6 自动丢弃，失败静默降级
 
 ## 平台集成
 
@@ -55,10 +66,13 @@ python3 code_format/cli.py write jason my-project context.json
 
 ### OpenClaw
 
-```python
-# Python SDK 调用
-from main import call
-result = await call("retrieve_memory", user_id="alice", query="评估风险...")
+OpenClaw 通过 SKILL.md 指令驱动，agent 直接调用 HTTP API 端点：
+
+```bash
+# 启动服务
+python main.py
+# → http://localhost:8005
+# Agent 通过 POST /api/memory/retrieve 和 POST /api/memory/store 进行记忆存取
 ```
 
 ### Claude Code (Cursor)
@@ -82,6 +96,8 @@ POST /api/memory/sync-code {"project_root": "/path/to/project", "user_id": "alic
 | POST | `/api/memory/sync-code` | 同步到项目 .echomind/ |
 | POST | `/api/research/paper` | 添加研究论文 |
 | POST | `/api/research/note` | 添加研究笔记 |
+| GET | `/api/research/papers` | 列出研究论文 |
+| POST | `/api/reflect` 🆕 | 反思：build prompt / process result |
 
 ### 检索请求
 
@@ -114,74 +130,56 @@ POST /api/memory/store
 }
 ```
 
-## 部署
+## 配置化支持 (v1.1.0)
 
-### 依赖
+EchoMind v1.1.0 支持通过 `echomind_config.yaml` 配置文件调整所有参数：
 
-仅 3 个：`pydantic>=2.7`, `python-dotenv>=1.0`, `numpy>=1.26`
+- **文件位置**: 优先级 `./echomind_config.yaml` > `~/.echomind/echomind_config.yaml` > 内置 `FALLBACK_CONFIG`
+- **环境变量**: 可通过 `ECHOMIND_CONFIG=/path/to/config.yaml` 指定配置路径
+- **Prompt 模板**: 内置引擎生成（无需配置）
+- **检索参数**: 全部 9 项可调
+- **领域检测**: 通过配置文件切换知识领域（支持 zh/en 关键词）
+- **API 动态管理**: `POST /api/config/parameter` 运行时修改，`GET /api/config` 查看当前配置
 
-### 启动
+### 45 领域支持 (v1.1.0)
 
-```bash
-cd ~/.hermes/skills/echomind-memory
-python3 -c "
-from main import app, memory_agent
-import uvicorn
-memory_agent.enable_persistence()
-uvicorn.run(app, host='0.0.0.0', port=8005, log_level='error')
-" &
-```
-
-### 数据库
-
-- 路径：`~/.echomind/memory.db`（可在 `config.example.yaml` 中修改）
-- 7 张表自动创建，无需手动初始化
+echomind_config.yaml 内置 45 个知识领域，覆盖：运筹学、供应链、决策分析、AI、计算机科学、NLP、CV、机器人、推荐系统、生物学等。领域关键词支持中英文，自动从配置匹配。
 
 ## 项目文件结构
 
 ```
 ├── SKILL.md              ← 本文件（AI 助手加载入口）
 ├── skill.yaml            ← 技能元数据 + OpenClaw 工具定义
-├── main.py               ← FastAPI 服务入口
-├── memory_agent.py       ← 核心逻辑（6 个 Agent + RL）
-├── storage/
-│   ├── __init__.py
-│   └── sqlite_store.py   ← SQLite 持久化层
-├── models/               ← Pydantic 数据模型
-│   ├── user.py
-│   ├── task.py
-│   ├── experience.py
-│   ├── context.py
-│   ├── knowledge.py
-│   └── research.py
-├── learning/
-│   └── rl_weight_optimizer.py
-├── core/                  ← 平台无关记忆引擎
-│   ├── __init__.py
-│   ├── memory_agent.py    ← 6 Agent + RL
+├── main.py               ← FastAPI 服务入口 + `call()` 统一调度
+├── echomind_config.yaml          ← 全量默认配置
+├── requirements.txt
+├── core/                  ← 跨框架记忆引擎（核心）
+│   ├── memory_agent.py    ← 6 Agent + RL + ReflectiveAgent
+│   ├── reflective_agent.py ← Self-Reflective Agent (v1.1.0)
 │   ├── storage/
 │   │   ├── __init__.py
-│   │   └── sqlite_store.py ← 7 表 SQLite (WAL)
+│   │   └── sqlite_store.py ← 存储层 9 张表 (WAL)
 │   ├── models/
 │   │   ├── context.py, task.py, user.py
 │   │   ├── knowledge.py, experience.py
-│   │   └── research.py
+│   │   ├── research.py
+│   │   └── reflection.py
 │   └── learning/
 │       └── rl_weight_optimizer.py
 ├── adapters/              ← 平台适配层
-│   ├── hermes_provider.py ← Hermes MemoryProvider (sync_turn 自动)
+│   ├── hermes_provider.py ← Hermes MemoryProvider
 │   └── http_api.py        ← FastAPI HTTP (OpenClaw/OpenCode)
 ├── code_format/           ← OpenCode CLI 集成
 ├── example/               ← 各平台调用示例
-├── config.example.yaml
-├── main.py                ← 统一入口
 ├── plugin.yaml            ← Hermes 插件元数据
-├── skill.yaml             ← OpenClaw 工具定义
-├── SKILL.md               ← 本文件
-└── requirements.txt
 ```
 
 ## 部署
+
+### 依赖与数据库
+
+- **依赖**: `pydantic>=2.7`, `python-dotenv>=1.0`, `numpy>=1.26`, `PyYAML>=6.0`
+- **数据库**: `~/.echomind/memory.db`（可在 `echomind_config.yaml` 中修改），9 张表自动创建
 
 ### Hermes Agent（推荐 — 100% 自动存取）
 

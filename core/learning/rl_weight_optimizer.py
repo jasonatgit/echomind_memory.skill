@@ -1,9 +1,10 @@
 import json
 import logging
-from datetime import datetime
+import random
+from datetime import datetime, timezone
 from typing import Dict, List, Optional
 import numpy as np
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
 
@@ -13,24 +14,43 @@ class FeedbackRecord(BaseModel):
     task_id: str
     retrieved_memories: List[Dict]
     user_feedback: str  # "positive" or "negative"
-    timestamp: datetime = datetime.utcnow()
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 class RLWeightOptimizer:
+    _WEIGHT_SPEC = {
+        "relevance": {"range": [0.30, 0.50], "default": 0.40},
+        "recency":           {"range": [0.15, 0.25], "default": [0.15, 0.25]},
+        "frequency":         {"range": [0.10, 0.20], "default": [0.10, 0.20]},
+        "explicit_feedback": {"range": [0.10, 0.20], "default": [0.10, 0.20]},
+        "trust_score":       {"range": [0.05, 0.15], "default": [0.05, 0.15]},
+    }
+
     def __init__(
         self,
         initial_weights: Dict[str, float],
         learning_rate: float = 0.05,
         decay_factor: float = 0.98,
+        max_buffer_size: int = 50,
+        seed: Optional[int] = None,
     ):
-        self.weights = initial_weights.copy()
-        self.ema_weights = initial_weights.copy()
+        if seed is not None:
+            random.seed(seed)
+        self.weights = {}
+        for key, spec in self._WEIGHT_SPEC.items():
+            cfg_val = initial_weights.get(key, spec["default"])
+            if isinstance(cfg_val, (list, tuple)) and len(cfg_val) == 2:
+                self.weights[key] = random.uniform(float(cfg_val[0]), float(cfg_val[1]))
+            else:
+                self.weights[key] = float(cfg_val)
+        self.ema_weights = self.weights.copy()
         self.feedback_buffer: List[FeedbackRecord] = []
         self.learning_rate = learning_rate
         self.decay_factor = decay_factor
         self.update_counter = 0
-        self.max_buffer_size = 50
+        self.max_buffer_size = max_buffer_size
         self.history: List[Dict] = []
+        self._source_order = ["user", "knowledge", "experience", "task_progress", "task_history"]
 
     def extract_state(self, task_features: Dict, retrieved_memories: List[Dict]) -> np.ndarray:
         task_type_map = {
@@ -47,10 +67,13 @@ class RLWeightOptimizer:
             source = mem.get("source", "unknown")
             if source in source_count:
                 source_count[source] += 1
+        if len(retrieved_memories) > 8:
+            logger.debug("extract_state: truncated %d memories to 8 for state extraction",
+                        len(retrieved_memories) - 8)
 
         total = sum(source_count.values())
         source_ratio = [
-            source_count[k] / total if total > 0 else 0.0 for k in source_count.keys()
+            source_count[k] / total if total > 0 else 0.0 for k in self._source_order
         ]
 
         state = [
@@ -63,8 +86,8 @@ class RLWeightOptimizer:
         return np.array(state, dtype=np.float32)
 
     def predict_score(self, state: np.ndarray) -> float:
-        sources = ["user", "knowledge", "experience", "task_progress", "task_history"]
-        weights = [self.ema_weights.get(s, 0.2) for s in sources]
+        weight_keys = ["relevance", "recency", "frequency", "explicit_feedback", "trust_score"]
+        weights = [self.ema_weights.get(k, 0.2) for k in weight_keys]
         score = np.dot(state[-5:], weights)
         return float(score)
 
@@ -95,8 +118,8 @@ class RLWeightOptimizer:
             ):
                 if weight_key not in self.weights:
                     continue
-                if i < len(state):
-                    delta = self.learning_rate * (reward - pred_score) * state[i]
+                if 5 + i < len(state):
+                    delta = self.learning_rate * (reward - pred_score) * state[5 + i]
                     self.weights[weight_key] += delta
 
         total = sum(self.weights.values())
@@ -110,7 +133,7 @@ class RLWeightOptimizer:
             )
 
         self.history.append({
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             "feedback_count": n,
             "avg_reward": total_reward / n,
             "weights": self.ema_weights.copy(),

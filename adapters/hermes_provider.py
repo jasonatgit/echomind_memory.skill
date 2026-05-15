@@ -1,17 +1,19 @@
-# EchoMind Memory — Hermes MemoryProvider 适配器
-# 实现 Hermes v0.13.0+ 的 MemoryProvider 接口，提供 100% 自动化的记忆存取
+# EchoMind Memory — Hermes MemoryProvider Adapter
+# implement Hermes v0.13.0+  MemoryProvider interface, providing 100% automated memory access
 #
-# 安装：复制到 ~/.hermes/plugins/echomind-memory/
-# 激活：hermes config set memory.provider echomind
+# Install: copy to ~/.hermes/plugins/echomind-memory/
+# Activate: hermes config set memory.provider echomind
 
 import json
 import logging
 import sys
 import os
+import random
 from datetime import datetime
 from typing import Any, Dict, List, Optional
+import requests  # Hermes bundled, zero new dependencies
 
-# 确保 core 模块可导入
+# Ensure core module is importable
 _skill_dir = os.path.dirname(os.path.abspath(__file__))
 _pkg_dir = os.path.dirname(_skill_dir)
 if _pkg_dir not in sys.path:
@@ -25,17 +27,17 @@ PLATFORM = "hermes"
 
 
 class EchomindMemoryProvider:
-    """EchoMind Memory Provider — 与 Hermes Agent Loop 深度集成
+    """EchoMind Memory Provider — Hermes Agent loop deep integration
     
-    自动调用时序（由 Hermes run_agent.py 负责）：
-    - 每轮前: prefetch(query, session_id) → 检索记忆，注入 system prompt
-    - 每轮后: sync_turn(user, assistant, session_id) → 存储本轮对话
-    - 每轮后: queue_prefetch(query, session_id) → 排队下轮检索
-    - 会话切换: on_session_switch(new_sid, ...) → 更新 session 状态
-    - 压缩前: on_pre_compress(messages) → 提取即将被压缩的记忆
-    - 会话结束: shutdown() → 持久化 + 清理
+    Automatic invocation sequence (managed by Hermes run_agent.py):
+    - before each turn: prefetch(query, session_id) → retrieve memory, inject system prompt
+    - after each turn: sync_turn(user, assistant, session_id) → store current-turn conversation
+    - after each turn: queue_prefetch(query, session_id) → queue for next-turn retrieval
+    - session switch: on_session_switch(new_sid, ...) → Update session state
+    - before compression: on_pre_compress(messages) → extract memories about to be compressed
+    - session end: shutdown() → Persist + cleanup
     
-    也暴露 memory_search/memory_retrieve 工具，LLM 可显式调用。
+    also exposes memory_search/memory_retrieve tools, LLM can call explicitly.
     """
 
     name = "echomind"
@@ -46,23 +48,25 @@ class EchomindMemoryProvider:
         self._user_id: str = ""
         self._turn_count: int = 0
         self._context_buffer: List[Dict] = []
-        self._skip_writes: bool = False  # non-primary context 跳过写入
+        self._skip_writes: bool = False  # non-primary context Skip write
+        self._project_id: str = "default"
+        self._session_title: str = ""
 
     # ═══════════════════════════════════════════════════
-    # 生命周期
+    # Lifecycle
     # ═══════════════════════════════════════════════════
 
     def is_available(self) -> bool:
-        """检查是否可用（不需要网络，本地 SQLite）"""
+        """Check if available（no network required, local SQLite）"""
         return True
 
     def initialize(self, session_id: str, **kwargs):
-        """Hermes 启动时调用，连接 SQLite + 加载历史记忆
+        """Hermes called on startup, connects SQLite + Load history on startup
         
-        kwargs 可能包含: hermes_home, platform, agent_context, user_id 等。
-        agent_context 用于区分 primary/subagent/cron/flush 场景。
+        kwargs may contain: hermes_home, platform, agent_context, user_id etc.
+        agent_context used to distinguish primary/subagent/cron/flush scenarios.
         """
-        # 非 primary context（subagent/cron/flush）不写入用户记忆
+        # Non-primary context (subagent/cron/flush) — do not write to user memory
         agent_ctx = kwargs.get("agent_context", "primary")
         if agent_ctx != "primary":
             logger.info(
@@ -76,6 +80,7 @@ class EchomindMemoryProvider:
         self._skip_writes = False
         self._session_id = session_id
         self._user_id = kwargs.get("user_id", session_id)
+        self._project_id = kwargs.get("project", "default")
         self._turn_count = 0
         self._context_buffer = []
 
@@ -88,29 +93,29 @@ class EchomindMemoryProvider:
         )
 
     def shutdown(self):
-        """Hermes 退出时调用"""
+        """Hermes called on exit"""
         if self._agent:
             self._agent.disable_persistence()
         logger.info("EchoMind Memory shutdown")
 
     # ═══════════════════════════════════════════════════
-    # 自动调用的核心方法（由 agent_loop 驱动，100% 可靠）
+    # Core methods called automatically (agent_loop driven, 100% reliable)
     # ═══════════════════════════════════════════════════
 
     def system_prompt_block(self) -> str:
-        """注入到 system prompt 的静态文本"""
+        """injected into system prompt static text of"""
         return (
             "[EchoMind Memory]\n"
-            "长期记忆系统已激活。你的对话会自动被记录和检索。\n"
-            "如需显式搜索：使用 memory_search(query) 查找相关记忆。\n"
-            "如需查看用户档案：使用 memory_retrieve() 获取偏好和历史。\n"
+            "Long-term memory system activated. Your conversations will be automatically recorded and retrieved.\n"
+            "For explicit search: use memory_search(query) to find relevant memories.\n"
+            "To view user profile: use memory_retrieve() to get preferences and history.\n"
         )
 
     def prefetch(self, query: str, session_id: str) -> str:
-        """每轮对话前自动调用 — 检索相关记忆注入上下文
+        """Automatically called before each conversation turn — Retrieve relevant memories and inject into context
         
         Returns:
-            格式化的记忆文本，注入到当前对话的 messages 中
+            Formatted memory text, injected into the current conversation's messages
         """
         if self._skip_writes or not self._agent:
             return ""
@@ -121,6 +126,8 @@ class EchomindMemoryProvider:
                 user_id=self._user_id,
                 task_id=session_id,
                 platform=PLATFORM,
+                project=self._project_id,
+                session_id=self._session_id,
             )
             return self._format_prefetch_context(result)
         except Exception as e:
@@ -128,22 +135,22 @@ class EchomindMemoryProvider:
             return ""
 
     def queue_prefetch(self, query: str, session_id: str = "") -> None:
-        """排队后台预取——Hermes v0.13.0+ 新增接口。
+        """Queue background prefetch -- Hermes v0.13.0+ new interface.
         
-        echomind 的 prefetch 是同步的（本地 SQLite），无需排队，
-        但需要存在以兼容 MemoryProvider ABC。
+        echomind prefetch is synchronous (local SQLite), no queue needed,
+        but must exist for compatibility with MemoryProvider ABC.
         """
         pass
 
     def sync_turn(self, user_content: str, assistant_content: str, session_id: str):
-        """每轮对话后自动调用 — 存储本轮对话到 SQLite"""
+        """Automatically called after each conversation turn — store current turn to SQLite"""
         if self._skip_writes or not self._agent:
             return
 
         self._turn_count += 1
         self._session_id = session_id
 
-        # 构建上下文消息列表
+        # Build context message list
         messages = []
         if self._context_buffer:
             messages.extend(self._context_buffer)
@@ -161,29 +168,31 @@ class EchomindMemoryProvider:
                 task_status="completed",
                 success=True,
                 platform=PLATFORM,
+                project=self._project_id,
+                session_id=session_id,
             )
             logger.debug(f"sync_turn: turn {self._turn_count} stored")
         except Exception as e:
             logger.error(f"sync_turn error: {e}")
-            # 失败时缓存到 buffer 下次重试
-            self._context_buffer = messages[-6:]  # 保留最近 6 条
+            # cache to on failure buffer retry on next
+            self._context_buffer = messages[-6:]  # keep recent 6 messages
 
     # ═══════════════════════════════════════════════════
-    # LLM 工具定义（显式调用，补充自动存取）
+    # LLM Tool definitions（Explicit invocation, supplementing auto-access）
     # ═══════════════════════════════════════════════════
 
     def get_tool_schemas(self) -> List[Dict]:
-        """暴露给 LLM 的工具定义"""
+        """exposed to LLM tool definitions for"""
         return [
             {
                 "name": "memory_search",
-                "description": "搜索长期记忆中的相关内容。用于查找之前讨论过的话题、决策或偏好。",
+                "description": "Search long-term memory for relevant content. Used to find previously discussed topics, decisions, or preferences.",
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "query": {
                             "type": "string",
-                            "description": "搜索关键词或问句，如 'Python 爬虫'、'上周讨论的架构方案'",
+                            "description": "Search keywords or questions, e.g. 'Python web crawler'、'last week's architecture discussion'",
                         }
                     },
                     "required": ["query"],
@@ -191,7 +200,7 @@ class EchomindMemoryProvider:
             },
             {
                 "name": "memory_retrieve",
-                "description": "获取当前用户的完整记忆档案，包括偏好、习惯和最近活动。",
+                "description": "Get the current user's complete memory profile, including preferences, habits, and recent activity.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -199,20 +208,20 @@ class EchomindMemoryProvider:
                             "type": "string",
                             "enum": ["brief", "full"],
                             "default": "brief",
-                            "description": "明细程度：brief=摘要  full=完整记忆",
+                            "description": "Detail level: brief=summary  full=full memory",
                         }
                     },
                 },
             },
         ]
 
-    def handle_tool_call(self, tool_name: str, args: Dict[str, Any]) -> str:
-        """处理 LLM 显式调用的工具。
+    def handle_tool_call(self, tool_name: str, args: Dict[str, Any], **kwargs) -> str:
+        """Handle LLM Tools called explicitly.
         
-        Hermes ABC 要求返回 JSON 字符串。
+        Hermes ABC Requires returning JSON string.
         """
         if not self._agent:
-            return json.dumps({"error": "EchoMind 未初始化"}, ensure_ascii=False)
+            return json.dumps({"error": "EchoMind Not initialized"}, ensure_ascii=False)
 
         try:
             if tool_name == "memory_search":
@@ -222,38 +231,51 @@ class EchomindMemoryProvider:
                 result = self._retrieve(args.get("detail_level", "brief"))
                 return json.dumps({"result": result}, ensure_ascii=False)
             else:
-                return json.dumps({"error": f"未知工具: {tool_name}"}, ensure_ascii=False)
+                return json.dumps({"error": f"Unknown tool: {tool_name}"}, ensure_ascii=False)
         except Exception as e:
             logger.error(f"handle_tool_call error: {e}")
-            return json.dumps({"error": f"记忆操作失败: {str(e)}"}, ensure_ascii=False)
+            return json.dumps({"error": f"Memory operation failed: {str(e)}"}, ensure_ascii=False)
 
     # ═══════════════════════════════════════════════════
-    # 可选钩子（Hermes v0.13.0+ 规范）
+    # Optional hooks（Hermes v0.13.0+ standard）
     # ═══════════════════════════════════════════════════
 
     def on_turn_start(self, turn_number: int, message: str, **kwargs):
-        """每轮开始时的钩子（可用于预加载）"""
+        """Hook at the start of each turn（Can be used for preloading）"""
         self._turn_count = turn_number
 
     def on_session_end(self, messages: List[Dict]):
-        """会话结束时的钩子。
+        """Hook at the end of a session.
         
-        存储会话摘要到长期记忆。
+        Store session summary to long-term memory.
         """
         if self._skip_writes or not self._agent or not messages:
             return
         try:
+            # Save full transcript for session search
+            if self._agent and getattr(self._agent, '_persistence_enabled', False):
+                try:
+                    self._agent.db.save_transcript(
+                        self._session_id, self._user_id,
+                        messages, project=self._project_id)
+                except Exception as ex:
+                    logger.error(f"transcript save error: {ex}")
             self._agent.store(
                 user_id=self._user_id,
                 task_id=f"{self._session_id}:summary",
-                context=messages[-10:],  # 最近 10 轮
+                context=messages[-10:],  # Recent 10 turns
                 task_status="session_end",
                 success=True,
                 platform=PLATFORM,
+                project=self._project_id,
+                session_id=self._session_id,
             )
             logger.info("on_session_end: session summary stored")
         except Exception as e:
             logger.error(f"on_session_end error: {e}")
+
+        # v1.1.0: Check if reflection should be triggered
+        self._trigger_reflection_if_needed()
 
     def on_session_switch(
         self,
@@ -262,13 +284,13 @@ class EchomindMemoryProvider:
         reset: bool = False,
         **kwargs,
     ):
-        """会话切换时调用（Hermes v0.13.0+ 新增）。
+        """Called on session switch（Hermes v0.13.0+ New）。
         
-        /resume, /branch, /reset, context 压缩等操作会触发。
-        更新内部 session_id 状态，确保后续写入使用正确的 session。
+        /resume, /branch, /reset, context Triggered by operations like compression.
+        Update internal session_id state, ensuring subsequent writes use the correct session。
         """
         if reset:
-            # /new, /reset: 清空缓冲
+            # /new, /reset: Clear buffer
             self._context_buffer = []
             self._turn_count = 0
         self._session_id = new_session_id
@@ -278,20 +300,22 @@ class EchomindMemoryProvider:
         )
 
     def on_pre_compress(self, messages: List[Dict[str, Any]]) -> str:
-        """上下文压缩前调用（Hermes v0.13.0+ 新增）。
+        """Called before context compression（Hermes v0.13.0+ New）。
         
-        在消息被丢弃前提取其中可保留的记忆。
-        返回空字符串表示不贡献额外压缩提示（记忆已自动存储）。
+        Extract retainable memories from messages before they are discarded.
+        Return empty string to indicate no additional compression hints（Memory auto-stored）。
         """
         if self._skip_writes or not self._agent or not messages:
             return ""
         try:
-            # 将即将被压缩的消息存入长期记忆
+            # Store messages about to be compressed into long-term memory
             self._agent.store(
                 user_id=self._user_id,
                 task_id=f"{self._session_id}:compress",
                 context=messages[-20:],
                 task_status="compressed",
+                project=self._project_id,
+                session_id=self._session_id,
                 success=True,
                 platform=PLATFORM,
             )
@@ -301,9 +325,9 @@ class EchomindMemoryProvider:
         return ""
 
     def on_delegation(self, task: str, result: str, child_session_id: str = "", **kwargs):
-        """子 agent 完成时调用（Hermes v0.13.0+ 新增）。
+        """Sub-agent completed callback (Hermes v0.13.0+).
         
-        将子 agent 的任务和结果作为经验存储。
+        Store child agent task and result as experience.
         """
         if self._skip_writes or not self._agent:
             return
@@ -323,8 +347,39 @@ class EchomindMemoryProvider:
         except Exception as e:
             logger.error(f"on_delegation error: {e}")
 
+    def _trigger_reflection_if_needed(self):
+        """If store Count reaches threshold, auto-invoke LLM perform reflection"""
+        if not self._agent:
+            return
+        from core.config_manager import get_config_manager
+        cfg = get_config_manager().get_section("reflection")
+        batch_size = cfg.get("batch_size", 8)
+        if isinstance(batch_size, (list, tuple)):
+            batch_size = int(random.uniform(batch_size[0], batch_size[1]))
+        min_records = cfg.get("min_records", 6)
+        pending = getattr(self._agent, '_pending_reflection', False)
+        if not pending:
+            return
+        records = self._agent.get_recent_episodic(self._user_id, count=batch_size)
+        if len(records) < min_records:
+            return
+        logger.info(f"Reflection triggered: {len(records)} records")
+        try:
+            result = self._agent.reflective.reflect_with_llm(
+                records, self._user_id, PLATFORM, _hermes_llm_fn,
+            )
+            if result:
+                logger.info(
+                    f"Reflection done: {len(result.key_insights)} insights "
+                    f"(confidence={result.confidence:.2f})"
+                )
+        except Exception as e:
+            logger.warning(f"Reflection failed: {e}")
+        finally:
+            self._agent.clear_pending_reflection()
+
     def on_memory_write(self, action: str, target: str, content: str, metadata: Optional[Dict] = None):
-        """镜像 Hermes 内置记忆的写入操作"""
+        """Mirror Hermes built-in memory write operations"""
         if self._skip_writes or not self._agent:
             return
         mirror = [
@@ -340,17 +395,24 @@ class EchomindMemoryProvider:
                 success=True,
                 platform=PLATFORM,
             )
-        except Exception:
-            pass
+            logger.info(
+                "EchoMind: mirrored memory %s target=%s content_len=%d",
+                action, target, len(content),
+            )
+        except Exception as e:
+            logger.error(
+                "EchoMind: on_memory_write failed action=%s target=%s: %s",
+                action, target, e,
+            )
 
     # ═══════════════════════════════════════════════════
-    # 内部方法
+    # Internal method
     # ═══════════════════════════════════════════════════
 
     def _search(self, query: str) -> str:
-        """执行记忆搜索"""
+        """Execute memory search"""
         if not query:
-            return "请提供搜索关键词"
+            return "Please provide search keywords"
         result = self._agent.retrieve_for_task(
             task_context=query,
             user_id=self._user_id,
@@ -359,29 +421,29 @@ class EchomindMemoryProvider:
         return self._format_search_result(result)
 
     def _retrieve(self, detail: str = "brief") -> str:
-        """获取用户记忆档案"""
+        """Get user memory profile"""
         user_data = self._agent.user_agent.get(self._user_id, platform=PLATFORM)
         if detail == "brief":
             prefs = user_data.get("preferences", {})
             if not prefs:
-                return "暂无用户偏好记录"
+                return "No user preference records yet"
             lines = [f"- {k}: {v}" for k, v in list(prefs.items())[:8]]
-            return "用户偏好：\n" + "\n".join(lines) if lines else "暂无用户偏好记录"
+            return "User preferences:\n" + "\n".join(lines) if lines else "No user preference records yet"
         else:
             return json.dumps(user_data, indent=2, ensure_ascii=False, default=str)
 
     def _format_prefetch_context(self, result: Dict) -> str:
-        """将检索结果格式化为注入上下文"""
+        """Format retrieval results as context injection"""
         memories = result.get("retrieved_memories", [])
         if not memories:
             return ""
 
-        lines = ["[EchoMind — 相关记忆]"]
+        lines = ["[EchoMind — Relevant memories]"]
         for mem in memories[:5]:
             source_label = mem.source.replace("_", " ").title()
             lines.append(f"[{source_label}] {mem.content[:200]}")
         
-        # 附加用户偏好
+        # Append user preferences
         user_data = result.get("user", {})
         prefs = user_data.get("preferences", {})
         if prefs:
@@ -391,20 +453,43 @@ class EchomindMemoryProvider:
         return "\n".join(lines)
 
     def _format_search_result(self, result: Dict) -> str:
-        """将检索结果格式化为 LLM 友好的文本"""
+        """Format retrieval results as LLM friendly text"""
         memories = result.get("retrieved_memories", [])
         if not memories:
-            return "未找到相关记忆"
+            return "No relevant memories found"
 
-        lines = ["找到以下相关记忆："]
+        lines = ["Found the following relevant memories:"]
         for i, mem in enumerate(memories[:8], 1):
             lines.append(f"{i}. [{mem.source}] {mem.content[:150]}")
         return "\n".join(lines)
 
 
-# Hermes plugin 注册入口
-# Hermes 会通过 importlib 加载此模块并调用 register()
-def register(ctx):
+# Hermes plugin Registration entry point
+# Hermes will through importlib load this module and call register()
+def register(ctx, **kwargs):
     provider = EchomindMemoryProvider()
     ctx.register_memory_provider(provider)
     logger.info("EchoMind Memory Provider registered for Hermes")
+
+
+# v1.1.0: LLM function injection（passed UnifiedLLMClient Unified invocation, supports external API）
+_llm_client = None
+
+
+def _get_llm_client():
+    global _llm_client
+    if _llm_client is None:
+        from core.llm_client import get_llm_client
+        _llm_client = get_llm_client()
+    return _llm_client
+
+
+def _hermes_llm_fn(prompt: str) -> str:
+    """passed UnifiedLLMClient calls LLM for reflection.
+
+    Supports external API endpoints (OpenAI / vLLM / Ollama, etc.).
+    """
+    client = _get_llm_client()
+    if client is None:
+        return ""
+    return client.chat(prompt)
