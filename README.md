@@ -23,6 +23,44 @@ Star 它，让 AI 记得你。
 | **自动迁移，新旧数据区隔** | 自动迁移，旧数据标记 |
 | **用户偏好按平台隔离** | 不同不同龙虾(Openclaw)、Opencode等隔离记忆 |
 
+---
+
+## 版本更新
+
+### v1.0.10 — Hermes v0.14.0 完整适配 (2026-05-17)
+
+**新增 (MemoryProvider ABC 兼容):**
+
+| 方法 | 说明 |
+|------|------|
+| `queue_prefetch()` | 兼容 Hermes v0.13.0+ 新增接口，消除每轮 error 日志 (was previously caused AttributeError on every turn) |
+| `on_session_switch()` | 修复 `/resume` `/branch` `/reset` 操作后 session_id 混乱 (fixes session ID corruption after session switch operations) |
+| `on_pre_compress()` | 上下文压缩前自动保存即将被丢弃的记忆 (auto-saves memories before context compression discards them) |
+| `on_delegation()` | 子 agent 任务经验自动存入长期记忆 (captures sub-agent task experience into long-term memory) |
+
+**修复:**
+
+| 项目 | 说明 |
+|------|------|
+| `agent_context` 过滤 | 自动识别并跳过 `cron` / `subagent` / `flush` 等非主上下文，防止污染用户记忆 (auto-detects and skips non-primary contexts to prevent memory contamination) |
+| `handle_tool_call` JSON | 工具调用返回值改为 JSON 字符串格式，符合 Hermes ABC 契约 (tool call returns now use JSON string format per Hermes ABC contract) |
+| 写守卫统一 | `prefetch` / `sync_turn` / `on_session_end` / `on_memory_write` 统一使用 `skip_writes` 守卫 (all write methods now use unified skip_writes guard) |
+
+### v1.0.9 — OpenClaw / OpenCode / Claude Code 三平台兼容修复 (2026-05-16)
+
+| 修复项 | 影响平台 |
+|--------|---------|
+| `main.py` 新增 `call()` 调度函数 | OpenClaw |
+| `http_api.py` retrieve/store 端点透传 `platform` 参数 | 全部平台 |
+| `code_format/cli.py` 修复 async→sync 崩溃 | OpenCode |
+| `skill.yaml` 新增 `platform` 参数 + `openclaw.call` 声明 | OpenClaw |
+
+### v1.0.8 — 平台感知记忆 + Hermes 适配器 (2026-05-15)
+
+- 平台感知记忆：同平台权重 ×1.0，跨平台 ×0.5
+- Hermes Agent 插件：实现 MemoryProvider 接口，每轮自动存取
+- WAL 并发模式 + 自动数据迁移
+
 
 
 ---
