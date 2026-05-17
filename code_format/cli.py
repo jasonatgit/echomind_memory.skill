@@ -1,17 +1,14 @@
-# echomind_memory.skill/code_format/cli.py
-
-import asyncio
 import json
 import sys
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 
 # Support both direct run and import from core
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from core.memory_agent import MainMemoryAgent
 
 
-async def main():
+def main():
     if len(sys.argv) < 2:
         print("Usage: echomind-cli [read|write] <user_id> <project_id> [file_path]")
         sys.exit(1)
@@ -20,10 +17,11 @@ async def main():
     user_id = sys.argv[2]
     project_id = sys.argv[3]
     agent = MainMemoryAgent()
+    agent.enable_persistence()
 
     if action == "read":
-        user_mem = await agent.user_agent.get(user_id)
-        exp_mem = await agent.experience_agent.find_similar_tasks(
+        user_mem = agent.user_agent.get(user_id)
+        exp_mem = agent.experience_agent.find_similar_tasks(
             task_context=f"code style: {user_mem.get('preferences', {}).get('code_style', 'standard')}",
             task_type="code_review",
             min_success_rate=0.6,
@@ -39,23 +37,23 @@ async def main():
                     "location": "unknown",
                     "summary": m["summary"],
                     "success": m["success"],
-                    "created_at": datetime.utcnow().isoformat(),
+                    "created_at": datetime.now(timezone.utc).isoformat(),
                 }
                 for m in exp_mem
             ],
-            "updated_at": datetime.utcnow().isoformat(),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
         }
         print(json.dumps(result, indent=2, ensure_ascii=False))
 
     elif action == "write":
         data = json.load(sys.stdin)
         if "preferences" in data:
-            await agent.user_agent.update(
+            agent.user_agent.update(
                 user_id, "preferences", data["preferences"], source="code_cli"
             )
         if "experience" in data:
             for exp in data["experience"]:
-                await agent.experience_agent.store_experience(
+                agent.experience_agent.store_experience(
                     task_id=f"code_{exp['location']}",
                     success=exp["success"],
                     steps=[exp["summary"]],
@@ -63,6 +61,8 @@ async def main():
                 )
         print(json.dumps({"status": "written"}))
 
+    agent.disable_persistence()
+
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()

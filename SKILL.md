@@ -1,6 +1,6 @@
 ---
 name: echomind-memory
-version: 1.0.8
+version: 1.0.9
 description: EchoMind Memory — AI 持久记忆系统。支持 Hermes、OpenCode、OpenClaw、Claude Code 等多平台。7 张 SQLite 表覆盖 6 种记忆类型。
 category: software-development
 platforms:
@@ -15,7 +15,7 @@ tags:
   - sqlite
 ---
 
-# EchoMind Memory v1.0.8
+# EchoMind Memory v1.0.9
 
 ## 概述
 
