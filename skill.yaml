@@ -12,6 +12,9 @@ tags:
   - agent-enhancement
   - code-memory
 
+openclaw:
+  call: call  # 使用 main.py 中的 call() 函数调度
+
 tools:
   - name: retrieve_memory
     description: "Retrieve relevant memories based on user query and task context. Returns prioritized content to inject into LLM prompt. Covers 6 memory types: user, task, experience, context, knowledge, research."
@@ -27,6 +30,9 @@ tools:
         task_id:
           type: string
           description: "Optional. ID of the ongoing task to continue from."
+        platform:
+          type: string
+          description: "Optional. Platform identifier for memory isolation (e.g. 'hermes', 'openclaw', 'claude')."
         max_results:
           type: integer
           default: 5
@@ -71,6 +77,9 @@ tools:
           type: string
         task_id:
           type: string
+        platform:
+          type: string
+          description: "Optional. Platform identifier for memory isolation."
         context:
           type: array
           items:

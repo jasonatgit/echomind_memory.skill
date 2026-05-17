@@ -89,7 +89,7 @@ class ResearchNoteRequest(BaseModel):
 @app.post("/api/memory/retrieve")
 async def api_retrieve(req: RetrieveRequest):
     try:
-        result = memory_agent.retrieve_for_task(req.query, req.user_id, req.task_id)
+        result = memory_agent.retrieve_for_task(req.query, req.user_id, req.task_id, platform=req.platform)
         working = [
             {"source": m.source, "content": m.content,
              "importance": m.importance, "metadata": m.metadata}
@@ -118,6 +118,7 @@ async def api_store(req: StoreRequest):
             req.user_id, req.task_id,
             [{"role": m.role, "content": m.content} for m in req.context],
             req.task_status, req.success, req.experience_summary,
+            platform=req.platform,
         )
         return {"status": "stored", "user_id": req.user_id, "task_id": req.task_id}
     except Exception as e:
