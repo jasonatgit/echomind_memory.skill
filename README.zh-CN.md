@@ -64,44 +64,6 @@ Star 它，让 AI 记得你。
 - WAL 并发模式 + 自动数据迁移
 
 
-
----
-
-## 支持框架
-
-| 框架 | 支持方式 |
-|------|----------|
-| **Hermes-Agent** | 通过 `call()` 通用接口 |
-| **OpenClaw** | 通过 `skill.yaml` + `main.py` 工具调用 |
-| **Claude Code (Cursor)** | 自动写入 `.echomind/` 文件，AI 自动读取上下文 |
-| **OpenCode (Devika / CodeAct)** | 通过 CLI + JSON Schema 标准化记忆格式 |
-
-# EchoMind Skill —— 让你的 AI 拥有永久记忆与个人知识风格学习能力
-
-
-🌐 **English Version:** [README.md](README.md)
-
-
-> 支持 Hermes-Agent、OpenClaw、OpenCode、Claude Code 生态的长期记忆 Skill。
-> 让你的 AI 不再"失忆"——记得你的偏好、研究方法、编码风格，甚至自我进化。
-
-📦 **项目地址:** https://github.com/jasonatgit/echomind_memory.skill
-
-
----
-
-
-
-### v1.0.8 新增功能
-
-| 功能 | 说明 |
-|------|------|
-| **Hermes适配插件** | 实现 Hermes Agent记忆接口每轮自动存取。代码驱动，无需 LLM 决策，100% 可靠 |
-| **平台感知记忆** | 所有上下文记忆打上平台标签（hermes/openclaw/opencode）；同平台权重 ×1.0，跨平台 ×0.5；用户偏好按平台隔离 |
-| **WAL 并发模式** | 支持多进程并发读写 |
-| **自动迁移** | 自动迁移 |
-| **用户偏好按平台隔离** | 不同用户、不同应用、不同平台独立偏好，隔离你的记忆 |
-
 ---
 
 ## 支持框架
