@@ -76,6 +76,43 @@ Star 它，让 AI 记得你。
 | **Claude Code (Cursor)** | 自动写入 `.echomind/` 文件，AI 自动读取上下文 |
 | **OpenCode (Devika / CodeAct)** | 通过 CLI + JSON Schema 标准化记忆格式 |
 
+# EchoMind Skill —— 让你的 AI 拥有永久记忆与个人知识风格学习能力
+
+
+🌐 **English Version:** [README.md](README.md)
+
+
+> 支持 Hermes-Agent、OpenClaw、OpenCode、Claude Code 生态的长期记忆 Skill。
+> 让你的 AI 不再"失忆"——记得你的偏好、研究方法、编码风格，甚至自我进化。
+
+📦 **项目地址:** https://github.com/jasonatgit/echomind_memory.skill
+
+
+---
+
+
+
+### v1.0.8 新增功能
+
+| 功能 | 说明 |
+|------|------|
+| **Hermes适配插件** | 实现 Hermes Agent记忆接口每轮自动存取。代码驱动，无需 LLM 决策，100% 可靠 |
+| **平台感知记忆** | 所有上下文记忆打上平台标签（hermes/openclaw/opencode）；同平台权重 ×1.0，跨平台 ×0.5；用户偏好按平台隔离 |
+| **WAL 并发模式** | 支持多进程并发读写 |
+| **自动迁移** | 自动迁移 |
+| **用户偏好按平台隔离** | 不同用户、不同应用、不同平台独立偏好，隔离你的记忆 |
+
+---
+
+## 支持框架
+
+| 框架 | 支持方式 | 可靠性 |
+|------|----------|--------|
+| **Hermes-Agent** | MemoryProvider 插件 (自动) | ★★★★★ 100% |
+| **OpenClaw** | `skill.yaml` + HTTP API 工具调用 | ★★★★☆ LLM 决策 |
+| **OpenCode** | CLI + HTTP API 或 MCP stdio | ★★★★☆ LLM 决策 |
+| **Claude Code** | MCP stdio 或 HTTP API | ★★★★☆ LLM 决策 |
+
 ---
 
 ## 核心能力
@@ -93,6 +130,11 @@ Star 它，让 AI 记得你。
 *记忆系统专门针对**管理科学与工程**科研方向的记忆进行了优化，对查询的研究论文、理论模型、研究方法进行存储。**其他学科均可定制优化**。*
 
 ### 自动检索
+| **跨框架兼容** | 独立于任何 LLM，适配 Hermes / OpenClaw / OpenCode / Claude Code |
+
+*记忆系统专门针对**管理科学与工程**科研方向的记忆进行了优化。**其他学科均可定制优化**。*
+
+### 自动检索触发
 
 当查询涉及以下领域时，系统自动检索研究记忆：
 
@@ -185,6 +227,48 @@ init()
 
 # 存储记忆
 call("store_memory",
+---
+
+## 快速安装
+
+### Hermes-Agent（推荐 — 100% 自动存取）
+
+```bash
+# 安装为 MemoryProvider 插件
+cp -r echomind_memory.skill ~/.hermes/plugins/echomind/
+hermes config set memory.provider echomind
+
+# 启动 Hermes — EchoMind 自动初始化
+hermes
+```
+
+**效果：** 每轮对话自动存入、自动检索。无需 LLM 决策，无需手动操作。
+
+### OpenClaw / OpenCode / Claude Code（HTTP 模式）
+
+```bash
+# 安装依赖
+pip install -r requirements.txt
+
+# 启动 HTTP 服务
+cd ~/.openclaw/skills/echomind-memory && python3 main.py
+# 或
+cd ~/.opencode/skills/echomind-memory && python3 main.py
+```
+
+服务运行在 `http://localhost:8005`，LLM 根据 skill 触发规则调用记忆工具。
+
+### Python 快速上手
+
+```python
+import sys; sys.path.insert(0, '/path/to/echomind_memory.skill')
+from core.memory_agent import MainMemoryAgent
+
+agent = MainMemoryAgent()
+agent.enable_persistence()
+
+# 存储记忆（平台感知）
+agent.store(
     user_id="alice",
     task_id="task-001",
     context=[{"role": "user", "content": "供应链协调有哪些常见模型"}],
@@ -236,6 +320,76 @@ EchoMind Memory System (v1.0.10, 纯 SQLite)
 ├── Knowledge Memory  (领域知识)               → knowledge_memory 表
 ├── Research Memory   (论文/笔记)             → research_papers + research_notes
 └── RL Optimizer      (反馈自优化，权重持久化)
+    platform="hermes",  # 或 "openclaw", "opencode"
+)
+
+# 检索记忆
+result = agent.retrieve_for_task(
+    task_context="供应链协调",
+    user_id="alice",
+    platform="hermes",
+)
+for m in result["retrieved_memories"]:
+    print(f"[{m.source}] {m.content[:80]} (重要度={m.importance})")
+
+# 记录反馈（RL 自我进化）
+agent.record_feedback(
+    user_id="alice",
+    task_id="task-001",
+    feedback="positive",
+    retrieved_memories=result["retrieved_memories"],
+)
+
+agent.disable_persistence()
+```
+
+---
+
+## API 端点（HTTP 模式）
+
+| 方法 | 端点 | 说明 |
+|------|------|------|
+| `POST` | `/api/memory/retrieve` | 检索任务记忆（支持 `platform` 参数） |
+| `POST` | `/api/memory/store` | 存储对话上下文（支持 `platform` 参数） |
+| `POST` | `/api/memory/feedback` | 记录反馈用于 RL 优化 |
+| `POST` | `/api/memory/sync-code` | 同步项目代码风格记忆 |
+| `POST` | `/api/research/paper` | 添加研究论文 |
+| `POST` | `/api/research/note` | 添加研究笔记 |
+| `GET` | `/api/research/papers` | 列出研究论文 |
+| `GET` | `/health` | 健康检查 |
+
+---
+
+## 数据存储
+
+所有持久化数据存储在 `~/.echomind/memory.db`（SQLite 文件）。可随时备份或删除。
+
+一个文件，7 张表，零基础设施。
+
+---
+
+## 项目结构
+
+```
+echomind_memory.skill/
+├── core/                  ← 平台无关记忆引擎
+│   ├── __init__.py
+│   ├── memory_agent.py    ← 6 Agent + RL
+│   ├── storage/
+│   │   └── sqlite_store.py ← 7 表 SQLite（WAL 模式）
+│   ├── models/            ← Pydantic 数据模型
+│   └── learning/          ← RL 权重优化器
+├── adapters/              ← 平台适配层
+│   ├── hermes_provider.py ← Hermes MemoryProvider
+│   └── http_api.py        ← FastAPI HTTP
+├── main.py                ← 统一入口
+├── plugin.yaml            ← Hermes 插件元数据
+├── skill.yaml             ← OpenClaw 工具定义
+├── example/               ← 各平台调用示例
+├── code_format/           ← OpenCode CLI 集成
+├── README.md              ← 英文版
+├── README.zh-CN.md        ← 中文版（本文件）
+└── doc/                   ← 文档与开发日志
 ```
 
 ---
