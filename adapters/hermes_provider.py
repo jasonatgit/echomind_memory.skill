@@ -1,5 +1,5 @@
 # EchoMind Memory — Hermes MemoryProvider 适配器
-# 实现 Hermes 的 MemoryProvider 接口，提供 100% 自动化的记忆存取
+# 实现 Hermes v0.13.0+ 的 MemoryProvider 接口，提供 100% 自动化的记忆存取
 #
 # 安装：复制到 ~/.hermes/plugins/echomind-memory/
 # 激活：hermes config set memory.provider echomind
@@ -30,6 +30,9 @@ class EchomindMemoryProvider:
     自动调用时序（由 Hermes run_agent.py 负责）：
     - 每轮前: prefetch(query, session_id) → 检索记忆，注入 system prompt
     - 每轮后: sync_turn(user, assistant, session_id) → 存储本轮对话
+    - 每轮后: queue_prefetch(query, session_id) → 排队下轮检索
+    - 会话切换: on_session_switch(new_sid, ...) → 更新 session 状态
+    - 压缩前: on_pre_compress(messages) → 提取即将被压缩的记忆
     - 会话结束: shutdown() → 持久化 + 清理
     
     也暴露 memory_search/memory_retrieve 工具，LLM 可显式调用。
@@ -43,6 +46,7 @@ class EchomindMemoryProvider:
         self._user_id: str = ""
         self._turn_count: int = 0
         self._context_buffer: List[Dict] = []
+        self._skip_writes: bool = False  # non-primary context 跳过写入
 
     # ═══════════════════════════════════════════════════
     # 生命周期
@@ -53,7 +57,23 @@ class EchomindMemoryProvider:
         return True
 
     def initialize(self, session_id: str, **kwargs):
-        """Hermes 启动时调用，连接 SQLite + 加载历史记忆"""
+        """Hermes 启动时调用，连接 SQLite + 加载历史记忆
+        
+        kwargs 可能包含: hermes_home, platform, agent_context, user_id 等。
+        agent_context 用于区分 primary/subagent/cron/flush 场景。
+        """
+        # 非 primary context（subagent/cron/flush）不写入用户记忆
+        agent_ctx = kwargs.get("agent_context", "primary")
+        if agent_ctx != "primary":
+            logger.info(
+                "EchoMind: skipping initialize for non-primary context=%s session=%s",
+                agent_ctx, session_id,
+            )
+            self._skip_writes = True
+            self._session_id = session_id
+            return
+
+        self._skip_writes = False
         self._session_id = session_id
         self._user_id = kwargs.get("user_id", session_id)
         self._turn_count = 0
@@ -92,7 +112,7 @@ class EchomindMemoryProvider:
         Returns:
             格式化的记忆文本，注入到当前对话的 messages 中
         """
-        if not self._agent:
+        if self._skip_writes or not self._agent:
             return ""
 
         try:
@@ -107,9 +127,17 @@ class EchomindMemoryProvider:
             logger.error(f"prefetch error: {e}")
             return ""
 
+    def queue_prefetch(self, query: str, session_id: str = "") -> None:
+        """排队后台预取——Hermes v0.13.0+ 新增接口。
+        
+        echomind 的 prefetch 是同步的（本地 SQLite），无需排队，
+        但需要存在以兼容 MemoryProvider ABC。
+        """
+        pass
+
     def sync_turn(self, user_content: str, assistant_content: str, session_id: str):
         """每轮对话后自动调用 — 存储本轮对话到 SQLite"""
-        if not self._agent:
+        if self._skip_writes or not self._agent:
             return
 
         self._turn_count += 1
@@ -179,23 +207,28 @@ class EchomindMemoryProvider:
         ]
 
     def handle_tool_call(self, tool_name: str, args: Dict[str, Any]) -> str:
-        """处理 LLM 显式调用的工具"""
+        """处理 LLM 显式调用的工具。
+        
+        Hermes ABC 要求返回 JSON 字符串。
+        """
         if not self._agent:
-            return "EchoMind 未初始化"
+            return json.dumps({"error": "EchoMind 未初始化"}, ensure_ascii=False)
 
         try:
             if tool_name == "memory_search":
-                return self._search(args.get("query", ""))
+                result = self._search(args.get("query", ""))
+                return json.dumps({"result": result}, ensure_ascii=False)
             elif tool_name == "memory_retrieve":
-                return self._retrieve(args.get("detail_level", "brief"))
+                result = self._retrieve(args.get("detail_level", "brief"))
+                return json.dumps({"result": result}, ensure_ascii=False)
             else:
-                return f"未知工具: {tool_name}"
+                return json.dumps({"error": f"未知工具: {tool_name}"}, ensure_ascii=False)
         except Exception as e:
             logger.error(f"handle_tool_call error: {e}")
-            return f"记忆操作失败: {str(e)}"
+            return json.dumps({"error": f"记忆操作失败: {str(e)}"}, ensure_ascii=False)
 
     # ═══════════════════════════════════════════════════
-    # 可选钩子
+    # 可选钩子（Hermes v0.13.0+ 规范）
     # ═══════════════════════════════════════════════════
 
     def on_turn_start(self, turn_number: int, message: str, **kwargs):
@@ -203,24 +236,96 @@ class EchomindMemoryProvider:
         self._turn_count = turn_number
 
     def on_session_end(self, messages: List[Dict]):
-        """会话结束时的钩子"""
-        if self._agent and messages:
-            try:
-                self._agent.store(
-                    user_id=self._user_id,
-                    task_id=f"{self._session_id}:summary",
-                    context=messages[-10:],  # 最近 10 轮
-                    task_status="session_end",
-                    success=True,
-                    platform=PLATFORM,
-                )
-                logger.info("on_session_end: session summary stored")
-            except Exception as e:
-                logger.error(f"on_session_end error: {e}")
+        """会话结束时的钩子。
+        
+        存储会话摘要到长期记忆。
+        """
+        if self._skip_writes or not self._agent or not messages:
+            return
+        try:
+            self._agent.store(
+                user_id=self._user_id,
+                task_id=f"{self._session_id}:summary",
+                context=messages[-10:],  # 最近 10 轮
+                task_status="session_end",
+                success=True,
+                platform=PLATFORM,
+            )
+            logger.info("on_session_end: session summary stored")
+        except Exception as e:
+            logger.error(f"on_session_end error: {e}")
+
+    def on_session_switch(
+        self,
+        new_session_id: str,
+        parent_session_id: str = "",
+        reset: bool = False,
+        **kwargs,
+    ):
+        """会话切换时调用（Hermes v0.13.0+ 新增）。
+        
+        /resume, /branch, /reset, context 压缩等操作会触发。
+        更新内部 session_id 状态，确保后续写入使用正确的 session。
+        """
+        if reset:
+            # /new, /reset: 清空缓冲
+            self._context_buffer = []
+            self._turn_count = 0
+        self._session_id = new_session_id
+        logger.info(
+            "on_session_switch: new=%s parent=%s reset=%s",
+            new_session_id, parent_session_id, reset,
+        )
+
+    def on_pre_compress(self, messages: List[Dict[str, Any]]) -> str:
+        """上下文压缩前调用（Hermes v0.13.0+ 新增）。
+        
+        在消息被丢弃前提取其中可保留的记忆。
+        返回空字符串表示不贡献额外压缩提示（记忆已自动存储）。
+        """
+        if self._skip_writes or not self._agent or not messages:
+            return ""
+        try:
+            # 将即将被压缩的消息存入长期记忆
+            self._agent.store(
+                user_id=self._user_id,
+                task_id=f"{self._session_id}:compress",
+                context=messages[-20:],
+                task_status="compressed",
+                success=True,
+                platform=PLATFORM,
+            )
+            logger.debug("on_pre_compress: %d messages preserved", min(20, len(messages)))
+        except Exception as e:
+            logger.error(f"on_pre_compress error: {e}")
+        return ""
+
+    def on_delegation(self, task: str, result: str, child_session_id: str = "", **kwargs):
+        """子 agent 完成时调用（Hermes v0.13.0+ 新增）。
+        
+        将子 agent 的任务和结果作为经验存储。
+        """
+        if self._skip_writes or not self._agent:
+            return
+        try:
+            self._agent.store(
+                user_id=self._user_id,
+                task_id=f"{self._session_id}:delegation:{child_session_id}",
+                context=[
+                    {"role": "user", "content": f"[Delegation Task]\n{task}"},
+                    {"role": "assistant", "content": f"[Delegation Result]\n{result[:2000]}"},
+                ],
+                task_status="delegated",
+                success=True,
+                platform=PLATFORM,
+            )
+            logger.debug("on_delegation: child=%s stored", child_session_id)
+        except Exception as e:
+            logger.error(f"on_delegation error: {e}")
 
     def on_memory_write(self, action: str, target: str, content: str, metadata: Optional[Dict] = None):
         """镜像 Hermes 内置记忆的写入操作"""
-        if not self._agent:
+        if self._skip_writes or not self._agent:
             return
         mirror = [
             {"role": "system", "content": f"[Memory {action}] target={target}"},

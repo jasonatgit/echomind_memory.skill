@@ -131,7 +131,7 @@ elif __name__ == "__main__":
     import uvicorn
 
     print("=" * 60)
-    print("  EchoMind Memory v1.0.9 — HTTP API Mode")
+    print("  EchoMind Memory v1.0.10 — HTTP API Mode")
     print("  Endpoint: http://localhost:8005")
     print("  Docs:     http://localhost:8005/docs")
     print("=" * 60)
