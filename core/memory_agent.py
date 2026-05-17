@@ -622,17 +622,21 @@ class MainMemoryAgent:
         return note_id
 
     def _infer_user_preferences(self, context: List[Dict], user_id: str):
+        """从对话中推理用户偏好，写入 preferences 字典（v1.0.8 修复：之前误写非模型字段导致静默失败）"""
+        prefs = self.user_agent.get(user_id).get("preferences", {})
         concise_count = sum(1 for msg in context if "简短" in msg["content"] or "简洁" in msg["content"])
         if concise_count >= 2:
-            self.user_agent.update(user_id, "response_style", "concise", source="implicit")
+            prefs["response_style"] = "concise"
         if any("type hint" in msg["content"] for msg in context) or any(
             "Optional[str]" in msg["content"] for msg in context
         ):
-            self.user_agent.update(user_id, "code_style", "detailed", source="implicit")
+            prefs["code_style"] = "detailed"
         elif any("简洁" in msg["content"] for msg in context) or any(
             "不要注释" in msg["content"] for msg in context
         ):
-            self.user_agent.update(user_id, "code_style", "concise", source="implicit")
+            prefs["code_style"] = "concise"
+        if prefs:
+            self.user_agent.update(user_id, "preferences", prefs, source="implicit")
 
     def record_feedback(self, user_id: str, task_id: str, feedback: str, retrieved_memories: List[Dict]):
         if feedback not in ["positive", "negative"]:

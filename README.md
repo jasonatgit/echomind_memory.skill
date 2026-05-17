@@ -106,9 +106,17 @@ When queries touch these domains, research memory is automatically retrieved:
 | Project Management | critical path, project management |
 | Queuing Theory | queuing |
 
+| Feature | Description |
+|---------|-------------|
+| **Hermes Adapter Plugin** | Implements Hermes memory interface automatic read and write each cycle. Code-driven, no LLM decision required, 100% reliable |
+| **Platform-aware Memory** | All contextual memories are tagged with the platform (hermes/openclaw/opencode); same platform weight ×1.0, cross-platform ×0.5; user preferences isolated by platform |
+| **WAL Concurrent Mode** | Supports multi-process concurrent read and write |
+| **Automatic Migration** | Automatic migration |
+| **User Preferences Isolated by Platform** | Different users, different applications, different platforms have independent preferences, isolating your memory |
 
 ---
 
+## Supported Platforms
 
 ## Quick Install
 
@@ -121,27 +129,34 @@ Install EchoMind skills from: https://github.com/jasonatgit/echomind_memory.skil
 
 ### 1. Install
 
-```bash
-pip install -r requirements.txt
-```
+| Capability | Description |
+|------------|-------------|
+| **6 Memory Types** | Context / Task / User / Knowledge / Experience / Research |
+| **RL Auto-optimization** | Weights auto-adjust based on positive/negative feedback |
+| **Research Memory** | Paper metadata, models, methods, notes |
+| **Code Style Memory** | Type hints, comment style, function length, project conventions |
+| **Experience Reuse** | Previously fixed bugs / used models → auto-suggest next time |
+| **Zero-Dependency Storage** | Pure SQLite, no Docker/PostgreSQL/Redis required |
+| **Cross-Framework** | LLM-independent; works with any platform that supports HTTP or MCP |
 
 Only 3 packages: `pydantic` + `python-dotenv` + `numpy`. SQLite is a built-in Python module.
 
 ### 2. Integrate with Your AI Agent
 
-#### OpenClaw / Hermes-Agent
+When queries touch these domains, research memory is automatically retrieved:
 
 Place the entire `echomind_memory.skill/` folder into your `skills/` directory — the framework will auto-load all tools.
 
 The framework discovers tools via `skill.yaml`, then calls `main.call(tool_name, **kwargs)` for dispatch. No extra configuration needed.
 
-#### Claude Code / Cursor
+## Quick Start
 
 Run the sync command in your project root:
 
 ```bash
-python -m example.cursor_sync_example
-```
+# Install as MemoryProvider plugin
+cp -r echomind_memory.skill ~/.hermes/plugins/echomind/
+hermes config set memory.provider echomind
 
 Or call via code:
 
@@ -165,19 +180,19 @@ python -m example.opencode_call alice "supply chain coordination model"
 
 Output can be directly injected into LLM prompt:
 
-```python
-memory = subprocess.check_output([
-    "python", "-m", "example.opencode_call", user_id, query
-], text=True, encoding="utf-8")
-prompt += f"\n\n=== EchoMind Memory ===\n{memory}"
+# Start HTTP service
+cd ~/.openclaw/skills/echomind-memory && python3 main.py
+# or
+cd ~/.opencode/skills/echomind-memory && python3 main.py
 ```
 
----
+Service runs on `http://localhost:8005`. The LLM calls memory tools based on skill triggers.
 
 ## Quickstart
 
 ```python
-from main import call, init
+import sys; sys.path.insert(0, '/path/to/echomind_memory.skill')
+from core.memory_agent import MainMemoryAgent
 
 # Initialize SQLite persistence (auto-creates ~/.echomind/memory.db)
 init()
@@ -189,6 +204,7 @@ call("store_memory",
     context=[{"role": "user", "content": "What are common supply chain coordination models?"}],
     task_status="completed",
     success=True,
+    platform="hermes",  # or "openclaw", "opencode"
 )
 
 # Retrieve memory
@@ -201,8 +217,10 @@ call("record_feedback",
     user_id="alice",
     task_id="task-001",
     feedback="positive",
-    retrieved_memories=result["working_memory"],
+    retrieved_memories=result["retrieved_memories"],
 )
+
+agent.disable_persistence()
 ```
 
 ---
