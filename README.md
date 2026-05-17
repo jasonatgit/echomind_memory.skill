@@ -3,166 +3,167 @@
 [![Claude Code Supported](https://img.shields.io/badge/Claude%20Code-Supported-orange)](https://claude.ai/code)
 [![OpenCode Compatible](https://img.shields.io/badge/OpenCode-Compatible-red)](https://github.com/open-code-ai)
 
-# EchoMind Skill —— 让你的 AI 拥有永久记忆与个人知识风格学习能力
+# EchoMind Skill — Give Your AI Permanent Memory and Self-Evolving Knowledge
 
-> 全球首个支持 OpenClaw、Hermes-Agent、Claude Code (Cursor) 和 OpenCode 生态的长期记忆 Skill。
-> 让你的 AI 不再"失忆"——记得你的偏好、研究方法、编码风格，甚至自我进化。
+🌐 **中文版:** [README.zh-CN.md](README.zh-CN.md)
 
-📦 项目地址
-GitHub: https://github.com/jasonatgit/echomind_memory.skill
-Star 它，让 AI 记得你。
+> A cross-platform long-term memory Skill for OpenClaw, Hermes-Agent, Claude Code (Cursor), and OpenCode.
+> Your AI remembers your preferences, research methods, coding style — and self-evolves.
+
+📦 **Repository:** https://github.com/jasonatgit/echomind_memory.skill
 
 
-### 新增功能
+### Features
 
-| 功能 | 说明 |
+| Feature | Description |
 |------|------|
-| **Hermes Agent记忆插件** | 实现 Hermes Agent记忆接口每轮自动取。代码驱动，无需 LLM 决策，100% 可靠 |
-| **平台感知记忆** | 所有上下文记忆打上标签（hermes/openclaw/opencode）；同平台权重不变，跨平台降低；用户偏好隔离 |
-| **WAL 并发模式** | 支持多进程并发读写 |
-| **自动迁移，新旧数据区隔** | 自动迁移，旧数据标记 |
-| **用户偏好按平台隔离** | 不同不同龙虾(Openclaw)、Opencode等隔离记忆 |
+| **Hermes Agent Memory Plugin** | Implements Hermes Agent memory interface for automatic per-turn read/write. Code-driven, no LLM decision required, 100% reliable |
+| **Platform-Aware Memory** | All contextual memories tagged with platform (hermes/openclaw/opencode); same platform weight unchanged, cross-platform reduced; user preferences isolated by platform |
+| **WAL Concurrent Mode** | Supports multi-process concurrent read/write |
+| **Auto Migration** | Automatic migration with legacy data isolation |
+| **Isolated User Preferences by Platform** | Different platforms (OpenClaw, OpenCode, etc.) have independent memory |
 
 ---
 
-## 版本更新
+## Version History
 
-### v1.0.10 — Hermes v0.14.0 完整适配 (2026-05-17)
+### v1.0.10 — Hermes v0.14.0 Full Compatibility (2026-05-17)
 
-**新增 (MemoryProvider ABC 兼容):**
+**New (MemoryProvider ABC compliance):**
 
-| 方法 | 说明 |
+| Method | Description |
 |------|------|
-| `queue_prefetch()` | 兼容 Hermes v0.13.0+ 新增接口，消除每轮 error 日志 (was previously caused AttributeError on every turn) |
-| `on_session_switch()` | 修复 `/resume` `/branch` `/reset` 操作后 session_id 混乱 (fixes session ID corruption after session switch operations) |
-| `on_pre_compress()` | 上下文压缩前自动保存即将被丢弃的记忆 (auto-saves memories before context compression discards them) |
-| `on_delegation()` | 子 agent 任务经验自动存入长期记忆 (captures sub-agent task experience into long-term memory) |
+| `queue_prefetch()` | Compatible with Hermes v0.13.0+ new interface, eliminates per-turn AttributeError (was previously causing error logs on every turn) |
+| `on_session_switch()` | Fixes session ID corruption after `/resume` `/branch` `/reset` operations |
+| `on_pre_compress()` | Auto-saves memories before context compression discards them |
+| `on_delegation()` | Captures sub-agent task experience into long-term memory |
 
-**修复:**
+**Fixes:**
 
-| 项目 | 说明 |
+| Item | Description |
 |------|------|
-| `agent_context` 过滤 | 自动识别并跳过 `cron` / `subagent` / `flush` 等非主上下文，防止污染用户记忆 (auto-detects and skips non-primary contexts to prevent memory contamination) |
-| `handle_tool_call` JSON | 工具调用返回值改为 JSON 字符串格式，符合 Hermes ABC 契约 (tool call returns now use JSON string format per Hermes ABC contract) |
-| 写守卫统一 | `prefetch` / `sync_turn` / `on_session_end` / `on_memory_write` 统一使用 `skip_writes` 守卫 (all write methods now use unified skip_writes guard) |
+| `agent_context` Filter | Auto-detects and skips `cron` / `subagent` / `flush` non-primary contexts to prevent memory contamination |
+| `handle_tool_call` JSON | Tool call return value now uses JSON string format, compliant with Hermes ABC contract |
+| Unified Write Guard | `prefetch` / `sync_turn` / `on_session_end` / `on_memory_write` now use unified `skip_writes` guard |
 
-### v1.0.9 — OpenClaw / OpenCode / Claude Code 三平台兼容修复 (2026-05-16)
+### v1.0.9 — OpenClaw / OpenCode / Claude Code Platform Fixes (2026-05-16)
 
-| 修复项 | 影响平台 |
+| Fix | Platforms |
 |--------|---------|
-| `main.py` 新增 `call()` 调度函数 | OpenClaw |
-| `http_api.py` retrieve/store 端点透传 `platform` 参数 | 全部平台 |
-| `code_format/cli.py` 修复 async→sync 崩溃 | OpenCode |
-| `skill.yaml` 新增 `platform` 参数 + `openclaw.call` 声明 | OpenClaw |
+| `main.py` added `call()` dispatch function | OpenClaw |
+| `http_api.py` retrieve/store endpoints pass `platform` param | All |
+| `code_format/cli.py` fixed async→sync crash | OpenCode |
+| `skill.yaml` added `platform` param + `openclaw.call` declaration | OpenClaw |
 
-### v1.0.8 — 平台感知记忆 + Hermes 适配器 (2026-05-15)
+### v1.0.8 — Platform-Aware Memory + Hermes Adapter (2026-05-15)
 
-- 平台感知记忆：同平台权重 ×1.0，跨平台 ×0.5
-- Hermes Agent 插件：实现 MemoryProvider 接口，每轮自动存取
-- WAL 并发模式 + 自动数据迁移
+- Platform-aware memory: same-platform weight ×1.0, cross-platform ×0.5
+- Hermes Agent plugin: implements MemoryProvider interface, automatic per-turn read/write
+- WAL concurrent mode + auto data migration
 
 
-
----
-
-## 支持框架
-
-| 框架 | 支持方式 |
-|------|----------|
-| **Hermes-Agent** | 通过 `call()` 通用接口 |
-| **OpenClaw** | 通过 `skill.yaml` + `main.py` 工具调用 |
-| **Claude Code (Cursor)** | 自动写入 `.echomind/` 文件，AI 自动读取上下文 |
-| **OpenCode (Devika / CodeAct)** | 通过 CLI + JSON Schema 标准化记忆格式 |
 
 ---
 
-## 核心能力
+## Supported Platforms
 
-| 功能 | 说明 |
+| Platform | Integration | Reliability |
+|----------|-------------|-------------|
+| **Hermes-Agent** | Via `call()` generic interface | ★★★★★ 100% |
+| **OpenClaw** | Via `skill.yaml` + `main.py` tool calls | ★★★★☆ LLM-decision |
+| **OpenCode (Devika / CodeAct)** | Via CLI + JSON Schema standardized format | ★★★★☆ LLM-decision |
+| **Claude Code (Cursor)** | Auto-write `.echomind/` files, AI auto-reads context | ★★★★☆ LLM-decision |
+
+---
+
+## Core Capabilities
+
+| Capability | Description |
 |------|------|
-| **六类记忆系统** | Context / Task / User / Knowledge / Experience / Research |
-| **强化学习自动优化** | 根据用户正/负反馈，AI 自动调整记忆权重，越用越聪明 |
-| **研究方向记忆** | 记录论文元数据、理论模型、算法方法以及研究笔记 |
-| **代码风格记忆** | 记录你是否喜欢 type hint、注释风格、函数长度 |
-| **经验沉淀与复用** | 上次修复的问题 / 用过的算法模型 → 下次自动推荐 |
-| **零依赖本地存储** | SQLite 持久化，无需 Docker / PostgreSQL / Redis |
-| **跨框架兼容** | 独立于任何 LLM，适配 OpenClaw / Hermes / Claude Code / OpenCode |
+| **6 Memory Types** | Context / Task / User / Knowledge / Experience / Research |
+| **RL Auto-Optimization** | AI automatically adjusts memory weights based on positive/negative feedback — gets smarter with every use |
+| **Research Memory** | Stores paper metadata, theoretical models, algorithms, and research notes |
+| **Code Style Memory** | Records your type hint, comment, and function length preferences |
+| **Experience Reuse** | Previously fixed bugs / used models → auto-suggested next time |
+| **Zero-Dependency Local Storage** | SQLite persistence, no Docker / PostgreSQL / Redis required |
+| **Cross-Framework** | LLM-independent; adapts to OpenClaw / Hermes / Claude Code / OpenCode |
 
-*记忆系统专门针对**管理科学与工程**科研方向的记忆进行了优化，对查询的研究论文、理论模型、研究方法进行存储。**其他学科均可定制优化**。*
+*Memory system optimized for **Management Science & Engineering** research. **All domains customizable**.*
 
-### 自动检索
+### Auto-Retrieval
 
-当查询涉及以下领域时，系统自动检索研究记忆：
+When queries touch these domains, research memory is automatically retrieved:
 
-| 领域 | 触发关键词 |
+| Domain | Trigger Keywords |
 |------|-----------|
-| 运筹学 | 线性规划, 整数规划, operations research |
-| 供应链 | 供应链, 库存, 物流, supply chain |
-| 决策分析 | 决策分析, 多准则, AHP |
-| 最优化 | 优化, 最优, 梯度 |
-| 仿真模拟 | 仿真, 蒙特卡洛, simulation |
-| 博弈论 | 博弈论, 纳什均衡 |
-| 预测 | 时间序列, forecasting |
-| 项目管理 | 关键路径, project management |
-| 排队论 | 排队论, queuing |
+| Operations Research | linear programming, integer programming, operations research |
+| Supply Chain | supply chain, inventory, logistics |
+| Decision Analysis | decision analysis, multi-criteria, AHP |
+| Optimization | optimization, optimal, gradient |
+| Simulation | simulation, Monte Carlo |
+| Game Theory | game theory, Nash equilibrium |
+| Forecasting | time series, forecasting |
+| Project Management | critical path, project management |
+| Queuing Theory | queuing |
 
 
 ---
 
 
-## 快速安装
+## Quick Install
 
-### 一句话安装
-在龙虾（OpenClaw）、Hermes-agent、opencode中直接说，或copy/paste：
+### One-Line Install
+
+In OpenClaw, Hermes-agent, or OpenCode, simply say or copy/paste:
 ```bash
-安装EchoMind skills：https://github.com/jasonatgit/echomind_memory.skill
+Install EchoMind skills from: https://github.com/jasonatgit/echomind_memory.skill
 ```
 
-### 1. 安装
+### 1. Install
 
 ```bash
 pip install -r requirements.txt
 ```
 
-只需 3 个包：`pydantic` + `python-dotenv` + `numpy`，SQLite 是 Python 内置模块。
+Only 3 packages: `pydantic` + `python-dotenv` + `numpy`. SQLite is a built-in Python module.
 
-### 2. 整合进你的 AI Agent
+### 2. Integrate with Your AI Agent
 
 #### OpenClaw / Hermes-Agent
 
-把整个 `echomind_memory.skill/` 文件夹放入你的 `skills/` 目录下 —— 框架将自动加载所有工具。
+Place the entire `echomind_memory.skill/` folder into your `skills/` directory — the framework will auto-load all tools.
 
-框架通过 `skill.yaml` 发现工具定义，然后调用 `main.call(tool_name, **kwargs)` 完成调度。无需额外配置。
+The framework discovers tools via `skill.yaml`, then calls `main.call(tool_name, **kwargs)` for dispatch. No extra configuration needed.
 
 #### Claude Code / Cursor
 
-在你的项目根目录运行同步命令：
+Run the sync command in your project root:
 
 ```bash
 python -m example.cursor_sync_example
 ```
 
-或在代码中调用：
+Or call via code:
 
 ```python
 from main import call
 call("sync_code_memory", project_root="/path/to/project", user_id="alice")
 ```
 
-自动生成两个文件供 AI 读取：
+Automatically generates two files for AI consumption:
 
-- `.echomind/context.json`：结构化偏好与经验
-- `.echomind/README.md`：人类可读摘要
+- `.echomind/context.json`: Structured preferences and experience
+- `.echomind/README.md`: Human-readable summary
 
 #### OpenCode
 
-通过 CLI 获取标准化 JSON 记忆：
+Get standardized JSON memory via CLI:
 
 ```bash
-python -m example.opencode_call alice "供应链协调模型"
+python -m example.opencode_call alice "supply chain coordination model"
 ```
 
-输出可直接注入 LLM prompt：
+Output can be directly injected into LLM prompt:
 
 ```python
 memory = subprocess.check_output([
@@ -173,29 +174,29 @@ prompt += f"\n\n=== EchoMind Memory ===\n{memory}"
 
 ---
 
-## 快速上手
+## Quickstart
 
 ```python
 from main import call, init
 
-# 初始化 SQLite 持久化（自动创建 ~/.echomind/memory.db）
+# Initialize SQLite persistence (auto-creates ~/.echomind/memory.db)
 init()
 
-# 存储记忆
+# Store memory
 call("store_memory",
     user_id="alice",
     task_id="task-001",
-    context=[{"role": "user", "content": "供应链协调有哪些常见模型"}],
+    context=[{"role": "user", "content": "What are common supply chain coordination models?"}],
     task_status="completed",
     success=True,
 )
 
-# 检索记忆
-result = call("retrieve_memory", user_id="alice", query="供应链协调模型")
+# Retrieve memory
+result = call("retrieve_memory", user_id="alice", query="supply chain coordination")
 for m in result["working_memory"]:
     print(f"[{m['source']}] {m['content'][:80]}")
 
-# 记录反馈（AI 自我进化）
+# Record feedback (AI self-evolution)
 call("record_feedback",
     user_id="alice",
     task_id="task-001",
@@ -206,46 +207,46 @@ call("record_feedback",
 
 ---
 
-## 示例文件
+## Example Files
 
-| 文件 | 说明 |
+| File | Description |
 |------|------|
-| `example/hermes_call_example.py` | Hermes-Agent 完整使用示例 |
-| `example/openclaw_call.py` | OpenClaw 完整使用示例（含 research 论文） |
-| `example/cursor_sync_example.py` | Claude Code / Cursor 记忆同步示例 |
-| `example/opencode_call.py` | OpenCode CLI 和 API 两种使用方式 |
+| `example/hermes_call_example.py` | Full Hermes-Agent usage example |
+| `example/openclaw_call.py` | Full OpenClaw usage example (with research papers) |
+| `example/cursor_sync_example.py` | Claude Code / Cursor memory sync example |
+| `example/opencode_call.py` | OpenCode CLI and API usage examples |
 
 ---
 
-## 数据存储
+## Data Storage
 
-所有持久化数据存储在 `~/.echomind/memory.db`（SQLite 文件），可随时备份或删除。
+All persistent data stored in `~/.echomind/memory.db` (SQLite file). Can be backed up or deleted at any time.
 
 ---
 
-## 架构
+## Architecture
 
 ```
-EchoMind Memory System (v1.0.8, 纯 SQLite)
-├── User Memory       (偏好/习惯/RL 权重)     → user_memory 表
-├── Task Memory       (任务状态/步骤)          → task_memory 表
-├── Experience Memory (成功/失败经验)          → experience_memory 表
-├── Context Memory    (对话上下文)             → context_memory 表
-├── Knowledge Memory  (领域知识)               → knowledge_memory 表
-├── Research Memory   (论文/笔记)             → research_papers + research_notes
-└── RL Optimizer      (反馈自优化，权重持久化)
+EchoMind Memory System (v1.0.10, Pure SQLite)
+├── User Memory       (preferences/habits/RL weights)  → user_memory table
+├── Task Memory       (task status/steps)               → task_memory table
+├── Experience Memory (success/failure experiences)     → experience_memory table
+├── Context Memory    (conversation context)            → context_memory table
+├── Knowledge Memory  (domain knowledge)                → knowledge_memory table
+├── Research Memory   (papers/notes)                    → research_papers + research_notes
+└── RL Optimizer      (feedback self-optimization, persistent weights)
 ```
 
 ---
 
-## 愿景
+## Vision
 
-AI 不是工具，是协作者。协作者不应该每次见面都"重新认识你"。
+AI is not a tool — it's a collaborator. A collaborator shouldn't have to "re-learn who you are" every session.
 
-EchoMind 让你的 AI：
+EchoMind gives your AI:
 
-- 记得你讨厌空行、喜欢 docstring
-- 记得你修复过 auth.py 的 XSS 漏洞
-- 记得你偏好用半参数模型而不是协方差建模
-- 记得你曾因为某个模型因子痛苦了 3 小时 → 下次自动避开
-- 这不是一个插件，这是 AI 的多智能体记忆神经网络
+- Memory of your coding style, preferences, and habits
+- Memory of bugs you've fixed and approaches you've tried
+- Memory of your preference for semi-parametric models over covariance modeling
+- Memory of that painful 3-hour debugging session → auto-avoid next time
+- This isn't just a plugin. This is a multi-agent memory neural network for your AI.
