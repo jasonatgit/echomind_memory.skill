@@ -1,5 +1,5 @@
 name: echomind_memory
-version: 1.0.8
+version: 1.0.9
 description: "A persistent memory system that lets your AI remember user preferences, tasks, knowledge, and self-learned experiences. Supports OpenClaw, Hermes, Claude Code, and OpenCode ecosystems."
 author: "jasonatgit"
 license: MIT
@@ -11,6 +11,9 @@ tags:
   - rl-optimization
   - agent-enhancement
   - code-memory
+
+openclaw:
+  call: call  # 使用 main.py 中的 call() 函数调度
 
 tools:
   - name: retrieve_memory
@@ -27,6 +30,9 @@ tools:
         task_id:
           type: string
           description: "Optional. ID of the ongoing task to continue from."
+        platform:
+          type: string
+          description: "Optional. Platform identifier for memory isolation (e.g. 'hermes', 'openclaw', 'claude')."
         max_results:
           type: integer
           default: 5
@@ -71,6 +77,9 @@ tools:
           type: string
         task_id:
           type: string
+        platform:
+          type: string
+          description: "Optional. Platform identifier for memory isolation."
         context:
           type: array
           items:
