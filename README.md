@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/banner.png" alt="echomind_memory.skill" width="100%">
+</p>
+
 [![OpenClaw Compatible](https://img.shields.io/badge/OpenClaw-Compatible-brightgreen)](https://github.com/OpenClaw)
 [![Hermes-Agent Ready](https://img.shields.io/badge/Hermes--Agent-Ready-blue)](https://github.com/Hermes-Agent)
 [![Claude Code Supported](https://img.shields.io/badge/Claude%20Code-Supported-orange)](https://claude.ai/code)
