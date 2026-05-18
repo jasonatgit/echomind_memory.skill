@@ -4,6 +4,7 @@ __pycache__/
 *.pyd
 env/
 doc/
+test/
 .gitignore
 .venv/
 venv/
