@@ -641,7 +641,7 @@ class MainMemoryAgent:
     def record_feedback(self, user_id: str, task_id: str, feedback: str, retrieved_memories: List[Dict]):
         if feedback not in ["positive", "negative"]:
             raise ValueError("feedback must be 'positive' or 'negative'")
-        from learning.rl_weight_optimizer import FeedbackRecord
+        from .learning.rl_weight_optimizer import FeedbackRecord
         feedback_record = FeedbackRecord(
             user_id=user_id, task_id=task_id,
             retrieved_memories=retrieved_memories, user_feedback=feedback,
