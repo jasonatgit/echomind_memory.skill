@@ -50,6 +50,7 @@ class StoreRequest(BaseModel):
     user_id: str
     platform: Optional[str] = None
     task_id: str
+    title: Optional[str] = None
     context: List[ContextMessage]
     task_status: str
     success: bool = False
@@ -101,13 +102,18 @@ async def api_retrieve(req: RetrieveRequest):
         )
         return {
             "working_memory": working,
+            "raw_memory_sources": result.get("raw_memory_sources", {}),
+            "experience_memory": result.get("raw_memory_sources", {}).get("experience", []),
+            "knowledge_memory": result.get("raw_memory_sources", {}).get("knowledge", []),
             "confidence_score": float(confidence),
             "used_weights": memory_agent.rl_optimizer.get_current_weights(),
             "feedback_requested": result.get("feedback_request", False),
         }
     except Exception as e:
         return {
-            "working_memory": [], "confidence_score": 0.0,
+            "working_memory": [], "raw_memory_sources": {},
+            "experience_memory": [], "knowledge_memory": [],
+            "confidence_score": 0.0,
             "used_weights": {}, "feedback_requested": False, "error": str(e),
         }
 
@@ -119,6 +125,7 @@ async def api_store(req: StoreRequest):
             [{"role": m.role, "content": m.content} for m in req.context],
             req.task_status, req.success, req.experience_summary,
             platform=req.platform,
+            title=req.title,
         )
         return {"status": "stored", "user_id": req.user_id, "task_id": req.task_id}
     except Exception as e:

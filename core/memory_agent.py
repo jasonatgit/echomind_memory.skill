@@ -417,13 +417,12 @@ class MainMemoryAgent:
 
         retrieved["user"] = self.user_agent.get(user_id, platform=platform)
 
-        if features["requires_knowledge"]:
-            retrieved["knowledge"] = self.knowledge_agent.search(
-                query=task_context, domain=features["domain"], top_k=5)
-        if features["is_complex"]:
-            retrieved["experience"] = self.experience_agent.find_similar_tasks(
-                task_context=task_context, task_type=features["task_type"],
-                min_success_rate=0.7, limit=3)
+        # Always retrieve knowledge and experience (Bug fix: previously gated on rigid keywords)
+        retrieved["knowledge"] = self.knowledge_agent.search(
+            query=task_context, domain=features["domain"], top_k=5)
+        retrieved["experience"] = self.experience_agent.find_similar_tasks(
+            task_context=task_context, task_type=features["task_type"],
+            min_success_rate=0.5, limit=5)
         if features["has_history"]:
             if task_id:
                 retrieved["task_progress"] = self.task_agent.get_task_progress(task_id)
@@ -519,30 +518,32 @@ class MainMemoryAgent:
             elif source == "context":
                 for ctx in memories:
                     messages = ctx.get("messages", [])
-                    preview = " ".join(
-                        m.get("content", "")[:60] for m in messages
-                        if m.get("role") in ("user", "assistant")
-                    )[:200]
-                    if preview:
-                        # Platform-aware weighting: 同平台 ×1.0, 跨平台 ×0.5
-                        ctx_platform = ctx.get("platform", "")
-                        platform_mult = 1.0 if (not platform or ctx_platform == platform) else 0.5
-                        scored.append(MemoryRecord(
-                            source="context",
-                            content=f"[{ctx_platform or 'unknown'}] Previous session: {preview}",
-                            importance=round(0.7 * platform_mult, 3),
-                            metadata={"session_id": ctx.get("session_id", ""),
-                                      "platform": ctx_platform},
-                        ))
+                    if not messages:
+                        continue
+                    # Preserve full message structure in metadata for reconstruction
+                    ctx_platform = ctx.get("platform", "")
+                    platform_mult = 1.0 if (not platform or ctx_platform == platform) else 0.5
+                    scored.append(MemoryRecord(
+                        source="context",
+                        content=json.dumps(messages, ensure_ascii=False),
+                        importance=round(0.7 * platform_mult, 3),
+                        metadata={
+                            "session_id": ctx.get("session_id", ""),
+                            "platform": ctx_platform,
+                            "messages": messages,
+                            "token_count": ctx.get("token_count", 0),
+                        },
+                    ))
 
         return scored
 
     def store(self, user_id: str, task_id: str, context: List[Dict],
               task_status: str, success: bool = False, experience_summary: str = None,
-              platform: str = None):
+              platform: str = None, title: str = None):
         for msg in context:
             self.context_agent.add_message(msg)
-        self.task_agent.create_task(user_id=user_id, task_id=task_id, title="自动任务",
+        task_title = title or "自动任务"
+        self.task_agent.create_task(user_id=user_id, task_id=task_id, title=task_title,
                                     steps=[{"step": "初始化", "status": task_status}])
         self._infer_user_preferences(context, user_id)
 
@@ -553,7 +554,7 @@ class MainMemoryAgent:
                 habits=user_data.get("habits", {}),
                 history=user_data.get("history", []),
                 platform=platform)
-            self.db.save_task(user_id, task_id, "自动任务", task_status,
+            self.db.save_task(user_id, task_id, task_title, task_status,
                               steps=[{"step": "初始化", "status": task_status}])
             # 保存上下文记忆（带 platform 标签）
             self.db.save_context(
