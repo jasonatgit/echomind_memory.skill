@@ -182,47 +182,93 @@ We sincerely thank the authors of the above papers for their pioneering work on 
 
 
 ---
+## 安装
 
-## 快速安装
 
-### 一句话安装 (最快最简单)
+### 方式一：一键安装（推荐，含开机自启）
 
-在龙虾（OpenClaw）、Hermes-agent、opencode中直接说或copy/paste下面一句话：
+安装脚本会自动完成以下操作：
+
+1. 复制文件到 `~/.hermes/skills/echomind-memory/`（Skill 目录）
+2. 复制文件到 `~/.hermes/plugins/echomind/`（MemoryProvider 插件目录）
+3. 生成默认配置文件 `~/.echomind/echomind_config.yaml`（已存在则跳过）
+4. 注册开机自启（systemd / launchd / 注册表）
 
 ```bash
-安装EchoMind-Memory.skill并启动服务。下载地址：https://github.com/jasonatgit/echomind_memory.skill
+# Linux / macOS / WSL
+./install.sh
+
+# Windows（PowerShell）
+.\install.ps1
 ```
 
-
-### 1. 安装
-
-
-### Hermes-Agent（推荐 — 100% 自动存取）
+安装完成后验证：
 
 ```bash
-# 安装为 MemoryProvider 插件
-cp -r echomind_memory.skill ~/.hermes/plugins/echomind/
+curl http://localhost:8005/health
+# 预期返回: {"status": "ok", "version": "1.1.0"}
+```
+
+---
+
+### 方式二：手工安装
+
+```bash
+# 1. 克隆仓库
+git clone https://github.com/jasonatgit/echomind_memory.skill.git
+cd echomind_memory.skill
+
+# 2. 安装 Python 依赖
+pip install -r requirements.txt
+
+# 3. 生成默认配置
+mkdir -p ~/.echomind
+cp echomind_config.yaml ~/.echomind/
+
+# 4. 启动 HTTP 服务
+python main.py
+# 服务运行在 http://localhost:8005
+```
+
+> **提示：** 如需开机自启，参考 `install.sh` 脚本中的 systemd / launchd / 注册表配置。
+
+---
+
+### Hermes-Agent 激活自动存取（推荐）
+
+完成上述安装后，还需额外激活 Hermes 的 MemoryProvider 插件——这一步让 Hermes 每轮对话自动存取记忆，无需 LLM 决策：
+
+```bash
+# 1. 安装插件文件（一键安装已自动完成此步，手工安装需手动执行）
+cp -r echomind_memory.skill/* ~/.hermes/plugins/echomind/
+
+# 2. 激活 MemoryProvider
 hermes config set memory.provider echomind
 
-# 启动 Hermes — EchoMind 自动初始化
-hermes
+# 3. 重启 Hermes 即可生效
 ```
 
-**效果：** 每轮对话自动存入、自动检索。无需 LLM 决策，无需手动操作。对话后自动触发自我反思——无需任何额外配置。
+**效果：** 每轮对话自动存入、自动检索。对话后自动触发自我反思——无需任何额外配置。
 
-### OpenClaw / OpenCode / Claude Code（HTTP 模式）
+---
+
+### OpenClaw / OpenCode / Claude Code
+
+将 EchoMind 安装到对应框架的 skills 目录，然后启动 HTTP 服务：
 
 ```bash
 # 安装依赖
 pip install -r requirements.txt
 
-# 启动 HTTP 服务
-cd ~/.openclaw/skills/echomind-memory && python3 main.py
-# 或
-cd ~/.opencode/skills/echomind-memory && python3 main.py
+# 复制到框架 skills 目录（按需选择）
+cp -r . ~/.openclaw/skills/echomind-memory/    # OpenClaw
+cp -r . ~/.opencode/skills/echomind-memory/    # OpenCode
+
+# 启动服务
+python main.py
 ```
 
-服务运行在 `http://localhost:8005`，LLM 根据 skill 触发规则调用记忆工具。
+服务运行在 `http://localhost:8005`，LLM 根据 skill 触发规则自动调用记忆工具。
 
 ### Python 快速上手
 

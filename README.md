@@ -78,6 +78,7 @@ When a query involves the following *domain keywords* or related *semantics*, th
 
 ---
 
+
 ## v1.1.0 New Features
 
 **Core Highlights:**
@@ -109,6 +110,7 @@ Liang, X., He, Y., Xia, Y., Song, X., Wang, J., Tao, M., Sun, L., Yuan, X., Su, 
 - **Paper:** [arXiv:2409.00872](https://arxiv.org/abs/2409.00872)
 - **Journal:** *Neurocomputing* (2025)
 
+
 ### 2. SRMA: Self-Reflective Memory Consolidation in Agentic Architectures
 
 Satya, P. R. B. (2026).
@@ -124,11 +126,14 @@ We sincerely thank the authors of the above papers for their pioneering work on 
 
 The technical design of this project's Self-Reflective Agent benefits from the inspiration of the above groundbreaking research. We extend our sincere academic gratitude to the paper authors.
 
-At the same time, EchoMind-Memory.skill's "self-evolution" primarily differs from the above scientific research in its adoption of **dependency inversion** (core engine with zero LLM coupling), **platform-aware isolation**, and **zero-configuration deployment** — making it directly usable in production Multi-Agent systems without additional infrastructure.
+At the same time, EchoMind-Memory.skill's "self-evolution" primarily differs from the above scientific research in its adoption of **dependency inversion** (core engine with zero LLM coupling), **platform-aware isolation**, and **zero-configuration deployment** — making it directly usable in production Multi-Agent systems without additional infrastructure. This is a production-grade agent application.
+
+
 
 ---
 
 ## Historical Version Notes
+
 
 ### v1.0.10 — Full Hermes v0.14.0 Compatibility (2026-05-17)
 
@@ -136,10 +141,12 @@ At the same time, EchoMind-Memory.skill's "self-evolution" primarily differs fro
 
 | Method | Description |
 |------|------|
-| `queue_prefetch()` | Compatible with the new Hermes v0.13.0+ interface, eliminating per-turn AttributeError logs |
-| `on_session_switch()` | Fixes session_id corruption after `/resume` `/branch` `/reset` operations |
-| `on_pre_compress()` | Auto-saves memories about to be discarded before context compression |
-| `on_delegation()` | Captures sub-agent task experience into long-term memory |
+| `queue_prefetch()` | Compatible with the new Hermes v0.13.0+ interface, eliminating per-turn AttributeError logs (was previously causing error logs on every turn) |
+| `on_session_switch()` | Fixes session ID corruption after `/resume` `/branch` `/reset` operations (fixes session ID corruption after session switch operations) |
+| `on_pre_compress()` | Auto-saves memories about to be discarded before context compression (auto-saves memories before context compression discards them) |
+| `on_delegation()` | Captures sub-agent task experience into long-term memory (captures sub-agent task experience into long-term memory) |
+
+
 
 ### v1.0.9 — OpenClaw / OpenCode / Claude Code Three-Platform Compatibility Fix (2026-05-16)
 
@@ -156,6 +163,7 @@ At the same time, EchoMind-Memory.skill's "self-evolution" primarily differs fro
 - Hermes Agent plugin: implements MemoryProvider interface, auto-save/load each turn
 - WAL concurrency mode + automatic data migration
 
+
 ## v1.0.8 Existing Features
 
 | Feature | Description |
@@ -168,43 +176,95 @@ At the same time, EchoMind-Memory.skill's "self-evolution" primarily differs fro
 
 
 
+
+
+
+
 ---
 
-## Quick Install
+## Installation
 
-### One-Line Install (Fastest & Easiest)
+### Option 1: One-Click Install (Recommended, with Auto-Start)
 
-In OpenClaw, Hermes-agent, or OpenCode, simply say or copy/paste:
+The install script automatically handles:
+
+1. Copies files to `~/.hermes/skills/echomind-memory/` (Skill directory)
+2. Copies files to `~/.hermes/plugins/echomind/` (MemoryProvider plugin directory)
+3. Generates default config `~/.echomind/echomind_config.yaml` (skips if exists)
+4. Registers auto-start (systemd / launchd / Registry)
 
 ```bash
-Install EchoMind-Memory.skill and start the service. Download: https://github.com/jasonatgit/echomind_memory.skill
+# Linux / macOS / WSL
+./install.sh
+
+# Windows (PowerShell)
+.\install.ps1
 ```
 
-### 1. Installation
-
-### Hermes-Agent (Recommended — 100% Auto Save/Load)
+Verify after installation:
 
 ```bash
-# Install as MemoryProvider plugin
-cp -r echomind_memory.skill ~/.hermes/plugins/echomind/
+curl http://localhost:8005/health
+# Expected: {"status": "ok", "version": "1.1.0"}
+```
+
+---
+
+### Option 2: Manual Install
+
+```bash
+# 1. Clone the repository
+git clone https://github.com/jasonatgit/echomind_memory.skill.git
+cd echomind_memory.skill
+
+# 2. Install Python dependencies
+pip install -r requirements.txt
+
+# 3. Generate default config
+mkdir -p ~/.echomind
+cp echomind_config.yaml ~/.echomind/
+
+# 4. Start HTTP service
+python main.py
+# Service runs at http://localhost:8005
+```
+
+> **Tip:** For auto-start, refer to the systemd / launchd / Registry setup in `install.sh`.
+
+---
+
+### Hermes-Agent Auto Memory (Recommended)
+
+After completing the installation above, activate the MemoryProvider plugin — this enables Hermes to auto-save and auto-retrieve memories on every turn, no LLM decisions required:
+
+```bash
+# 1. Install plugin files (already done by one-click install; manual install requires this step)
+cp -r echomind_memory.skill/* ~/.hermes/plugins/echomind/
+
+# 2. Activate MemoryProvider
 hermes config set memory.provider echomind
 
-# Start Hermes — EchoMind auto-initializes
-hermes
+# 3. Restart Hermes to take effect
 ```
 
-**Result:** Every turn auto-saved, auto-retrieved. No LLM decisions needed, no manual operations. Self-reflection auto-triggered after conversations — no additional configuration required.
+**Result:** Every turn auto-saved, auto-retrieved. Self-reflection auto-triggered after conversations — no additional configuration required.
 
-### OpenClaw / OpenCode / Claude Code (HTTP Mode)
+---
+
+### OpenClaw / OpenCode / Claude Code
+
+Install EchoMind to your framework's skills directory, then start the HTTP service:
 
 ```bash
 # Install dependencies
 pip install -r requirements.txt
 
-# Start HTTP service
-cd ~/.openclaw/skills/echomind-memory && python3 main.py
-# or
-cd ~/.opencode/skills/echomind-memory && python3 main.py
+# Copy to framework skills directory (choose as needed)
+cp -r . ~/.openclaw/skills/echomind-memory/    # OpenClaw
+cp -r . ~/.opencode/skills/echomind-memory/    # OpenCode
+
+# Start service
+python main.py
 ```
 
 Service runs at `http://localhost:8005`. LLM invokes memory tools based on skill trigger rules.
@@ -261,6 +321,9 @@ call("record_feedback",
 
 All persistent data is stored in `~/.echomind/memory.db` (SQLite file). Can be backed up or deleted at any time. The storage path can be customized via `storage.db_path` in `echomind_config.yaml`.
 
+
+
+
 ---
 
 ## Vision
@@ -273,4 +336,4 @@ EchoMind enables your AI to:
 - Remember the bugs you've fixed and approaches you've tried
 - Remember the papers and theoretical models you've researched
 - Possess an RL-driven self-optimizing weight system — gets smarter with every interaction
-- This is not a plugin, this is a **Multi-Agent Memory Neural Network** with *self-reflective memory*.
+- This is not a plugin, this is an **AI Multi-Agent Memory Neural Network** with *self-reflective memory*.
