@@ -9,7 +9,7 @@ from core.memory_agent import MainMemoryAgent
 
 
 def main():
-    if len(sys.argv) < 2:
+    if len(sys.argv) < 4:
         print("Usage: echomind-cli [read|write] <user_id> <project_id> [file_path]")
         sys.exit(1)
 
@@ -54,7 +54,9 @@ def main():
         if "experience" in data:
             for exp in data["experience"]:
                 agent.experience_agent.store_experience(
+                    user_id=user_id,
                     task_id=f"code_{exp['location']}",
+                    task_type="code_review",
                     success=exp["success"],
                     steps=[exp["summary"]],
                     summary=exp["summary"],

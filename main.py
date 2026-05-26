@@ -1,37 +1,39 @@
 #!/usr/bin/env python3
-# EchoMind Memory — 统一入口
-# 
-# HTTP 模式 (默认): python3 main.py
-#   启动 FastAPI 服务，供 OpenClaw / OpenCode / Claude Code 通过 HTTP 调用
+# EchoMind Memory — Unified entry point
 #
-# OpenClaw call() 模式: from main import call
-#   直接调用工具函数，供 OpenClaw skill.yaml 调度
+# HTTP mode (Default): python3 main.py
+#   start FastAPI service for Hermes / OpenClaw / OpenCode / Claude Code passed HTTP calls
 #
-# MCP 模式: python3 main.py --mcp  
-#   启动 MCP stdio 服务（未来实现）
+# Hermes call() mode: from main import call
+#   Direct tool function calls for Hermes skill.yaml dispatch
+#
+# MCP mode: python3 main.py --mcp
+#   start MCP stdio service（future implementation）
 
 import sys
 import os
 
-# 确保项目根目录在 sys.path
 _pkg_dir = os.path.dirname(os.path.abspath(__file__))
 if _pkg_dir not in sys.path:
     sys.path.insert(0, _pkg_dir)
 
 
-def call(tool_name: str, **kwargs):
-    """OpenClaw skill.yaml 调度入口
-    
-    将 skill.yaml 工具名称映射为 HTTP API 调用。
-    支持的工具：retrieve_memory, store_memory, record_feedback,
+def call(tool_name: str, config_path: str = None, **kwargs):
+    """Hermes skill.yaml Dispatch entry point
+
+    Supported tools: retrieve_memory, store_memory, record_feedback,
     sync_code_memory, add_research_paper, add_research_note
-    
-    用法：
-        from main import call
-        result = call("retrieve_memory", user_id="alice", query="...")
+
+    Config path priority:
+        call(config_path="./prod.yaml", ...)   ← explicitly passed
+        ECHOMIND_CONFIG environment variable               ← environment variable
+        ~/.echomind/echomind_config.yaml       ← HOME Default
     """
+    from core.config_manager import ConfigManager, get_config_manager
     from core.memory_agent import MainMemoryAgent
-    agent = MainMemoryAgent()
+
+    cfg = ConfigManager(config_path=config_path) if config_path else get_config_manager()
+    agent = MainMemoryAgent(config_manager=cfg)
     agent.enable_persistence()
 
     try:
@@ -121,23 +123,37 @@ def call(tool_name: str, **kwargs):
         agent.disable_persistence()
 
 
+def init(config_path: str = None):
+    """Initialize EchoMind persistence (auto-creates ~/.echomind/memory.db).
+
+    Call once before using call() for the first time in a Python script.
+    """
+    from core.memory_agent import MainMemoryAgent
+    from core.config_manager import get_config_manager
+    cfg = get_config_manager(config_path)
+    agent = MainMemoryAgent(config_manager=cfg)
+    agent.enable_persistence()
+    return agent
+
+
 if "--mcp" in sys.argv:
-    # TODO: MCP stdio 模式（未来实现）
     print("MCP stdio mode not yet implemented. Use HTTP mode instead.")
     sys.exit(1)
 elif __name__ == "__main__":
-    # HTTP API 模式 — 向后兼容
     from adapters.http_api import app, memory_agent
+    from core._reflective_version import get_echomind_version
+    from core.config_manager import get_config_manager
     import uvicorn
 
+    server_cfg = get_config_manager().get_section("server")
+    port = int(sys.argv[1]) if len(sys.argv) > 1 else server_cfg.get("port", 8005)
+    host = server_cfg.get("host", "0.0.0.0")
+
     print("=" * 60)
-    print("  EchoMind Memory v1.0.10 — HTTP API Mode")
-    print("  Endpoint: http://localhost:8005")
-    print("  Docs:     http://localhost:8005/docs")
+    print(f"  EchoMind Memory v{get_echomind_version()} — HTTP API Mode")
+    print(f"  Endpoint: http://{host}:{port}")
+    print(f"  Docs:     http://{host}:{port}/docs")
     print("=" * 60)
-    memory_agent.enable_persistence()
-    uvicorn.run(app, host="0.0.0.0", port=8005, log_level="info")
+    uvicorn.run(app, host=host, port=port, log_level="info")
 else:
-    # 作为模块导入时：暴露 call() 函数供 OpenClaw 使用
-    # from main import call
     pass

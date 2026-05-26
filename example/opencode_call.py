@@ -1,17 +1,6 @@
 """
-OpenCode 集成示例 — 通过 CLI 工具调用 EchoMind Memory
-
-使用方式:
-    python3 code_format/cli.py read <user_id> <project_id>
-    python3 code_format/cli.py write <user_id> <project_id> <file_path>
-
-或直接通过 FastAPI 调用:
-    curl -X POST http://localhost:8005/api/memory/retrieve \
-      -H "Content-Type: application/json" \
-      -d '{"user_id": "alice", "query": "查找项目相关上下文"}'
+OpenCode integration example — via HTTP API
 """
-
-import asyncio
 import json
 import urllib.request
 
@@ -32,40 +21,40 @@ def post(path: str, data: dict) -> dict:
 def main():
     print("=== EchoMind Memory × OpenCode ===\n")
 
-    # 1. 检索项目上下文
-    print("[1] 检索上下文...")
+    # 1. Retrieve project context
+    print("[1] Retrieve context...")
     result = post("/api/memory/retrieve", {
         "user_id": "alice",
-        "query": "这个项目的数据库设计是怎样的？",
+        "query": "What is the database design of this project?",
         "task_id": "opencode-project-001",
     })
-    print(f"    置信度: {result.get('confidence_score', 0)}")
+    print(f"    Confidence: {result.get('confidence_score', 0)}")
     for m in result.get("working_memory", []):
         print(f"    [{m['source']}] {m['content'][:80]}...")
 
-    # 2. 存储上下文
-    print("\n[2] 存储上下文...")
+    # 2. Store context
+    print("\n[2] Store context...")
     post("/api/memory/store", {
         "user_id": "alice",
         "task_id": "opencode-project-001",
         "context": [
-            {"role": "user", "content": "项目数据库使用 PostgreSQL + SQLAlchemy ORM"},
-            {"role": "assistant", "content": "已记录。表结构在 models.py 中定义。"},
+            {"role": "user", "content": "Project database uses PostgreSQL + SQLAlchemy ORM"},
+            {"role": "assistant", "content": "recorded. Table structure defined in models.py "},
         ],
         "task_status": "completed",
         "success": True,
     })
-    print("    ✅ 已存储")
+    print("    ✅ Stored")
 
-    # 3. 同步代码记忆
-    print("\n[3] 同步到 .echomind/...")
+    # 3. Sync code memory
+    print("\n[3] Sync to .echomind/...")
     post("/api/memory/sync-code", {
         "project_root": ".",
         "user_id": "alice",
     })
-    print("    ✅ 已同步 (OpenCode 将自动读取 .echomind/ 目录)")
+    print("    ✅ Synced (OpenCode will auto-read .echomind/ directory)")
 
-    print("\n=== 完成 ===")
+    print("\n=== Completed ===")
 
 
 if __name__ == "__main__":

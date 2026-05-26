@@ -1,11 +1,13 @@
 from pydantic import BaseModel, Field
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, Any, List, Optional
 
 
 class ResearchPaper(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    user_id: str = "default"
+    project: str = "default"
     title: str
     authors: List[str] = Field(default_factory=list)
     year: Optional[int] = None
@@ -17,15 +19,16 @@ class ResearchPaper(BaseModel):
     key_points: List[str] = Field(default_factory=list)
     importance_score: float = 0.5
     metadata: Dict[str, Any] = Field(default_factory=dict)
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 class ResearchNote(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     user_id: str = "default"
+    project: str = "default"
     topic: str
     content: str
     linked_papers: List[str] = Field(default_factory=list)
     tags: List[str] = Field(default_factory=list)
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = Field(default_factory=datetime.utcnow)

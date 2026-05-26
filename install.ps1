@@ -1,0 +1,56 @@
+# install.ps1 — EchoMind v1.1.0 Windows 一键安装 (含开机自启)
+$ErrorActionPreference = "Stop"
+$SKILL_DIR = $PSScriptRoot
+$HERMES_DIR = "$env:USERPROFILE\.hermes"
+$PLUGIN_DIR = "$HERMES_DIR\plugins\echomind"
+$CONFIG_DIR = "$env:USERPROFILE\.echomind"
+
+Write-Host "=== EchoMind v1.1.0 Windows Install ==="
+
+# 1. 安装到 Hermes
+Write-Host "  [1/4] Installing to $PLUGIN_DIR"
+New-Item -ItemType Directory -Force -Path $PLUGIN_DIR | Out-Null
+Copy-Item -Path "$SKILL_DIR\*" -Destination $PLUGIN_DIR -Recurse -Force
+
+# 2. 生成配置
+New-Item -ItemType Directory -Force -Path $CONFIG_DIR | Out-Null
+if (-not (Test-Path "$CONFIG_DIR\echomind_config.yaml")) {
+    Write-Host "  [2/4] Creating default config..."
+    Copy-Item -Path "$PLUGIN_DIR\echomind_config.yaml" -Destination "$CONFIG_DIR\" -ErrorAction SilentlyContinue
+}
+
+# 3. 验证
+Write-Host "  [3/4] Verification..."
+$python = (Get-Command python -ErrorAction SilentlyContinue).Source
+if (-not $python) { $python = (Get-Command python3 -ErrorAction SilentlyContinue).Source }
+python -c "import sys; sys.path.insert(0, '$PLUGIN_DIR'); from core._reflective_version import get_echomind_version; print(f'EchoMind {get_echomind_version()}')"
+
+# 4. 注册开机自启
+Write-Host "  [4/4] Setting up auto-start..."
+$STARTUP_DIR = [Environment]::GetFolderPath("Startup")
+$VBS_PATH = "$PLUGIN_DIR\echomind_start.vbs"
+
+# 创建 VBS 无窗口启动器
+@"
+Set ws = CreateObject("WScript.Shell")
+ws.Run "$python $PLUGIN_DIR\main.py", 0, False
+"@ | Out-File -FilePath $VBS_PATH -Encoding ASCII
+
+# 注册到 Run 注册表（持久生效，不受快捷方式删除影响）
+$regPath = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
+Set-ItemProperty -Path $regPath -Name "EchoMindMemory" -Value "wscript.exe `"$VBS_PATH`"" -Force
+
+# 同时也放到 Startup 文件夹（双重保障）
+$shortcutPath = Join-Path $STARTUP_DIR "EchoMindMemory.lnk"
+$WScriptShell = New-Object -ComObject WScript.Shell
+$Shortcut = $WScriptShell.CreateShortcut($shortcutPath)
+$Shortcut.TargetPath = "wscript.exe"
+$Shortcut.Arguments = "`"$VBS_PATH`""
+$Shortcut.WindowStyle = 7  # Minimized
+$Shortcut.Save()
+
+Write-Host "    Auto-start registered (Registry + Startup folder)"
+Write-Host ""
+Write-Host "  Done!"
+Write-Host "  HTTP API: http://localhost:8005"
+Write-Host "  Restart to verify auto-start, or run now: python $PLUGIN_DIR\main.py"

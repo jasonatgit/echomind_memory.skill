@@ -1,0 +1,9 @@
+# MANIFEST.in — Python package build manifest
+prune core/__pycache__
+prune .git
+prune doc
+prune test
+prune build
+prune dist
+prune .claude
+include requirements.txt
