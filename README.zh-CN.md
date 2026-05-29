@@ -184,25 +184,53 @@ We sincerely thank the authors of the above papers for their pioneering work on 
 ---
 ## 安装
 
+### 前置条件
 
-### 方式一：一键安装（推荐，含开机自启）
+确认已安装以下工具：
 
-安装脚本会自动完成以下操作：
+| 工具 | 检查命令 | 安装方式 |
+|------|---------|---------|
+| **Python 3.10+** | `python3 --version` | [python.org](https://python.org) |
+| **pip** | `pip --version` | Python 自带 |
+| **git** | `git --version` | `sudo apt install git` / [git-scm.com](https://git-scm.com) |
 
-1. 复制文件到 `~/.hermes/skills/echomind-memory/`（Skill 目录）
-2. 复制文件到 `~/.hermes/plugins/echomind/`（MemoryProvider 插件目录）
-3. 生成默认配置文件 `~/.echomind/echomind_config.yaml`（已存在则跳过）
-4. 注册开机自启（systemd / launchd / 注册表）
+### 方式一：快速安装（推荐，含开机自启）
+
+安装脚本负责复制文件、生成配置、注册自启。
 
 ```bash
-# Linux / macOS / WSL
-./install.sh
+# 步骤 1: 克隆仓库
+git clone https://github.com/jasonatgit/echomind_memory.skill.git
+cd echomind_memory.skill
 
-# Windows（PowerShell）
+# 步骤 2: 安装 Python 依赖
+pip install -r requirements.txt
+
+# 步骤 3: 运行安装脚本
+./install.sh
+```
+
+**Windows（PowerShell）：**
+
+```powershell
+# 步骤 1: 克隆仓库
+git clone https://github.com/jasonatgit/echomind_memory.skill.git
+cd echomind_memory.skill
+
+# 步骤 2: 安装 Python 依赖
+pip install -r requirements.txt
+
+# 步骤 3: 运行安装脚本
 .\install.ps1
 ```
 
-安装完成后验证：
+> **`install.sh` / `install.ps1` 做了什么：**
+> 1. 复制到 `~/.hermes/skills/echomind-memory/`（Skill 目录）
+> 2. 复制到 `~/.hermes/plugins/echomind/`（MemoryProvider 插件）
+> 3. 创建默认配置 `~/.echomind/echomind_config.yaml`（已存在则跳过）
+> 4. 注册开机自启（systemd / launchd / 注册表）
+
+**安装完成后验证：**
 
 ```bash
 curl http://localhost:8005/health
@@ -211,26 +239,25 @@ curl http://localhost:8005/health
 
 ---
 
-### 方式二：手工安装
+### 方式二：手工安装（不含开机自启）
+
+适合不想注册自启的用户：
 
 ```bash
-# 1. 克隆仓库
+# 1. 克隆仓库并安装依赖（同方式一步骤 1-2）
 git clone https://github.com/jasonatgit/echomind_memory.skill.git
 cd echomind_memory.skill
-
-# 2. 安装 Python 依赖
 pip install -r requirements.txt
 
-# 3. 生成默认配置
-mkdir -p ~/.echomind
-cp echomind_config.yaml ~/.echomind/
+# 2. 创建配置
+mkdir -p ~/.echomind && cp echomind_config.yaml ~/.echomind/
 
-# 4. 启动 HTTP 服务
+# 3. 手动启动服务
 python main.py
 # 服务运行在 http://localhost:8005
 ```
 
-> **提示：** 如需开机自启，参考 `install.sh` 脚本中的 systemd / launchd / 注册表配置。
+> **提示：** 需要开机自启请使用上方方式一。
 
 ---
 

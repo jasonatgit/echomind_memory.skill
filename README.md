@@ -184,24 +184,53 @@ At the same time, EchoMind-Memory.skill's "self-evolution" primarily differs fro
 
 ## Installation
 
-### Option 1: One-Click Install (Recommended, with Auto-Start)
+### Prerequisites
 
-The install script automatically handles:
+Make sure you have the following installed:
 
-1. Copies files to `~/.hermes/skills/echomind-memory/` (Skill directory)
-2. Copies files to `~/.hermes/plugins/echomind/` (MemoryProvider plugin directory)
-3. Generates default config `~/.echomind/echomind_config.yaml` (skips if exists)
-4. Registers auto-start (systemd / launchd / Registry)
+| Tool | Check | Install |
+|------|-------|---------|
+| **Python 3.10+** | `python3 --version` | [python.org](https://python.org) |
+| **pip** | `pip --version` | Comes with Python |
+| **git** | `git --version` | `sudo apt install git` / [git-scm.com](https://git-scm.com) |
+
+### Option 1: Quick Install (Recommended, with Auto-Start)
+
+The install script copies files, generates config, and registers auto-start.
 
 ```bash
-# Linux / macOS / WSL
-./install.sh
+# Step 1: Clone the repository
+git clone https://github.com/jasonatgit/echomind_memory.skill.git
+cd echomind_memory.skill
 
-# Windows (PowerShell)
+# Step 2: Install Python dependencies
+pip install -r requirements.txt
+
+# Step 3: Run the install script
+./install.sh
+```
+
+**Windows (PowerShell):**
+
+```powershell
+# Step 1: Clone the repository
+git clone https://github.com/jasonatgit/echomind_memory.skill.git
+cd echomind_memory.skill
+
+# Step 2: Install Python dependencies
+pip install -r requirements.txt
+
+# Step 3: Run the install script
 .\install.ps1
 ```
 
-Verify after installation:
+> **What `install.sh` / `install.ps1` does:**
+> 1. Copies to `~/.hermes/skills/echomind-memory/` (Skill directory)
+> 2. Copies to `~/.hermes/plugins/echomind/` (MemoryProvider plugin)
+> 3. Creates default config `~/.echomind/echomind_config.yaml` (skips if exists)
+> 4. Registers auto-start (systemd / launchd / Registry)
+
+**Verify after installation:**
 
 ```bash
 curl http://localhost:8005/health
@@ -210,26 +239,25 @@ curl http://localhost:8005/health
 
 ---
 
-### Option 2: Manual Install
+### Option 2: Manual Install (No Auto-Start)
+
+If you prefer to start the service manually:
 
 ```bash
-# 1. Clone the repository
+# 1. Clone and install deps (same as Option 1 steps 1-2)
 git clone https://github.com/jasonatgit/echomind_memory.skill.git
 cd echomind_memory.skill
-
-# 2. Install Python dependencies
 pip install -r requirements.txt
 
-# 3. Generate default config
-mkdir -p ~/.echomind
-cp echomind_config.yaml ~/.echomind/
+# 2. Create config
+mkdir -p ~/.echomind && cp echomind_config.yaml ~/.echomind/
 
-# 4. Start HTTP service
+# 3. Start the service manually
 python main.py
 # Service runs at http://localhost:8005
 ```
 
-> **Tip:** For auto-start, refer to the systemd / launchd / Registry setup in `install.sh`.
+> **Tip:** For auto-start, use Option 1 above.
 
 ---
 
