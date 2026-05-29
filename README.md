@@ -225,10 +225,13 @@ pip install -r requirements.txt
 ```
 
 > **What `install.sh` / `install.ps1` does:**
-> 1. Copies to `~/.hermes/skills/echomind-memory/` (Skill directory)
-> 2. Copies to `~/.hermes/plugins/echomind/` (MemoryProvider plugin)
-> 3. Creates default config `~/.echomind/echomind_config.yaml` (skips if exists)
-> 4. Registers auto-start (systemd / launchd / Registry)
+> 1. Detects your Hermes home directory automatically (priority: `$HERMES_HOME` → platform default)
+>    - Linux/macOS/WSL: `~/.hermes`
+>    - Windows: `%LOCALAPPDATA%\hermes`
+> 2. Copies to `<hermes>/skills/echomind-memory/` (Skill directory)
+> 3. Copies to `<hermes>/plugins/echomind/` (MemoryProvider plugin)
+> 4. Creates default config `~/.echomind/echomind_config.yaml` (skips if exists)
+> 5. Registers auto-start (systemd / launchd / Registry)
 
 **Verify after installation:**
 

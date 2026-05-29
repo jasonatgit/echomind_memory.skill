@@ -225,10 +225,13 @@ pip install -r requirements.txt
 ```
 
 > **`install.sh` / `install.ps1` 做了什么：**
-> 1. 复制到 `~/.hermes/skills/echomind-memory/`（Skill 目录）
-> 2. 复制到 `~/.hermes/plugins/echomind/`（MemoryProvider 插件）
-> 3. 创建默认配置 `~/.echomind/echomind_config.yaml`（已存在则跳过）
-> 4. 注册开机自启（systemd / launchd / 注册表）
+> 1. 自动检测 Hermes 安装目录（优先级: `$HERMES_HOME` → 平台默认）
+>    - Linux/macOS/WSL: `~/.hermes`
+>    - Windows: `%LOCALAPPDATA%\hermes`
+> 2. 复制到 `<hermes>/skills/echomind-memory/`（Skill 目录）
+> 3. 复制到 `<hermes>/plugins/echomind/`（MemoryProvider 插件）
+> 4. 创建默认配置 `~/.echomind/echomind_config.yaml`（已存在则跳过）
+> 5. 注册开机自启（systemd / launchd / 注册表）
 
 **安装完成后验证：**
 
@@ -267,6 +270,7 @@ python main.py
 
 ```bash
 # 1. 安装插件文件（一键安装已自动完成此步，手工安装需手动执行）
+#    默认 Hermes 目录为 ~/.hermes，如不相同请自行调整（检查 HERMES_HOME）
 cp -r echomind_memory.skill/* ~/.hermes/plugins/echomind/
 
 # 2. 激活 MemoryProvider

@@ -2,12 +2,22 @@
 # install.sh — EchoMind v1.1.0 一键安装 (含开机自启)
 set -e
 
+# Hermes 安装目录检测（优先级: 环境变量 > XDG > 默认）
+if [ -n "${HERMES_HOME}" ]; then
+    HERMES_HOME_DIR="${HERMES_HOME}"
+elif [ -n "${XDG_DATA_HOME}" ]; then
+    HERMES_HOME_DIR="${XDG_DATA_HOME}/hermes"
+else
+    HERMES_HOME_DIR="${HOME}/.hermes"
+fi
+
 SKILL_DIR="$(dirname "$0")"
-INSTALL_DIR="$HOME/.hermes/skills/echomind-memory"
-PLUGIN_DIR="$HOME/.hermes/plugins/echomind"
-CONFIG_DIR="$HOME/.echomind"
+INSTALL_DIR="${HERMES_HOME_DIR}/skills/echomind-memory"
+PLUGIN_DIR="${HERMES_HOME_DIR}/plugins/echomind"
+CONFIG_DIR="${HOME}/.echomind"
 
 echo "=== EchoMind v1.1.0 Install ==="
+echo "  Hermes home: ${HERMES_HOME_DIR}"
 
 # 1. 安装到 Hermes skill
 echo "  [1/4] Installing to $INSTALL_DIR..."

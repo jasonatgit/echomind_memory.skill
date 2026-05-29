@@ -1,11 +1,26 @@
 # install.ps1 — EchoMind v1.1.0 Windows 一键安装 (含开机自启)
 $ErrorActionPreference = "Stop"
 $SKILL_DIR = $PSScriptRoot
-$HERMES_DIR = "$env:USERPROFILE\.hermes"
+
+# Hermes 安装目录检测（优先级: 环境变量 > AppData\Local\hermes > ~\.hermes）
+if ($env:HERMES_HOME) {
+    $HERMES_DIR = $env:HERMES_HOME
+} elseif (Test-Path "$env:LOCALAPPDATA\hermes") {
+    $HERMES_DIR = "$env:LOCALAPPDATA\hermes"
+} else {
+    $HERMES_DIR = "$env:USERPROFILE\.hermes"
+}
 $PLUGIN_DIR = "$HERMES_DIR\plugins\echomind"
-$CONFIG_DIR = "$env:USERPROFILE\.echomind"
+
+# EchoMind 配置目录（优先级: 环境变量 > HERMES_HOME 子目录 > %USERPROFILE%\.echomind）
+if ($env:ECHOMIND_HOME) {
+    $CONFIG_DIR = $env:ECHOMIND_HOME
+} else {
+    $CONFIG_DIR = "$env:USERPROFILE\.echomind"
+}
 
 Write-Host "=== EchoMind v1.1.0 Windows Install ==="
+Write-Host "  Hermes home: $HERMES_DIR"
 
 # 1. 安装到 Hermes
 Write-Host "  [1/4] Installing to $PLUGIN_DIR"
