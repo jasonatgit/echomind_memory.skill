@@ -13,6 +13,23 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 import requests  # Hermes bundled, zero new dependencies
 
+# Safe import MemoryProvider ABC (supports packaged + source Hermes)
+try:
+    from agent.memory_provider import MemoryProvider
+except ImportError:
+    from abc import ABC, abstractmethod
+
+    class MemoryProvider(ABC):
+        """Minimal MemoryProvider fallback for when Hermes agent module is unavailable."""
+        name: str = ""
+
+        @abstractmethod
+        def is_available(self) -> bool: ...
+        @abstractmethod
+        def initialize(self, session_id: str, **kwargs): ...
+        @abstractmethod
+        def get_tool_schemas(self): ...
+
 # Ensure core module is importable
 _skill_dir = os.path.dirname(os.path.abspath(__file__))
 _pkg_dir = os.path.dirname(_skill_dir)
@@ -26,7 +43,7 @@ logger = logging.getLogger("EchomindProvider")
 PLATFORM = "hermes"
 
 
-class EchomindMemoryProvider:
+class EchomindMemoryProvider(MemoryProvider):
     """EchoMind Memory Provider — Hermes Agent loop deep integration
     
     Automatic invocation sequence (managed by Hermes run_agent.py):
@@ -97,6 +114,14 @@ class EchomindMemoryProvider:
         if self._agent:
             self._agent.disable_persistence()
         logger.info("EchoMind Memory shutdown")
+
+    def get_config_schema(self):
+        """Hermes v0.13.0+ config wizard schema"""
+        return []
+
+    def save_config(self, values, hermes_home: str) -> None:
+        """Hermes v0.13.0+ save config from setup wizard"""
+        pass
 
     # ═══════════════════════════════════════════════════
     # Core methods called automatically (agent_loop driven, 100% reliable)
