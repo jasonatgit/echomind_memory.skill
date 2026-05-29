@@ -25,7 +25,7 @@ _SEARCH_PATHS = [
 
 def _try_load_ext_params() -> dict:
     try:
-        from ._reflective_core import _get_pro_seeds as _get_extra_params
+        from ._reflective_core import _get_extra_params
 
         return _get_extra_params()
     except ImportError:

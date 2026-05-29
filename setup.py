@@ -2,7 +2,7 @@ from setuptools import setup
 
 setup(
     name="echomind-memory",
-    version="1.1.0",
+    version="1.1.1",
     description="EchoMind Memory — AI Persistent Memory System (SQLite, 6 memory types, RL optimization)",
     long_description=open("README.md", encoding="utf-8").read(),
     long_description_content_type="text/markdown",

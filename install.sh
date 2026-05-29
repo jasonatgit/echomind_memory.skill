@@ -36,11 +36,13 @@ if [ ! -f "$CONFIG_DIR/echomind_config.yaml" ]; then
     cp "$INSTALL_DIR/echomind_config.yaml" "$CONFIG_DIR/" 2>/dev/null || true
 fi
 
-# 4. 注册开机自启
-echo "  [4/4] Setting up auto-start..."
-_SERVICE_DIR="$HOME/.config/systemd/user"
-_SERVICE_FILE="$_SERVICE_DIR/echomind.service"
-_PYTHON="$(command -v python3 || command -v python)"
+# 4. 注册开机自启（HTTP 服务，可选）
+_AUTO_HTTP="${ECHOMIND_HTTP_SERVICE:-0}"
+if [ "${_AUTO_HTTP}" = "1" ]; then
+    echo "  [4/4] Setting up HTTP service auto-start..."
+    _SERVICE_DIR="$HOME/.config/systemd/user"
+    _SERVICE_FILE="$_SERVICE_DIR/echomind.service"
+    _PYTHON="$(command -v python3 || command -v python)"
 
 if command -v systemctl &>/dev/null; then
     # Linux: systemd user service
@@ -104,7 +106,18 @@ else
     echo "    Manually: python $PLUGIN_DIR/main.py"
 fi
 
+else
+    echo "  [4/4] Skipped HTTP service auto-start"
+    echo "    Hermes plugin runs in-process — no separate service needed"
+fi
+
 echo ""
 echo "  Done!"
-echo "  HTTP API: http://localhost:8005"
-echo "  Service: systemctl --user status echomind"
+echo ""
+if [ "${_AUTO_HTTP}" = "1" ]; then
+    echo "  HTTP API: http://localhost:8005"
+    echo "  Service: systemctl --user status echomind"
+else
+    echo "  Hermes plugin runs in-process — ready to use"
+    echo "  To enable HTTP service: ECHOMIND_HTTP_SERVICE=1 ./install.sh"
+fi

@@ -237,7 +237,7 @@ pip install -r requirements.txt
 
 ```bash
 curl http://localhost:8005/health
-# 预期返回: {"status": "ok", "version": "1.1.0"}
+# 预期返回: {"status": "ok", "version": "1.1.1"}
 ```
 
 ---

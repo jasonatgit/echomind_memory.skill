@@ -3,7 +3,7 @@
 
 __all__ = ["get_echomind_version"]
 
-ECHOMIND_VERSION = "1.1.0"
+ECHOMIND_VERSION = "1.1.1"
 
 
 def get_echomind_version() -> str:

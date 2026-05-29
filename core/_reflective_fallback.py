@@ -17,10 +17,6 @@ def _get_extra_params():
     return []
 
 
-def _get_pro_seeds():
-    return {}
-
-
 def _parse_result(raw):
     return raw
 

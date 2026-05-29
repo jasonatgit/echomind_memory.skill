@@ -41,31 +41,45 @@ if (-not $python) { $python = (Get-Command python3 -ErrorAction SilentlyContinue
 python -c "import sys; sys.path.insert(0, '$PLUGIN_DIR'); from core._reflective_version import get_echomind_version; print(f'EchoMind {get_echomind_version()}')"
 
 # 4. 注册开机自启
-Write-Host "  [4/4] Setting up auto-start..."
-$STARTUP_DIR = [Environment]::GetFolderPath("Startup")
-$VBS_PATH = "$PLUGIN_DIR\echomind_start.vbs"
+# Step 4: HTTP service auto-start (optional, default: skipped)
+# Set $env:ECHOMIND_HTTP_SERVICE=1 to enable
+if ($env:ECHOMIND_HTTP_SERVICE -eq "1") {
+    Write-Host "  [4/4] Setting up HTTP service auto-start..."
+    $STARTUP_DIR = [Environment]::GetFolderPath("Startup")
+    $VBS_PATH = "$PLUGIN_DIR\echomind_start.vbs"
 
-# 创建 VBS 无窗口启动器
+    # 创建 VBS 无窗口启动器
 @"
 Set ws = CreateObject("WScript.Shell")
 ws.Run "$python $PLUGIN_DIR\main.py", 0, False
 "@ | Out-File -FilePath $VBS_PATH -Encoding ASCII
 
-# 注册到 Run 注册表（持久生效，不受快捷方式删除影响）
-$regPath = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
-Set-ItemProperty -Path $regPath -Name "EchoMindMemory" -Value "wscript.exe `"$VBS_PATH`"" -Force
+    # 注册到 Run 注册表（持久生效，不受快捷方式删除影响）
+    $regPath = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
+    Set-ItemProperty -Path $regPath -Name "EchoMindMemory" -Value "wscript.exe `"$VBS_PATH`"" -Force
 
-# 同时也放到 Startup 文件夹（双重保障）
-$shortcutPath = Join-Path $STARTUP_DIR "EchoMindMemory.lnk"
-$WScriptShell = New-Object -ComObject WScript.Shell
-$Shortcut = $WScriptShell.CreateShortcut($shortcutPath)
-$Shortcut.TargetPath = "wscript.exe"
-$Shortcut.Arguments = "`"$VBS_PATH`""
-$Shortcut.WindowStyle = 7  # Minimized
-$Shortcut.Save()
+    # 同时也放到 Startup 文件夹（双重保障）
+    $shortcutPath = Join-Path $STARTUP_DIR "EchoMindMemory.lnk"
+    $WScriptShell = New-Object -ComObject WScript.Shell
+    $Shortcut = $WScriptShell.CreateShortcut($shortcutPath)
+    $Shortcut.TargetPath = "wscript.exe"
+    $Shortcut.Arguments = "`"$VBS_PATH`""
+    $Shortcut.WindowStyle = 7  # Minimized
+    $Shortcut.Save()
 
-Write-Host "    Auto-start registered (Registry + Startup folder)"
+    Write-Host "    Auto-start registered (Registry + Startup folder)"
+} else {
+    Write-Host "  [4/4] Skipped HTTP service auto-start"
+    Write-Host "    Hermes plugin runs in-process — no separate service needed"
+}
+
 Write-Host ""
 Write-Host "  Done!"
-Write-Host "  HTTP API: http://localhost:8005"
-Write-Host "  Restart to verify auto-start, or run now: python $PLUGIN_DIR\main.py"
+Write-Host ""
+if ($env:ECHOMIND_HTTP_SERVICE -eq "1") {
+    Write-Host "  HTTP API: http://localhost:8005"
+    Write-Host "  Restart to verify auto-start, or run now: python $PLUGIN_DIR\main.py"
+} else {
+    Write-Host "  Hermes plugin runs in-process — ready to use"
+    Write-Host "  To enable HTTP service: `$env:ECHOMIND_HTTP_SERVICE=1; .\install.ps1"
+}

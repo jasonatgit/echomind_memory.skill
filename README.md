@@ -231,13 +231,18 @@ pip install -r requirements.txt
 > 2. Copies to `<hermes>/skills/echomind-memory/` (Skill directory)
 > 3. Copies to `<hermes>/plugins/echomind/` (MemoryProvider plugin)
 > 4. Creates default config `~/.echomind/echomind_config.yaml` (skips if exists)
-> 5. Registers auto-start (systemd / launchd / Registry)
+> 5. *(optional)* Registers HTTP service auto-start — only when `ECHOMIND_HTTP_SERVICE=1` is set
+>
+> **Rationale:** The EchoMind MemoryProvider plugin runs **inside Hermes's process** —
+> no separate HTTP service is needed for memory to work. The standalone HTTP API
+> (`main.py`) is only required when integrating with OpenCode, OpenClaw, or other
+> external tools that call memory over HTTP.
 
 **Verify after installation:**
 
 ```bash
 curl http://localhost:8005/health
-# Expected: {"status": "ok", "version": "1.1.0"}
+# Expected: {"status": "ok", "version": "1.1.1"}
 ```
 
 ---
