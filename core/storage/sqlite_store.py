@@ -196,41 +196,38 @@ class SqliteStore:
             logger.info("All 9 memory tables ensured")
 
     def _migrate_existing_tables(self):
-        """Compatible with old table structure —— Auto-add missing columns"""
-        with self._lock:
-            try:
-                ctx_cols = [r[1] for r in self._conn.execute("PRAGMA table_info(context_memory)").fetchall()]
-                if "platform" not in ctx_cols:
-                    self._conn.execute("ALTER TABLE context_memory ADD COLUMN platform TEXT DEFAULT 'default'")
-                    self._conn.commit()
-                    logger.info("Migration: added platform column to context_memory")
-            except Exception as e:
-                logger.warning(f"Migration failed for context_memory: {e}")
-            try:
-                old_task_cols = [r[1] for r in self._conn.execute("PRAGMA table_info(task_memory)").fetchall()]
-                pk_info = self._conn.execute("SELECT type FROM pragma_table_info('task_memory') WHERE name='id'").fetchone()
-                if pk_info and pk_info[0].upper() == 'INTEGER':
-                    logger.info("Migrating task_memory: INTEGER → TEXT primary key")
-                    self._conn.execute("""
-                        CREATE TABLE IF NOT EXISTS task_memory_new (
-                            id TEXT PRIMARY KEY,
-                            user_id TEXT, title TEXT, status TEXT,
-                            steps TEXT DEFAULT '[]', metadata TEXT DEFAULT '{}',
-                            created_at TEXT DEFAULT (datetime('now')),
-                            updated_at TEXT DEFAULT (datetime('now'))
-                        )
-                    """)
-                    self._conn.execute("INSERT INTO task_memory_new SELECT * FROM task_memory")
-                    self._conn.execute("DROP TABLE task_memory")
-                    self._conn.execute("ALTER TABLE task_memory_new RENAME TO task_memory")
-                    self._conn.commit()
-            except Exception:
-                logger.debug("Migration skipped for current table structure")
-
-    # ═══════════════════════════════════════════════════
-    # LOAD
-    # ═══════════════════════════════════════════════════
-
+        """Compatible with old table structure -- Auto-add missing columns"""
+        # Note: called from ensure_tables() which holds self._lock.
+        # threading.Lock is NOT reentrant -- do not re-acquire.
+        try:
+            ctx_cols = [r[1] for r in self._conn.execute("PRAGMA table_info(context_memory)").fetchall()]
+            if "platform" not in ctx_cols:
+                self._conn.execute("ALTER TABLE context_memory ADD COLUMN platform TEXT DEFAULT 'default'")
+                self._conn.commit()
+                logger.info("Migration: added platform column to context_memory")
+        except Exception as e:
+            logger.warning(f"Migration failed for context_memory: {e}")
+        try:
+            pk_info = self._conn.execute(
+                "SELECT type FROM pragma_table_info('task_memory') WHERE name='id'"
+            ).fetchone()
+            if pk_info and pk_info[0].upper() == 'INTEGER':
+                logger.info("Migrating task_memory: INTEGER -> TEXT primary key")
+                self._conn.execute(
+                    "CREATE TABLE IF NOT EXISTS task_memory_new ("
+                    "id TEXT PRIMARY KEY,"
+                    "user_id TEXT, title TEXT, status TEXT,"
+                    "steps TEXT DEFAULT '[]', metadata TEXT DEFAULT '{}',"
+                    "created_at TEXT DEFAULT (datetime('now')),"
+                    "updated_at TEXT DEFAULT (datetime('now'))"
+                    ")"
+                )
+                self._conn.execute("INSERT INTO task_memory_new SELECT * FROM task_memory")
+                self._conn.execute("DROP TABLE task_memory")
+                self._conn.execute("ALTER TABLE task_memory_new RENAME TO task_memory")
+                self._conn.commit()
+        except Exception:
+            logger.debug("Migration skipped for current table structure")
     def load_all(self) -> Dict[str, Any]:
         return {
             "users": self.load_users(),

@@ -67,6 +67,8 @@ class MainMemoryAgent:
         self.reflective = ReflectiveAgent(self.db, self, config=ref_config)
 
     def enable_persistence(self):
+        if self._persistence_enabled:
+            return  # Avoid duplicate connection creation (security fix v1.2.0)
         self.db.connect()
         self.db.ensure_tables()
         self._persistence_enabled = True
@@ -742,7 +744,14 @@ class MainMemoryAgent:
 
     def sync_to_code_project(self, project_root: str, user_id: str):
         from pathlib import Path
-        echomind_dir = Path(project_root) / ".echomind"
+        # Path traversal protection: disallow .. components
+        root_path = Path(project_root).resolve()
+        allowed_prefixes = [Path.home(), Path.cwd()]
+        if ".." in project_root.split(os.sep):
+            raise ValueError(f"Path traversal not allowed: {project_root}")
+        if not any(str(root_path).startswith(str(p)) for p in allowed_prefixes):
+            raise ValueError(f"Path outside allowed scope: {root_path}")
+        echomind_dir = root_path / ".echomind"
         echomind_dir.mkdir(exist_ok=True)
 
         user_mem = self.user_agent.get(user_id)

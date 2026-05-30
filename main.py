@@ -147,7 +147,7 @@ elif __name__ == "__main__":
 
     server_cfg = get_config_manager().get_section("server")
     port = int(sys.argv[1]) if len(sys.argv) > 1 else server_cfg.get("port", 8005)
-    host = server_cfg.get("host", "0.0.0.0")
+    host = server_cfg.get("host", "127.0.0.1")
 
     print("=" * 60)
     print(f"  EchoMind Memory v{get_echomind_version()} — HTTP API Mode")

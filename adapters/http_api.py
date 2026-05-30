@@ -7,9 +7,11 @@ import sys
 from typing import Any, Dict, List, Optional
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import APIKeyHeader
 from pydantic import BaseModel
+import logging
 import uvicorn
 
 from core.memory_agent import MainMemoryAgent
@@ -21,6 +23,19 @@ memory_agent = MainMemoryAgent()
 
 cfg = get_config_manager().get_section("server")
 
+# ── API Key Auth ──
+API_KEY_NAME = "X-API-Key"
+api_key_header = APIKeyHeader(name=API_KEY_NAME, auto_error=False)
+
+
+def verify_api_key(api_key: str = Depends(api_key_header)):
+    expected = cfg.get("api_key", "")
+    if not expected:
+        return None  # no key configured — allow all (backward compat)
+    if api_key and api_key == expected:
+        return api_key
+    raise HTTPException(status_code=403, detail="Invalid or missing API key")
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -30,13 +45,15 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="EchoMind Memory", version=get_echomind_version(), lifespan=lifespan)
-app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:8005"], allow_methods=["GET", "POST"], allow_headers=["Content-Type"])
+cors_origins = cfg.get("cors_origins", ["http://localhost:8005"])
+app.add_middleware(CORSMiddleware, allow_origins=cors_origins, allow_methods=["GET", "POST"], allow_headers=["Content-Type", "X-API-Key"])
 
 
 # ── Health ──
 @app.get("/health")
 async def health():
-    return {"status": "ok", "storage": "sqlite", "db": str(memory_agent.db.db_path),
+    return {"status": "ok", "storage": "sqlite",
+            "db": os.path.basename(str(memory_agent.db.db_path)),
             "version": get_echomind_version()}
 
 
@@ -101,9 +118,20 @@ class ReflectRequest(BaseModel):
     llm_response: Optional[str] = None
 
 
+# ── Error handler (v1.2.0: avoid leaking internal details) ──
+logger = logging.getLogger("EchoMind.API")
+
+EXCEPTION_RESPONSE = {"status": "error", "detail": "Internal server error"}
+
+
+async def _safe_exception(e: Exception, context: str = "") -> dict:
+    logger.error(f"{context}: {e}", exc_info=True)
+    return EXCEPTION_RESPONSE
+
+
 # ── Routes ──
 @app.post("/api/memory/retrieve")
-async def api_retrieve(req: RetrieveRequest):
+async def api_retrieve(req: RetrieveRequest, auth=Depends(verify_api_key)):
     try:
         result = memory_agent.retrieve_for_task(req.query, req.user_id, req.task_id, platform=req.platform)
         working = [
@@ -130,7 +158,7 @@ async def api_retrieve(req: RetrieveRequest):
         }
 
 @app.post("/api/memory/store")
-async def api_store(req: StoreRequest):
+async def api_store(req: StoreRequest, auth=Depends(verify_api_key)):
     try:
         memory_agent.store(
             req.user_id, req.task_id,
@@ -153,7 +181,7 @@ async def search_sessions(q: str = "", user_id: str = None, project: str = None,
         return {"results": [], "error": str(e)}
 
 @app.post("/api/memory/feedback")
-async def api_feedback(req: FeedbackRequest):
+async def api_feedback(req: FeedbackRequest, auth=Depends(verify_api_key)):
     try:
         memory_agent.record_feedback(req.user_id, req.task_id, req.feedback, req.retrieved_memories)
         return {"status": "feedback_received", "user_id": req.user_id}
@@ -161,7 +189,7 @@ async def api_feedback(req: FeedbackRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/memory/sync-code")
-async def api_sync_code(req: SyncCodeRequest):
+async def api_sync_code(req: SyncCodeRequest, auth=Depends(verify_api_key)):
     try:
         memory_agent.sync_to_code_project(req.project_root, req.user_id)
         return {"status": "synced", "path": f"{req.project_root}/.echomind"}
@@ -169,7 +197,7 @@ async def api_sync_code(req: SyncCodeRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/research/paper")
-async def api_add_paper(req: ResearchPaperRequest):
+async def api_add_paper(req: ResearchPaperRequest, auth=Depends(verify_api_key)):
     try:
         paper_id = memory_agent.add_research_paper(
             title=req.title, authors=req.authors, year=req.year,
@@ -181,7 +209,7 @@ async def api_add_paper(req: ResearchPaperRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/research/note")
-async def api_add_note(req: ResearchNoteRequest):
+async def api_add_note(req: ResearchNoteRequest, auth=Depends(verify_api_key)):
     try:
         note_id = memory_agent.add_research_note(
             user_id=req.user_id, topic=req.topic, content=req.content,
@@ -193,7 +221,7 @@ async def api_add_note(req: ResearchNoteRequest):
 
 # ── Reflection (v1.1.0) ──
 @app.post("/api/reflect")
-async def api_reflect(req: ReflectRequest):
+async def api_reflect(req: ReflectRequest, auth=Depends(verify_api_key)):
     """
     Two-phase reflection endpoint:
     - llm_response=None → returns prompt for caller to process (Path B)
@@ -247,7 +275,7 @@ class ConfigUpdateRequest(BaseModel):
 
 
 @app.get("/api/config")
-async def api_get_config():
+async def api_get_config(auth=Depends(verify_api_key)):
     cfg = get_config_manager()
     return {
         "config_path": cfg.config_path,
@@ -256,14 +284,14 @@ async def api_get_config():
             "reflection": cfg.get_section("reflection"),
             "retrieval": cfg.get_section("retrieval"),
             "inference": cfg.get_section("inference"),
-            "llm": cfg.get_section("llm"),
+            "llm": {k: v for k, v in cfg.get_section("llm").items() if k != "api_key"},
             "server": cfg.get_section("server"),
         }
     }
 
 
 @app.post("/api/config/parameter")
-async def api_set_config_param(req: ConfigUpdateRequest):
+async def api_set_config_param(req: ConfigUpdateRequest, auth=Depends(verify_api_key)):
     cfg = get_config_manager()
     key_path = f"{req.section}.{req.key}"
     cfg.set_runtime(key_path, req.value)
@@ -271,7 +299,7 @@ async def api_set_config_param(req: ConfigUpdateRequest):
 
 
 @app.post("/api/config/reload")
-async def api_reload_config():
+async def api_reload_config(auth=Depends(verify_api_key)):
     cfg = get_config_manager()
     cfg.reload()
     return {"status": "reloaded", "config_path": cfg.config_path}
@@ -280,7 +308,7 @@ async def api_reload_config():
 # ── Entry ──
 if __name__ == "__main__":
     port = int(sys.argv[1]) if len(sys.argv) > 1 else cfg.get("port", 8005)
-    host = cfg.get("host", "0.0.0.0")
+    host = cfg.get("host", "127.0.0.1")
     print(f"EchoMind Memory v{get_echomind_version()} — HTTP API Mode")
     print(f"  Endpoint: http://{host}:{port}")
     print(f"  Docs:     http://{host}:{port}/docs")

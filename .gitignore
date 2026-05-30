@@ -16,7 +16,9 @@ build/
 .echomind/
 .vscode/
 .claude/
+.agents/
 doc/
 test/
+AGENTS.md
 .DS_Store
 Thumbs.dbdoc/

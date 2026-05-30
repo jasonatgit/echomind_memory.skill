@@ -74,8 +74,9 @@ llm:
   semantic_max_tokens: 4          # 只需 0-10 的整数
 
 server:
-  host: "0.0.0.0"
+  host: "127.0.0.1"
   port: 8005
+  api_key: "echomind-secret-key-2026" # API Key 认证（空=跳过认证）
 
 inference:
   min_occurrence: 2
