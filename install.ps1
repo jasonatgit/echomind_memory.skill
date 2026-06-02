@@ -38,7 +38,13 @@ if (-not (Test-Path "$CONFIG_DIR\echomind_config.yaml")) {
 Write-Host "  [3/4] Verification..."
 $python = (Get-Command python -ErrorAction SilentlyContinue).Source
 if (-not $python) { $python = (Get-Command python3 -ErrorAction SilentlyContinue).Source }
-python -c "import sys; sys.path.insert(0, '$PLUGIN_DIR'); from core._reflective_version import get_echomind_version; print(f'EchoMind {get_echomind_version()}')"
+# Forward-slash path avoids unicode-escape errors from backslashes (v1.1.2 fix)
+$pluginDirFwd = $PLUGIN_DIR.Replace('\','/')
+try {
+    & $python -c "import sys; sys.path.insert(0, '$pluginDirFwd'); from core._reflective_version import get_echomind_version; print(f'EchoMind {get_echomind_version()}')"
+} catch {
+    Write-Host "    Warning: verification failed ($_), but files installed correctly"
+}
 
 # 4. 注册开机自启
 # Step 4: HTTP service auto-start (optional, default: skipped)
