@@ -76,7 +76,7 @@ llm:
 server:
   host: "127.0.0.1"
   port: 8005
-  api_key: "echomind-secret-key-2026" # API Key 认证（空=跳过认证）
+  api_key: "" # API Key 认证（空=跳过认证）支持 ${ECHOMIND_API_KEY} 引用环境变量
 
 inference:
   min_occurrence: 2

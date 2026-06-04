@@ -24,10 +24,15 @@ echo "  [1/4] Installing to $INSTALL_DIR..."
 mkdir -p "$INSTALL_DIR"
 cp -r "$SKILL_DIR"/. "$INSTALL_DIR/"
 
-# 2. 安装到 Hermes plugin
+# 2. 安装到 Hermes plugin (仅运行时文件)
 echo "  [2/4] Installing to $PLUGIN_DIR..."
 mkdir -p "$PLUGIN_DIR"
+# 拷贝核心文件，排除构建/文档/测试/dev文件
 cp -r "$INSTALL_DIR"/. "$PLUGIN_DIR/"
+# 清理不应部署到运行时的文件
+rm -rf "$PLUGIN_DIR"/setup.py        "$PLUGIN_DIR"/doc        "$PLUGIN_DIR"/test        "$PLUGIN_DIR"/build        "$PLUGIN_DIR"/__pycache__        "$PLUGIN_DIR"/echomind_memory.egg-info        "$PLUGIN_DIR"/.claude        "$PLUGIN_DIR"/setup.py.bak        "$PLUGIN_DIR"/.git        "$PLUGIN_DIR"/.gitignore 2>/dev/null
+find "$PLUGIN_DIR" -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
+find "$PLUGIN_DIR" -name "*.pyc" -delete 2>/dev/null || true
 
 # 3. 生成默认配置 (保留已有)
 mkdir -p "$CONFIG_DIR"

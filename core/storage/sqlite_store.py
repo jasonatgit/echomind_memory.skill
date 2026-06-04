@@ -555,6 +555,8 @@ class SqliteStore:
     def search_transcripts(self, query: str, user_id: str = None,
                            project: str = None, limit: int = 5) -> List[Dict]:
         if not self._conn: return []
+        # Escape LIKE wildcards to prevent unintended broad matching
+        safe_query = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
         where_parts = []
         params = []
         if user_id:
@@ -564,8 +566,8 @@ class SqliteStore:
             where_parts.append("project=?")
             params.append(project)
         w = " WHERE " + " AND ".join(where_parts) + " AND " if where_parts else " WHERE "
-        sql = f"SELECT * FROM session_transcripts{w}(messages LIKE ? OR compressed_summary LIKE ?)"
-        params += [f"%{query}%", f"%{query}%"]
+        sql = f"SELECT * FROM session_transcripts{w}(messages LIKE ? ESCAPE '\\' OR compressed_summary LIKE ? ESCAPE '\\')"
+        params += [f"%{safe_query}%", f"%{safe_query}%"]
         sql += f" ORDER BY updated_at DESC LIMIT ?"
         params.append(limit)
         rows = self._conn.execute(sql, params).fetchall()

@@ -31,7 +31,7 @@ api_key_header = APIKeyHeader(name=API_KEY_NAME, auto_error=False)
 def verify_api_key(api_key: str = Depends(api_key_header)):
     expected = cfg.get("api_key", "")
     if not expected:
-        return None  # no key configured — allow all (backward compat)
+        return ""  # no key configured — allow all (backward compat)
     if api_key and api_key == expected:
         return api_key
     raise HTTPException(status_code=403, detail="Invalid or missing API key")

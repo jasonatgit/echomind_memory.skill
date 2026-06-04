@@ -22,3 +22,4 @@ test/
 AGENTS.md
 .DS_Store
 Thumbs.dbdoc/
+.setup.py

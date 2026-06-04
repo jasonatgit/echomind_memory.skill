@@ -17,6 +17,10 @@ _pkg_dir = os.path.dirname(os.path.abspath(__file__))
 if _pkg_dir not in sys.path:
     sys.path.insert(0, _pkg_dir)
 
+# Module-level singleton: reuse agent across call() invocations
+_call_agent = None
+_call_cfg = None
+
 
 def call(tool_name: str, config_path: str = None, **kwargs):
     """Hermes skill.yaml Dispatch entry point
@@ -32,9 +36,15 @@ def call(tool_name: str, config_path: str = None, **kwargs):
     from core.config_manager import ConfigManager, get_config_manager
     from core.memory_agent import MainMemoryAgent
 
-    cfg = ConfigManager(config_path=config_path) if config_path else get_config_manager()
-    agent = MainMemoryAgent(config_manager=cfg)
-    agent.enable_persistence()
+    # Singleton reuse: avoid creating new connection per call
+    global _call_agent, _call_cfg
+    new_cfg = ConfigManager(config_path=config_path) if config_path else get_config_manager()
+    if _call_cfg is not new_cfg or _call_agent is None:
+        _call_agent = MainMemoryAgent(config_manager=new_cfg)
+        _call_cfg = new_cfg
+    agent = _call_agent
+    if not agent.is_persistence_enabled():
+        agent.enable_persistence()
 
     try:
         if tool_name == "retrieve_memory":
@@ -67,6 +77,8 @@ def call(tool_name: str, config_path: str = None, **kwargs):
                 success=kwargs.get("success", False),
                 experience_summary=kwargs.get("experience_summary"),
                 platform=kwargs.get("platform"),
+                project=kwargs.get("project", "default"),
+                session_id=kwargs.get("session_id", ""),
             )
             return {"status": "stored",
                     "user_id": kwargs["user_id"],
