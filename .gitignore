@@ -17,9 +17,10 @@ build/
 .vscode/
 .claude/
 .agents/
+.DS_Store
+Thumbs.dbdoc/
 doc/
 test/
 AGENTS.md
-.DS_Store
-Thumbs.dbdoc/
-.setup.py
+setup.py
+
