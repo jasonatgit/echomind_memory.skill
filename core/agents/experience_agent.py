@@ -26,6 +26,17 @@ class ExperienceMemoryAgent:
 
     def store_experience(self, user_id: str, task_id: str, task_type: str,
                         success: bool, steps: List[str], summary: str) -> str:
+        # Check for existing entry with same user+summary to increment frequency
+        existing_id = None
+        for eid, entry in self.store.items():
+            if entry.user_id == user_id and entry.summary == summary:
+                existing_id = eid
+                break
+
+        if existing_id:
+            self.store[existing_id].frequency += 1
+            return existing_id
+
         entry = ExperienceEntry(
             user_id=user_id, task_type=task_type,
             success=success, steps_sequence=steps, summary=summary,

@@ -12,14 +12,14 @@
 
 import sys
 import os
+import atexit
 
 _pkg_dir = os.path.dirname(os.path.abspath(__file__))
 if _pkg_dir not in sys.path:
     sys.path.insert(0, _pkg_dir)
 
-# Module-level singleton: reuse agent across call() invocations
-_call_agent = None
-_call_cfg = None
+# Module-level agent cache: keyed by resolved config_path
+_call_agents: dict = {}
 
 
 def call(tool_name: str, config_path: str = None, **kwargs):
@@ -36,15 +36,22 @@ def call(tool_name: str, config_path: str = None, **kwargs):
     from core.config_manager import ConfigManager, get_config_manager
     from core.memory_agent import MainMemoryAgent
 
-    # Singleton reuse: avoid creating new connection per call
-    global _call_agent, _call_cfg
-    new_cfg = ConfigManager(config_path=config_path) if config_path else get_config_manager()
-    if _call_cfg is not new_cfg or _call_agent is None:
-        _call_agent = MainMemoryAgent(config_manager=new_cfg)
-        _call_cfg = new_cfg
-    agent = _call_agent
-    if not agent.is_persistence_enabled():
+    # Resolve config path for cache key
+    if config_path:
+        resolved = os.path.expanduser(config_path)
+    else:
+        resolved = os.environ.get("ECHOMIND_CONFIG") or os.path.expanduser("~/.echomind/echomind_config.yaml")
+
+    # Cache hit: reuse agent (avoids re-creating DB connection per call)
+    if resolved not in _call_agents:
+        cfg = ConfigManager(config_path=config_path) if config_path else get_config_manager()
+        agent = MainMemoryAgent(config_manager=cfg)
         agent.enable_persistence()
+        _call_agents[resolved] = (agent, cfg)
+    else:
+        agent, cfg = _call_agents[resolved]
+        if not agent.is_persistence_enabled():
+            agent.enable_persistence()
 
     try:
         if tool_name == "retrieve_memory":
@@ -131,8 +138,18 @@ def call(tool_name: str, config_path: str = None, **kwargs):
         else:
             raise ValueError(f"Unknown tool: {tool_name}")
 
-    finally:
-        agent.disable_persistence()
+    except Exception:
+        raise
+
+
+@atexit.register
+def _cleanup_call_agents():
+    """Gracefully close all cached agent connections on process exit."""
+    for path, (agent, _) in list(_call_agents.items()):
+        try:
+            agent.disable_persistence()
+        except Exception:
+            pass
 
 
 def init(config_path: str = None):

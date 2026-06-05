@@ -9,23 +9,20 @@ from typing import List, Dict, Optional, Callable, Union, Tuple
 
 logger = logging.getLogger("ReflectiveAgent")
 
-_ENGINE_LOADED = False
 _engine = None
 
 try:
     from . import _reflective_core as _engine
-
-    _ENGINE_LOADED = True
+    logger.info("Reflection engine: native compiled extension loaded")
 except ImportError:
     try:
         from . import _reflective_fallback as _engine
+        logger.info("Reflection engine: Python fallback loaded")
     except ImportError:
-        pass
+        _engine = None
+        logger.warning("Reflection engine: NOT available")
 
-if _ENGINE_LOADED:
-    logger.info("Reflection engine: ready")
-else:
-    logger.debug("Reflection engine: unavailable (using fallback)")
+# All methods use _engine is None as the single source of truth
 
 
 class ReflectiveAgent:
@@ -63,10 +60,10 @@ class ReflectiveAgent:
             records,
             user_id,
             platform,
-            llm_fn=None,  # ← no LLM → engine returns (prompt, ids) tuple
-            config=self.config,
-            store=self.store,
-            memory=self.memory,
+            None,  # llm_fn=None → engine returns (prompt, ids) tuple
+            self.config,
+            self.store,
+            self.memory,
         )
         if isinstance(result, tuple) and len(result) == 2:
             return result
@@ -94,10 +91,10 @@ class ReflectiveAgent:
             records,
             user_id,
             platform,
-            llm_fn=llm_fn,
-            config=self.config,
-            store=self.store,
-            memory=self.memory,
+            llm_fn,
+            self.config,
+            self.store,
+            self.memory,
         )
         if result is not None and not isinstance(result, tuple):
             self._daily_count += 1

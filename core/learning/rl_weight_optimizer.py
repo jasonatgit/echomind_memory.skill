@@ -19,7 +19,7 @@ class FeedbackRecord(BaseModel):
 
 class RLWeightOptimizer:
     _WEIGHT_SPEC = {
-        "relevance": {"range": [0.30, 0.50], "default": 0.40},
+        "relevance": {"range": [0.30, 0.50], "default": [0.30, 0.50]},
         "recency":           {"range": [0.15, 0.25], "default": [0.15, 0.25]},
         "frequency":         {"range": [0.10, 0.20], "default": [0.10, 0.20]},
         "explicit_feedback": {"range": [0.10, 0.20], "default": [0.10, 0.20]},
@@ -145,6 +145,26 @@ class RLWeightOptimizer:
 
     def get_current_weights(self) -> Dict[str, float]:
         return self.ema_weights.copy()
+
+    def decay_all(self, factor: float = 0.95):
+        """Decay all weights by a multiplicative factor.
+
+        Used by reflection engine when 'forget_suggestions' are provided.
+        """
+        for k in self.weights:
+            self.weights[k] = max(0.01, self.weights[k] * factor)
+        # Re-normalize
+        total = sum(self.weights.values())
+        if total > 0:
+            for k in self.weights:
+                self.weights[k] /= total
+        # Sync EMA weights
+        for k in self.ema_weights:
+            self.ema_weights[k] = (
+                self.decay_factor * self.ema_weights[k]
+                + (1 - self.decay_factor) * self.weights[k]
+            )
+        logger.info(f"[RL] Weights decayed by factor={factor}, new weights: {self.ema_weights}")
 
     def get_history(self) -> List[Dict]:
         return self.history.copy()

@@ -312,12 +312,34 @@ class SqliteStore:
 
 
     def _merge_platform_prefs(self, existing_prefs, platform_prefs, platform):
-        """Merge platform-specific preferences into existing structure."""
-        merged = dict(existing_prefs) if existing_prefs else {}
+        """Merge platform-specific preferences into existing structure.
+
+        Handles multiple formats:
+          - {"response_style": "concise"}  # legacy flat
+          - {"_default": {...}, "hermes": {...}}  # multi-platform
+          - {"_default": {"_default": {...}, ...}}  # double-nested (bug recovery)
+        """
+        if not isinstance(existing_prefs, dict):
+            existing_prefs = {}
+
+        merged = dict(existing_prefs)
+
+        # Recover from double-nested _default (bug introduced in earlier versions)
+        if isinstance(merged.get("_default"), dict) and "_default" in merged["_default"]:
+            inner = merged["_default"]
+            merged = dict(inner)
+            for k, v in inner.items():
+                if k != "_default":
+                    merged[k] = v
+
+        # Ensure _default key exists
         if "_default" not in merged:
-            merged = {"_default": merged} if merged else {"_default": {}}
+            non_default = {k: v for k, v in merged.items() if k != "_default"}
+            merged = {"_default": non_default} if non_default else {"_default": {}}
+
         merged[platform] = platform_prefs
-        merged["_default"].update(platform_prefs)
+        if platform != "_default":
+            merged["_default"].update(platform_prefs)
         return merged
     def save_user(self, user_id: str, preferences: Dict = None, habits: Dict = None,
                   history: List = None, version: int = 1, platform: str = None):
@@ -328,7 +350,14 @@ class SqliteStore:
                 preferences = self._merge_platform_prefs(
                     existing.get("preferences", {}), preferences or {}, platform)
             else:
-                preferences = {"_default": preferences or {}}
+                # No platform: merge into _default, preserving existing platform keys
+                existing = self._get_user_raw(user_id)
+                existing_prefs = existing.get("preferences", {})
+                if isinstance(existing_prefs, dict) and "_default" in existing_prefs:
+                    existing_prefs["_default"].update(preferences or {})
+                    preferences = existing_prefs
+                else:
+                    preferences = {"_default": preferences or {}}
             self._conn.execute("""
                 INSERT INTO user_memory (user_id, preferences, habits, history, last_updated, version)
                 VALUES (?, ?, ?, ?, datetime('now'), ?)

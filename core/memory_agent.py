@@ -114,6 +114,7 @@ class MainMemoryAgent:
                 success=bool(e.get("success",0)),
                 steps_sequence=e.get("steps_sequence",[]),
                 summary=e.get("summary",""), tags=e.get("tags",[]))
+            exp.frequency = e.get("frequency", 1)  # restore persisted frequency
             self.experience_agent.store[e.get("id","")] = exp
             loaded["experiences"] += 1
 
@@ -438,7 +439,7 @@ class MainMemoryAgent:
                             logger.debug("Failed to calculate freshness score")
                     # Domain boost: same-domain memories get +0.1
                     mem_domain = mem["metadata"].get("domain") or mem["metadata"].get("category", "")
-                    domain_boost = 0.1 if (research_domain != "general" and mem_domain == research_domain) else 0
+                    domain_boost = 0.1 if (detected_domain != "general" and mem_domain == detected_domain) else 0
                     score = (relevance * weights["relevance"] + recency * weights["recency"] + trust * weights["trust_score"] + domain_boost) * freshness
                     scored.append(MemoryRecord(source=source, content=mem["content"], importance=round(score, 3), metadata=mem))
 
@@ -470,7 +471,7 @@ class MainMemoryAgent:
             elif source == "research":
                 for mem in memories:
                     mem_paper_domain = mem.get("domain", "")
-                    research_domain_boost = 0.15 if (research_domain != "general" and mem_paper_domain == research_domain) else 0
+                    research_domain_boost = 0.15 if (detected_domain != "general" and mem_paper_domain == detected_domain) else 0
                     score = mem["relevance"] * weights["relevance"] + mem["importance_score"] * 0.3 + research_domain_boost
                     key_points_str = "; ".join(mem.get("key_points", [])[:3])
                     scored.append(MemoryRecord(
@@ -746,13 +747,30 @@ class MainMemoryAgent:
         from pathlib import Path
         # Path traversal protection: disallow .. components
         root_path = Path(project_root).resolve()
-        allowed_prefixes = [Path.home(), Path.cwd()]
-        if ".." in project_root.split(os.sep):
+
+        # Use Path.parts for cross-platform .. detection
+        if ".." in Path(project_root).parts:
             raise ValueError(f"Path traversal not allowed: {project_root}")
-        if not any(str(root_path).startswith(str(p)) for p in allowed_prefixes):
+
+        # Whitelist: only allow home or cwd subdirectories
+        home = Path.home().resolve()
+        cwd = Path.cwd().resolve()
+        allowed = False
+        for base in (home, cwd):
+            try:
+                root_path.relative_to(base)
+                allowed = True
+                break
+            except ValueError:
+                continue
+        if not allowed:
             raise ValueError(f"Path outside allowed scope: {root_path}")
-        echomind_dir = root_path / ".echomind"
-        echomind_dir.mkdir(exist_ok=True)
+
+        try:
+            echomind_dir = root_path / ".echomind"
+            echomind_dir.mkdir(exist_ok=True)
+        except PermissionError as e:
+            raise ValueError(f"Cannot create directory at {root_path / '.echomind'}: {e}")
 
         user_mem = self.user_agent.get(user_id)
         exp_mem = self.experience_agent.find_similar_tasks(

@@ -241,11 +241,15 @@ async def api_reflect(req: ReflectRequest, auth=Depends(verify_api_key)):
     else:
         # Fetch full records (not just IDs) for process_result
         full_records = memory_agent.get_recent_episodic(req.user_id, req.count)
-        # Filter to requested IDs
-        id_set = set(req.record_ids or [])
-        records = [r for r in full_records if r.get("id") in id_set]
-        if not records:
-            records = [{"id": rid, "content": "", "text": ""} for rid in (req.record_ids or [])]
+        # Filter to requested IDs (if specified)
+        if req.record_ids:
+            id_set = set(req.record_ids)
+            records = [r for r in full_records if r.get("id") in id_set]
+            if not records:
+                # Records may have been evicted; use placeholders
+                records = [{"id": rid, "content": "", "text": ""} for rid in id_set]
+        else:
+            records = full_records
         output = memory_agent.reflective.process_result(
             raw_response=req.llm_response,
             records=records,

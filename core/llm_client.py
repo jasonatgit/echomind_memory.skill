@@ -135,21 +135,30 @@ class LLMClient:
                     text_key: str = "content") -> List[float]:
         """Score multiple memory items against a query.
 
-        Tries to score items in a single LLM call for efficiency.
+        Scores items in batches of 5 to avoid LLM output misalignment.
         Falls back to individual calls if batch format fails.
         Returns list of floats (0.0–1.0) in the same order as items.
         """
         if not self._available or not items:
             return [0.0] * len(items)
 
-        # Build a batch prompt: number each item, ask for space-separated scores
+        batch_size = 5
+        all_scores = []
+        for start in range(0, len(items), batch_size):
+            batch = items[start:start + batch_size]
+            all_scores.extend(self._batch_score_inner(query, batch, text_key))
+        return all_scores
+
+    def _batch_score_inner(self, query: str, items: List[Dict[str, Any]],
+                           text_key: str = "content") -> List[float]:
+        """Score a single batch of items (max 5)."""
         items_text = "\n\n".join(
             f"[{i}] {item.get(text_key, str(item))[:200]}"
             for i, item in enumerate(items)
         )
         prompt = (
             f"Rate the relevance of each item to this query on a scale of 0-10.\n"
-            f"Reply with {len(items)} space-separated integers (e.g. '7 3 9 1').\n"
+            f"Reply with {len(items)} space-separated integers (e.g. '7 3 9').\n"
             f"Nothing else.\n\n"
             f"Query: {query}\n\n{items_text}"
         )

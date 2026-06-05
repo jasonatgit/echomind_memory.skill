@@ -28,7 +28,9 @@ class UserMemoryAgent:
         """Extract current platform preferences from platform-aware preferences JSON."""
         raw = mem.dict()
         prefs = raw.get("preferences", {})
-        if isinstance(prefs, dict) and "_default" in prefs:
+        if not isinstance(prefs, dict):
+            prefs = {}
+        if "_default" in prefs:
             # v3.0+ platform-aware format
             merged = dict(prefs.get("_default", {}))
             if platform and platform in prefs:

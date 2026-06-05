@@ -285,10 +285,18 @@ class EchomindMemoryProvider(MemoryProvider):
                         messages, project=self._project_id)
                 except Exception as ex:
                     logger.error(f"transcript save error: {ex}")
+            # Filter to standard role/content messages only
+            clean_messages = [
+                {"role": m["role"], "content": m["content"]}
+                for m in messages[-10:]
+                if isinstance(m, dict) and "role" in m and "content" in m
+            ]
+            if not clean_messages:
+                return
             self._agent.store(
                 user_id=self._user_id,
                 task_id=f"{self._session_id}:summary",
-                context=messages[-10:],  # Recent 10 turns
+                context=clean_messages,
                 task_status="session_end",
                 success=True,
                 platform=PLATFORM,
