@@ -145,6 +145,8 @@ async def api_retrieve(req: RetrieveRequest, auth=Depends(verify_api_key)):
         )
         return {
             "working_memory": working,
+            "experience_memory": result.get("raw_memory_sources", {}).get("experience", []),
+            "knowledge_memory": result.get("raw_memory_sources", {}).get("knowledge", []),
             "confidence_score": float(confidence),
             "used_weights": memory_agent.rl_optimizer.get_current_weights(),
             "feedback_requested": result.get("feedback_request", False),
@@ -153,7 +155,9 @@ async def api_retrieve(req: RetrieveRequest, auth=Depends(verify_api_key)):
         }
     except Exception as e:
         return {
-            "working_memory": [], "confidence_score": 0.0,
+            "working_memory": [], "raw_memory_sources": {},
+            "experience_memory": [], "knowledge_memory": [],
+            "confidence_score": 0.0,
             "used_weights": {}, "feedback_requested": False, "error": str(e),
         }
 

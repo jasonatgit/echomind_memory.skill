@@ -84,6 +84,16 @@ class KnowledgeMemoryAgent:
 
 
     def add_document(self, content: str, metadata: Dict) -> str:
+        # Dedup: if same content already exists, update access_count and return existing id
+        for existing_id, existing_entry in self.store.items():
+            if existing_entry.content == content:
+                existing_entry.metadata["access_count"] = (
+                    existing_entry.metadata.get("access_count", 0) + 1
+                )
+                existing_entry.metadata["last_updated"] = metadata.get(
+                    "last_updated", existing_entry.metadata.get("last_updated", "")
+                )
+                return existing_id
         entry = KnowledgeEntry(content=content, metadata=metadata)
         self.store[entry.id] = entry
         self._evict_oldest()

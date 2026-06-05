@@ -1,5 +1,5 @@
 name: echomind_memory
-version: "1.1.4"
+version: "1.1.5"
 description: "A persistent memory system that lets your AI remember user preferences, tasks, knowledge, and self-learned experiences. Supports OpenClaw, Hermes, Claude Code, and OpenCode ecosystems."
 author: "jasonatgit"
 license: MIT
