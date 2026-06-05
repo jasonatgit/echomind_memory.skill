@@ -640,7 +640,18 @@ class SqliteStore:
             "FROM task_memory WHERE user_id=? ORDER BY created_at DESC LIMIT ?",
             (user_id, count),
         ).fetchall()
-        return [dict(r) for r in rows]
+        records = [dict(r) for r in rows]
+        # Enrich with content summary from experience_memory for reflection engine
+        for rec in records:
+            exp_row = self._conn.execute(
+                "SELECT summary FROM experience_memory WHERE user_id=? AND id LIKE ? ORDER BY created_at DESC LIMIT 1",
+                (user_id, f"{user_id}:{rec.get('id', '')}%"),
+            ).fetchone()
+            if exp_row:
+                rec["content"] = exp_row["summary"]
+            else:
+                rec["content"] = ""
+        return records
 
     def close(self):
         if self._conn:
