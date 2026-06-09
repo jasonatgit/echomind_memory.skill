@@ -1,0 +1,8 @@
+# config.example.yaml — EchoMind 配置模板
+# 复制此文件到 ~/.echomind/echomind_config.yaml 后按需修改
+
+# ── 服务器配置 ──
+server:
+  host: "127.0.0.1"   # HTTP API 监听地址
+  port: 8005          # HTTP API 监听端口
+  api_key: ""         # API Key（空=跳过认证）

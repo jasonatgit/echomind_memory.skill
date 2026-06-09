@@ -53,8 +53,10 @@ class LLMClient:
 
     @staticmethod
     def _resolve_api_key(config: dict) -> str:
+        import re as _re
         key = config.get("api_key", "")
-        if key.startswith("${") and key.endswith("}"):
+        _ENV_VAR_PATTERN = _re.compile(r'^\$\{[A-Za-z_][A-Za-z0-9_]*\}$')
+        if _ENV_VAR_PATTERN.match(key):
             env_var = key[2:-1]
             return os.environ.get(env_var, "")
         return key
@@ -101,7 +103,11 @@ class LLMClient:
             )
             resp.raise_for_status()
             data = resp.json()
-            return data["choices"][0]["message"]["content"]
+            try:
+                return data["choices"][0]["message"]["content"]
+            except (KeyError, IndexError, TypeError):
+                logger.warning("LLM returned unexpected response format: %s", str(data)[:200])
+                return ""
         except Exception as e:
             logger.warning("LLM chat failed: %s", e)
             return ""
@@ -197,9 +203,14 @@ def get_llm_client(config: Optional[dict] = None) -> Optional[LLMClient]:
 
     Pass config explicitly, or omit to auto-load from ConfigManager.
     Returns None when LLM is disabled (provider=none).
+    Use force_reload=True to reinitialize after config reload.
     """
     global _client_singleton
     with _llm_client_lock:
+        if config is not None:
+            client = LLMClient(config)
+            _client_singleton = client
+            return client if client.available else None
         if _client_singleton is None:
             if config is None:
                 from .config_manager import get_config_manager
@@ -208,3 +219,11 @@ def get_llm_client(config: Optional[dict] = None) -> Optional[LLMClient]:
             _client_singleton = client
             return client if client.available else None
     return _client_singleton if _client_singleton.available else None
+
+
+def reload_llm_client():
+    """Force reinitialize LLM client singleton (call after config reload)."""
+    global _client_singleton
+    with _llm_client_lock:
+        if _client_singleton is not None:
+            _client_singleton = None

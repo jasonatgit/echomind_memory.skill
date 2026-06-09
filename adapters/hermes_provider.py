@@ -1,5 +1,5 @@
 # EchoMind Memory — Hermes MemoryProvider Adapter
-# implement Hermes v0.13.0+  MemoryProvider interface, providing 100% automated memory access
+# implement Hermes v0.13.0+  MemoryProvider interface (v0.16.0 rewound param), providing 100% automated memory access
 #
 # Install: copy to ~/.hermes/plugins/echomind-memory/
 # Activate: hermes config set memory.provider echomind
@@ -10,6 +10,7 @@ import sys
 import os
 import random
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 import requests  # Hermes bundled, zero new dependencies
 
@@ -63,6 +64,7 @@ class EchomindMemoryProvider(MemoryProvider):
         self._agent: Optional[MainMemoryAgent] = None
         self._session_id: str = ""
         self._user_id: str = ""
+        self._profile: str = "default"
         self._turn_count: int = 0
         self._context_buffer: List[Dict] = []
         self._skip_writes: bool = False  # non-primary context Skip write
@@ -77,11 +79,52 @@ class EchomindMemoryProvider(MemoryProvider):
         """Check if available（no network required, local SQLite）"""
         return True
 
+    def _derive_profile(self, hermes_home: str) -> str:
+        """从 hermes_home 路径中提取 profile 名称，跨平台兼容。
+
+        策略（按优先级）:
+        1. pathlib.Path.parts 匹配 "profiles" 目录段（Linux/WSL/macOS）
+        2. 字符串匹配 "/profiles/"（Unix 路径字符串）
+        3. 字符串匹配 "\\profiles\\" 或 "\\profiles/"（Windows 路径字符串）
+        4. 回退 "default"
+
+        支持:
+        - Linux: /home/user/.hermes/profiles/weixin/plugins/echomind → weixin
+        - Windows: C:\\Users\\user\\.hermes\\profiles\\weixin\\plugins\\echomind → weixin
+        - WSL: /mnt/c/Users/user/.hermes/profiles/weixin/plugins/echomind → weixin
+        - 默认/无 profile: → default
+        """
+        if not hermes_home:
+            return "default"
+
+        # 策略1: pathlib 路径段匹配（纯 Unix/WSL 路径）
+        try:
+            hermes_path = Path(hermes_home).resolve()
+            parts = hermes_path.parts
+            for i, part in enumerate(parts):
+                if part == "profiles" and i + 1 < len(parts):
+                    return parts[i + 1]
+        except (IndexError, AttributeError, ValueError):
+            pass
+
+        # 策略2: Unix 风格 /profiles/ 字符串匹配
+        if "/profiles/" in hermes_home:
+            return hermes_home.split("/profiles/")[-1].split("/")[0]
+
+        # 策略3: Windows 风格 \profiles\ 字符串匹配
+        for sep in ('\\profiles\\', '\\profiles/'):
+            if sep in hermes_home:
+                return hermes_home.split(sep)[-1].split("\\")[0].split("/")[0]
+
+        return "default"
+
     def initialize(self, session_id: str, **kwargs):
         """Hermes called on startup, connects SQLite + Load history on startup
-        
+
         kwargs may contain: hermes_home, platform, agent_context, user_id etc.
         agent_context used to distinguish primary/subagent/cron/flush scenarios.
+
+        Hermes v1.1.6+: auto-derive profile from hermes_home path.
         """
         # Non-primary context (subagent/cron/flush) — do not write to user memory
         agent_ctx = kwargs.get("agent_context", "primary")
@@ -97,16 +140,18 @@ class EchomindMemoryProvider(MemoryProvider):
         self._skip_writes = False
         self._session_id = session_id
         self._user_id = kwargs.get("user_id", session_id)
+        self._profile = self._derive_profile(kwargs.get("hermes_home", ""))
         self._project_id = kwargs.get("project", "default")
         self._turn_count = 0
         self._context_buffer = []
 
         self._agent = MainMemoryAgent()
         self._agent.enable_persistence()
-        
+
         logger.info(
             f"EchoMind Memory initialized: session={session_id}, "
-            f"user={self._user_id}, platform={PLATFORM}"
+            f"user={self._user_id}, profile={self._profile}, "
+            f"project={self._project_id}, platform={PLATFORM}"
         )
 
     def shutdown(self):
@@ -153,6 +198,7 @@ class EchomindMemoryProvider(MemoryProvider):
                 platform=PLATFORM,
                 project=self._project_id,
                 session_id=self._session_id,
+                profile=self._profile,
             )
             return self._format_prefetch_context(result)
         except Exception as e:
@@ -186,7 +232,7 @@ class EchomindMemoryProvider(MemoryProvider):
         ])
 
         try:
-            self._agent.store(
+            ok = self._agent.store(
                 user_id=self._user_id,
                 task_id=f"{session_id}:turn{self._turn_count}",
                 context=messages,
@@ -195,12 +241,16 @@ class EchomindMemoryProvider(MemoryProvider):
                 platform=PLATFORM,
                 project=self._project_id,
                 session_id=session_id,
+                profile=self._profile,
             )
-            logger.debug(f"sync_turn: turn {self._turn_count} stored")
+            if ok:
+                logger.debug(f"sync_turn: turn {self._turn_count} stored")
+            else:
+                logger.warning(f"sync_turn: turn {self._turn_count} store failed")
         except Exception as e:
             logger.error(f"sync_turn error: {e}")
             # cache to on failure buffer retry on next
-            self._context_buffer = messages[-6:]  # keep recent 6 messages
+            self._context_buffer = messages[-20:]  # keep recent 20 messages
 
     # ═══════════════════════════════════════════════════
     # LLM Tool definitions（Explicit invocation, supplementing auto-access）
@@ -282,7 +332,8 @@ class EchomindMemoryProvider(MemoryProvider):
                 try:
                     self._agent.db.save_transcript(
                         self._session_id, self._user_id,
-                        messages, project=self._project_id)
+                        messages, project=self._project_id,
+                        profile=self._profile)
                 except Exception as ex:
                     logger.error(f"transcript save error: {ex}")
             # Filter to standard role/content messages only
@@ -293,7 +344,7 @@ class EchomindMemoryProvider(MemoryProvider):
             ]
             if not clean_messages:
                 return
-            self._agent.store(
+            ok = self._agent.store(
                 user_id=self._user_id,
                 task_id=f"{self._session_id}:summary",
                 context=clean_messages,
@@ -302,8 +353,12 @@ class EchomindMemoryProvider(MemoryProvider):
                 platform=PLATFORM,
                 project=self._project_id,
                 session_id=self._session_id,
+                profile=self._profile,
             )
-            logger.info("on_session_end: session summary stored")
+            if ok:
+                logger.info("on_session_end: session summary stored")
+            else:
+                logger.warning("on_session_end: store failed")
         except Exception as e:
             logger.error(f"on_session_end error: {e}")
 
@@ -315,21 +370,35 @@ class EchomindMemoryProvider(MemoryProvider):
         new_session_id: str,
         parent_session_id: str = "",
         reset: bool = False,
+        rewound: bool = False,  # Hermes v0.16.0+: True when /undo N truncates history
         **kwargs,
     ):
         """Called on session switch（Hermes v0.13.0+ New）。
-        
+
         /resume, /branch, /reset, context Triggered by operations like compression.
-        Update internal session_id state, ensuring subsequent writes use the correct session。
+        Update internal session_id state, ensuring subsequent writes use the correct session.
+
+        Hermes v0.16.0+: rewound=True when /undo N truncates conversation history
+        without changing session_id. Provider should invalidate caches.
         """
         if reset:
             # /new, /reset: Clear buffer
             self._context_buffer = []
             self._turn_count = 0
+
+        if rewound:
+            # /undo N: Clear context cache so subsequent turns don't use stale state
+            if self._agent:
+                self._agent.clear_context()
+            logger.info(
+                "on_session_switch: rewound=True — context cache cleared for %s",
+                new_session_id,
+            )
+
         self._session_id = new_session_id
         logger.info(
-            "on_session_switch: new=%s parent=%s reset=%s",
-            new_session_id, parent_session_id, reset,
+            "on_session_switch: new=%s parent=%s reset=%s rewound=%s",
+            new_session_id, parent_session_id, reset, rewound,
         )
 
     def on_pre_compress(self, messages: List[Dict[str, Any]]) -> str:
@@ -342,7 +411,7 @@ class EchomindMemoryProvider(MemoryProvider):
             return ""
         try:
             # Store messages about to be compressed into long-term memory
-            self._agent.store(
+            ok = self._agent.store(
                 user_id=self._user_id,
                 task_id=f"{self._session_id}:compress",
                 context=messages[-20:],
@@ -351,8 +420,12 @@ class EchomindMemoryProvider(MemoryProvider):
                 session_id=self._session_id,
                 success=True,
                 platform=PLATFORM,
+                profile=self._profile,
             )
-            logger.debug("on_pre_compress: %d messages preserved", min(20, len(messages)))
+            if ok:
+                logger.debug("on_pre_compress: %d messages preserved", min(20, len(messages)))
+            else:
+                logger.warning("on_pre_compress: store failed")
         except Exception as e:
             logger.error(f"on_pre_compress error: {e}")
         return ""
@@ -365,7 +438,7 @@ class EchomindMemoryProvider(MemoryProvider):
         if self._skip_writes or not self._agent:
             return
         try:
-            self._agent.store(
+            ok = self._agent.store(
                 user_id=self._user_id,
                 task_id=f"{self._session_id}:delegation:{child_session_id}",
                 context=[
@@ -375,8 +448,11 @@ class EchomindMemoryProvider(MemoryProvider):
                 task_status="delegated",
                 success=True,
                 platform=PLATFORM,
+                project=self._project_id,
+                session_id=self._session_id,
+                profile=self._profile,
             )
-            logger.debug("on_delegation: child=%s stored", child_session_id)
+            logger.debug("on_delegation: child=%s stored (ok=%s)", child_session_id, ok)
         except Exception as e:
             logger.error(f"on_delegation error: {e}")
 
@@ -420,17 +496,20 @@ class EchomindMemoryProvider(MemoryProvider):
             {"role": "assistant", "content": content},
         ]
         try:
-            self._agent.store(
+            ok = self._agent.store(
                 user_id=self._user_id,
                 task_id=f"{self._session_id}:memory:{action}",
                 context=mirror,
                 task_status="memory_mirror",
                 success=True,
                 platform=PLATFORM,
+                project=self._project_id,
+                session_id=self._session_id,
+                profile=self._profile,
             )
             logger.info(
-                "EchoMind: mirrored memory %s target=%s content_len=%d",
-                action, target, len(content),
+                "EchoMind: mirrored memory %s target=%s content_len=%d (ok=%s)",
+                action, target, len(content), ok,
             )
         except Exception as e:
             logger.error(

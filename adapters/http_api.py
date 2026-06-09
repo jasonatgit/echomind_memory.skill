@@ -10,6 +10,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import APIKeyHeader
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 import logging
 import uvicorn
@@ -31,10 +32,13 @@ api_key_header = APIKeyHeader(name=API_KEY_NAME, auto_error=False)
 def verify_api_key(api_key: str = Depends(api_key_header)):
     expected = cfg.get("api_key", "")
     if not expected:
+        logger.warning("API key not configured — authentication DISABLED")
         return ""  # no key configured — allow all (backward compat)
-    if api_key and api_key == expected:
-        return api_key
-    raise HTTPException(status_code=403, detail="Invalid or missing API key")
+    if not api_key:
+        raise HTTPException(status_code=403, detail="Missing API key header")
+    if api_key != expected:
+        raise HTTPException(status_code=403, detail="Invalid or missing API key")
+    return api_key
 
 
 @asynccontextmanager
@@ -64,10 +68,10 @@ class RetrieveRequest(BaseModel):
     query: str
     task_id: Optional[str] = None
     max_results: int = 5
+    project: str = "default"
+    session_id: str = ""
+    profile: str = "default"
 
-class ContextMessage(BaseModel):
-    role: str
-    content: str
 
 class StoreRequest(BaseModel):
     user_id: str
@@ -78,6 +82,7 @@ class StoreRequest(BaseModel):
     task_status: str
     success: bool = False
     experience_summary: Optional[str] = None
+    profile: str = "default"
 
 class FeedbackRequest(BaseModel):
     user_id: str
@@ -124,16 +129,25 @@ logger = logging.getLogger("EchoMind.API")
 EXCEPTION_RESPONSE = {"status": "error", "detail": "Internal server error"}
 
 
-async def _safe_exception(e: Exception, context: str = "") -> dict:
-    logger.error(f"{context}: {e}", exc_info=True)
-    return EXCEPTION_RESPONSE
+def _error_response(e: Exception, log_context: str = "") -> dict:
+    """Unified error response — always returns HTTP 200 with error field."""
+    logger.error(f"{log_context}: {e}", exc_info=True)
+    return {"status": "error", "detail": str(e)}
+
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request, exc: HTTPException):
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"status": "error", "detail": exc.detail},
+    )
 
 
 # ── Routes ──
 @app.post("/api/memory/retrieve")
 async def api_retrieve(req: RetrieveRequest, auth=Depends(verify_api_key)):
     try:
-        result = memory_agent.retrieve_for_task(req.query, req.user_id, req.task_id, platform=req.platform)
+        result = memory_agent.retrieve_for_task(req.query, req.user_id, req.task_id, platform=req.platform, profile=req.profile)
         working = [
             {"source": m.source, "content": m.content,
              "importance": m.importance, "metadata": m.metadata}
@@ -164,18 +178,18 @@ async def api_retrieve(req: RetrieveRequest, auth=Depends(verify_api_key)):
 @app.post("/api/memory/store")
 async def api_store(req: StoreRequest, auth=Depends(verify_api_key)):
     try:
-        memory_agent.store(
+        ok = memory_agent.store(
             req.user_id, req.task_id,
             [{"role": m.role, "content": m.content} for m in req.context],
             req.task_status, req.success, req.experience_summary,
             platform=req.platform, title=req.title,
         )
-        return {"status": "stored", "user_id": req.user_id, "task_id": req.task_id}
+        return {"status": "stored" if ok else "error", "user_id": req.user_id, "task_id": req.task_id}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        return _error_response(e, "api_store")
 
 @app.get("/api/memory/search-sessions")
-async def search_sessions(q: str = "", user_id: str = None, project: str = None, limit: int = 5):
+async def search_sessions(q: str = "", user_id: str = None, project: str = None, limit: int = 5, auth=Depends(verify_api_key)):
     if not memory_agent or not memory_agent.is_persistence_enabled():
         return {"results": [], "message": "Persistence is not enabled"}
     try:
@@ -190,7 +204,7 @@ async def api_feedback(req: FeedbackRequest, auth=Depends(verify_api_key)):
         memory_agent.record_feedback(req.user_id, req.task_id, req.feedback, req.retrieved_memories)
         return {"status": "feedback_received", "user_id": req.user_id}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        return _error_response(e, "api_feedback")
 
 @app.post("/api/memory/sync-code")
 async def api_sync_code(req: SyncCodeRequest, auth=Depends(verify_api_key)):
@@ -198,7 +212,7 @@ async def api_sync_code(req: SyncCodeRequest, auth=Depends(verify_api_key)):
         memory_agent.sync_to_code_project(req.project_root, req.user_id)
         return {"status": "synced", "path": f"{req.project_root}/.echomind"}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        return _error_response(e, "api_sync_code")
 
 @app.post("/api/research/paper")
 async def api_add_paper(req: ResearchPaperRequest, auth=Depends(verify_api_key)):
@@ -210,7 +224,7 @@ async def api_add_paper(req: ResearchPaperRequest, auth=Depends(verify_api_key))
             key_points=req.key_points, importance_score=req.importance_score)
         return {"status": "stored", "paper_id": paper_id, "title": req.title}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        return _error_response(e, "api_add_paper")
 
 @app.post("/api/research/note")
 async def api_add_note(req: ResearchNoteRequest, auth=Depends(verify_api_key)):
@@ -220,7 +234,7 @@ async def api_add_note(req: ResearchNoteRequest, auth=Depends(verify_api_key)):
             linked_papers=req.linked_papers, tags=req.tags)
         return {"status": "stored", "note_id": note_id, "topic": req.topic}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        return _error_response(e, "api_add_note")
 
 
 # ── Reflection (v1.1.0) ──

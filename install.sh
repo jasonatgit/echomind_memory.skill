@@ -1,5 +1,5 @@
 #!/bin/bash
-# install.sh — EchoMind v1.1.0 一键安装 (含开机自启)
+# install.sh — EchoMind v1.1.6 一键安装 (含开机自启)
 set -e
 
 # Hermes 安装目录检测（优先级: 环境变量 > XDG > 默认）
@@ -13,10 +13,11 @@ fi
 
 SKILL_DIR="$(dirname "$0")"
 INSTALL_DIR="${HERMES_HOME_DIR}/skills/echomind-memory"
+# Backward compat: Hermes <0.16 uses plugins/ path; dual-copy ensures both work.
 PLUGIN_DIR="${HERMES_HOME_DIR}/plugins/echomind"
 CONFIG_DIR="${HOME}/.echomind"
 
-echo "=== EchoMind v1.1.0 Install ==="
+echo "=== EchoMind v1.1.6 Install ==="
 echo "  Hermes home: ${HERMES_HOME_DIR}"
 
 # 1. 安装到 Hermes skill
@@ -126,3 +127,19 @@ else
     echo "  Hermes plugin runs in-process — ready to use"
     echo "  To enable HTTP service: ECHOMIND_HTTP_SERVICE=1 ./install.sh"
 fi
+
+# ── Profile 隔离配置提示（v1.1.6+） ──────────────────────
+echo ""
+echo "  ╔══════════════════════════════════════════════════════╗"
+echo "  ║  EchoMind Profile 隔离已就绪                        ║"
+echo "  ╠══════════════════════════════════════════════════════╣"
+echo "  ║  ✅ 记忆按分身（Profile）自动隔离                    ║"
+echo "  ║                                                     ║"
+echo "  ║  ⚠️  如需同一分身内按项目隔离，请在 config.yaml 中   ║"
+echo "  ║  配置:                                              ║"
+echo "  ║    memory:                                          ║"
+echo "  ║      provider: echomind                             ║"
+echo "  ║      project: <你的项目名>                          ║"
+echo "  ║                                                     ║"
+echo "  ║  未设置 project 时，默认为全局共享（仅按 profile 隔离）║"
+echo "  ╚══════════════════════════════════════════════════════╝"

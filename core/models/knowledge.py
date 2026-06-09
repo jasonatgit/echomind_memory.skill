@@ -6,6 +6,7 @@ from typing import Dict, Any
 
 class KnowledgeEntry(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    user_id: str = "default"
     content: str
     metadata: Dict[str, Any] = Field(default_factory=dict)
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))

@@ -9,6 +9,7 @@ class TaskMemory(BaseModel):
     user_id: str
     task_id: str
     project: str = "default"
+    profile: str = "default"
     session_id: str = ""
     session_title: str = ""
     title: str

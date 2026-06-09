@@ -21,12 +21,20 @@ from adapters.hermes_provider import EchomindMemoryProvider
 __all__ = ["EchomindMemoryProvider", "__version__"]
 
 # ── Startup confirmation (user-visible, for Hermes plugin load) ──
-try:
-    from core.storage.sqlite_store import SqliteStore
-    db = SqliteStore()
-    db.connect()
-    db.ensure_tables()
-    row_count = db._conn.execute("SELECT count(*) FROM user_memory").fetchone()[0]
-    print(f"🧠 EchoMind v{__version__} — 记忆存储正常 ({row_count} 条用户记忆)")
-except Exception as e:
-    print(f"⚠️  EchoMind v{__version__} — 记忆存储异常: {e}")
+def _startup_check():
+    """Report memory system status. Called by Hermes plugin loader on import."""
+    try:
+        from core.storage.sqlite_store import SqliteStore
+        db = SqliteStore()
+        db.connect()
+        try:
+            db.ensure_tables()
+            row_count = db._conn.execute("SELECT count(*) FROM user_memory").fetchone()[0]
+            print(f"🧠 EchoMind v{__version__} — 记忆存储正常 ({row_count} 条用户记忆)")
+        finally:
+            if hasattr(db, '_conn') and db._conn:
+                db.close()
+    except Exception as e:
+        print(f"⚠️  EchoMind v{__version__} — 记忆存储异常: {e}")
+
+_startup_check()

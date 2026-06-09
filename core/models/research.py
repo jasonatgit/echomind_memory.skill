@@ -8,6 +8,7 @@ class ResearchPaper(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     user_id: str = "default"
     project: str = "default"
+    profile: str = "default"
     title: str
     authors: List[str] = Field(default_factory=list)
     year: Optional[int] = None
@@ -26,9 +27,10 @@ class ResearchNote(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     user_id: str = "default"
     project: str = "default"
+    profile: str = "default"
     topic: str
     content: str
     linked_papers: List[str] = Field(default_factory=list)
     tags: List[str] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))

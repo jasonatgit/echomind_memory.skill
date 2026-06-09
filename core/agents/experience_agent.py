@@ -1,7 +1,8 @@
 # EchoMind — Experience Memory Agent
+# Fix: 添加倒排索引加速搜索
 
 import logging
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Set
 
 from ..models.experience import ExperienceEntry
 
@@ -16,44 +17,77 @@ class ExperienceMemoryAgent:
         if len(self.store) <= self.MAX_ITEMS:
             return
         excess = len(self.store) - int(self.MAX_ITEMS * 0.9)
-        for k in list(self.store.keys())[:excess]:
+        evicted_keys = list(self.store.keys())[:excess]
+        for k in evicted_keys:
+            entry = self.store.get(k)
+            if entry:
+                # 从索引中移除
+                self._user_index.get(entry.user_id, set()).discard(k)
+                self._type_index.get(entry.task_type, set()).discard(k)
             del self.store[k]
-
-
 
     def __init__(self):
         self.store: Dict[str, ExperienceEntry] = {}
+        self._summary_index: Dict[int, str] = {}
+        # 倒排索引
+        self._user_index: Dict[str, Set[str]] = {}
+        self._type_index: Dict[str, Set[str]] = {}
+
+    def _index_entry(self, entry: ExperienceEntry):
+        self._user_index.setdefault(entry.user_id, set()).add(entry.id)
+        self._type_index.setdefault(entry.task_type, set()).add(entry.id)
 
     def store_experience(self, user_id: str, task_id: str, task_type: str,
-                        success: bool, steps: List[str], summary: str) -> str:
-        # Check for existing entry with same user+summary to increment frequency
-        existing_id = None
+                        success: bool, steps: List[str], summary: str,
+                        project: str = "default", session_id: str = "",
+                        session_title: str = "", tags: List[str] = None,
+                        profile: str = "default") -> str:
+        summary_hash = hash((user_id, summary))
+        if summary_hash in self._summary_index:
+            existing_id = self._summary_index[summary_hash]
+            existing_entry = self.store.get(existing_id)
+            if existing_entry and existing_entry.user_id == user_id and existing_entry.summary == summary:
+                existing_entry.frequency += 1
+                return existing_id
+        # Fallback: linear scan for hash collisions
         for eid, entry in self.store.items():
             if entry.user_id == user_id and entry.summary == summary:
-                existing_id = eid
-                break
-
-        if existing_id:
-            self.store[existing_id].frequency += 1
-            return existing_id
-
+                self._summary_index[summary_hash] = eid
+                entry.frequency += 1
+                return eid
         entry = ExperienceEntry(
             user_id=user_id, task_type=task_type,
             success=success, steps_sequence=steps, summary=summary,
+            project=project, session_id=session_id,
+            session_title=session_title, tags=tags or [],
+            profile=profile,
         )
         self.store[entry.id] = entry
+        self._summary_index[summary_hash] = entry.id
+        self._index_entry(entry)
         self._evict_oldest()
         return entry.id
 
     def find_similar_tasks(self, task_context: str, task_type: str, user_id: Optional[str] = None,
                            project: str = None, session_id: str = None,
                            tags: List[str] = None,
-                           min_success_rate: float = 0.7, limit: int = 3) -> List[Dict]:
+                           min_success_rate: float = 0.7, limit: int = 3,
+                           profile: str = None) -> List[Dict]:
+        # 利用倒排索引快速定位候选集合
+        candidate_ids = set(self.store.keys())
+        if user_id and user_id in self._user_index:
+            candidate_ids &= self._user_index[user_id]
+        if task_type and task_type in self._type_index:
+            candidate_ids &= self._type_index[task_type]
+
         similar = []
-        for entry in self.store.values():
-            if user_id and entry.user_id != user_id:
+        for eid in candidate_ids:
+            entry = self.store.get(eid)
+            if not entry:
                 continue
             if project and entry.project != project:
+                continue
+            if profile and entry.profile != profile:
                 continue
             if session_id and entry.session_id != session_id:
                 continue
@@ -61,9 +95,6 @@ class ExperienceMemoryAgent:
                 entry_tags = entry.tags if isinstance(entry.tags, list) else []
                 if not any(t in entry_tags for t in tags):
                     continue
-            if entry.task_type != task_type:
-                continue
-            # CQ-1: bool/float comparison fix — Only filter explicit failures
             if not entry.success:
                 continue
             if any(k in entry.summary.lower() for k in task_context.lower().split()[:3]):

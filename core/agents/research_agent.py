@@ -34,13 +34,16 @@ class ResearchMemoryAgent:
         return paper.id
 
     def search_papers(self, query: str, domain: str = None, user_id: str = None,
-                      project: str = None, top_k: int = 5) -> List[Dict[str, Any]]:
+                      project: str = None, top_k: int = 5,
+                      profile: str = None) -> List[Dict[str, Any]]:
         results = []
         q_lower = query.lower()
         for p in self.papers.values():
             if user_id and p.user_id != user_id:
                 continue
             if project and p.project != project:
+                continue
+            if profile and p.profile != profile:
                 continue
             if domain and p.domain != domain:
                 continue
@@ -77,13 +80,16 @@ class ResearchMemoryAgent:
         return note.id
 
     def search_notes(self, query: str, tags: List[str] = None, user_id: str = None,
-                     project: str = None, top_k: int = 3) -> List[Dict]:
+                     project: str = None, top_k: int = 3,
+                     profile: str = None) -> List[Dict]:
         results = []
         q_lower = query.lower()
         for n in self.notes.values():
             if user_id and n.user_id != user_id:
                 continue
             if project and n.project != project:
+                continue
+            if profile and n.profile != profile:
                 continue
             if tags and not any(t in n.tags for t in tags):
                 continue
