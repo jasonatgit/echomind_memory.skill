@@ -358,8 +358,6 @@ call("record_feedback",
 All persistent data is stored in `~/.echomind/memory.db` (SQLite file). Can be backed up or deleted at any time. The storage path can be customized via `storage.db_path` in `echomind_config.yaml`.
 
 
-
-
 ---
 
 ## Vision
@@ -374,6 +372,14 @@ EchoMind enables your AI to:
 - Possess an RL-driven self-optimizing weight system — gets smarter with every interaction
 - This is not a plugin, this is an **AI Multi-Agent Memory Neural Network** with *self-reflective memory*.
 
+
+
+---
+## Contact
+*email：*[jasonyouatgmaildotcom](mailto:jasonyouatgmaildotcom)
+
+
+---
 ## Q&A *Click to expand*
 
 <details>

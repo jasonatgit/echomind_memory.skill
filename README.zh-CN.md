@@ -371,6 +371,9 @@ EchoMind 让你的 AI：
 - 这不是一个插件，这是具有*自我反思记忆*的*AI 多智能体记忆神经网络*。
 
 
+## 📫 联系方式
+*email：*[jasonyouatgmaildotcom](mailto:jasonyouatgmaildotcom)
+
 ---
 
 ## Q&A *点击展开*
