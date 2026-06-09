@@ -26,7 +26,7 @@ class RLWeightOptimizer:
         "explicit_feedback": {"range": [0.10, 0.20], "default": [0.10, 0.20]},
         "trust_score":       {"range": [0.05, 0.15], "default": [0.05, 0.15]},
     }
-    # 定义 weight keys 顺序常量，消除硬编码 magic number
+    # Define weight key order constants, eliminate hardcoded magic numbers
     _WEIGHT_KEYS = ["relevance", "recency", "frequency", "explicit_feedback", "trust_score"]
     # state = [5 task features + 5 source ratios] = 10 维
     _TASK_FEATURE_COUNT = 5
@@ -48,7 +48,7 @@ class RLWeightOptimizer:
                 self.weights[key] = random.uniform(float(cfg_val[0]), float(cfg_val[1]))
             else:
                 self.weights[key] = float(cfg_val)
-        # 初始权重 Softmax 归一化
+        # Initial weight Softmax normalization
         init_vals = np.array([self.weights.get(k, 0.0) for k in self._WEIGHT_KEYS])
         exp_vals = np.exp(init_vals - np.max(init_vals))
         softmax_vals = exp_vals / np.sum(exp_vals)
@@ -125,7 +125,7 @@ class RLWeightOptimizer:
         total_reward = 0
         n = len(self.feedback_buffer)
 
-        # Softmax 归一化权重更新
+        # Softmax normalization weight update
         weight_keys = self._WEIGHT_KEYS
         for fb in self.feedback_buffer:
             reward = 1 if fb.user_feedback == "positive" else -1
@@ -145,14 +145,14 @@ class RLWeightOptimizer:
                     delta = self.learning_rate * (reward - pred_score) * state[source_idx]
                     self.weights[weight_key] += delta
 
-        # Softmax 归一化（替代 clamp + sum 归一化，消除强制 0.01 问题）
+        # Softmax normalization (replaces clamp + sum norm, eliminates forced 0.01 issue)
         values = np.array([self.weights.get(k, 0.0) for k in weight_keys])
         exp_values = np.exp(values - np.max(values))
         softmax_values = exp_values / np.sum(exp_values)
         for i, k in enumerate(weight_keys):
             self.weights[k] = float(softmax_values[i])
 
-        # EMA 平滑更新
+        # EMA smoothing update
         for k in weight_keys:
             self.ema_weights[k] = (
                 self.decay_factor * self.ema_weights[k]
@@ -180,7 +180,7 @@ class RLWeightOptimizer:
         """
         for k in self.weights:
             self.weights[k] = max(0.01, self.weights[k] * factor)
-        # Softmax 归一化
+        # Softmax normalization
         values = np.array([self.weights.get(k, 0.0) for k in self._WEIGHT_KEYS])
         exp_values = np.exp(values - np.max(values))
         softmax_values = exp_values / np.sum(exp_values)

@@ -22,7 +22,7 @@ DB_PATH = DB_DIR / "memory.db"
 _LOAD_LIMIT = 1000
 
 SCHEMA_VERSION = 2  # v1: 无 profile 列 (v1.1.5-), v2: 有 profile 列 (v1.1.6+)
-# 需要加 profile 列的表
+# Tables that need a profile column
 _PROFILE_TABLES = [
     "user_memory", "task_memory", "experience_memory",
     "context_memory", "knowledge_memory", "research_papers",
@@ -30,17 +30,17 @@ _PROFILE_TABLES = [
 ]
 
 
-# ── SQLite BUSY 重试装饰器（Fix 3：并发写入保护） ──────────
+# ── SQLite BUSY retry decorator (Fix 3: concurrent write protection) ──────────
 
 MAX_RETRIES = 3
-RETRY_DELAY_MS = 100  # 初始等待 100ms，指数退避
+RETRY_DELAY_MS = 100  # initial delay 100ms, exponential backoff
 
 
 def with_retry_on_busy(max_retries=MAX_RETRIES):
-    """遇到 SQLITE_BUSY 自动重试的装饰器。
+    """Decorator to auto-retry on SQLITE_BUSY.
 
-    WAL + busy_timeout 已解决大多数并发冲突，
-    此装饰器兜底处理极端情况下的写入失败。
+    WAL + busy_timeout resolves most concurrency conflicts,
+    this decorator handles edge-case write failures.
     """
     def decorator(func):
         @functools.wraps(func)
@@ -56,7 +56,7 @@ def with_retry_on_busy(max_retries=MAX_RETRIES):
                     last_exc = e
                     if attempt < max_retries - 1:
                         time.sleep(delay)
-                        delay *= 2  # 指数退避
+                        delay *= 2  # exponential backoff
             raise RuntimeError(
                 f"Write failed after {max_retries} retries: {last_exc}"
             ) from last_exc
@@ -249,7 +249,7 @@ class SqliteStore:
             """)
             self._conn.commit()
             self._migrate_existing_tables()
-            # 迁移后再建 profile 索引（确保 profile 列已存在）
+            # build profile index after migration (ensure profile column exists)
             self._conn.executescript("""
                 CREATE INDEX IF NOT EXISTS idx_user_profile ON user_memory(profile);
                 CREATE INDEX IF NOT EXISTS idx_task_profile ON task_memory(profile);
@@ -264,23 +264,23 @@ class SqliteStore:
             logger.info("All 9 memory tables ensured")
 
     def _migrate_existing_tables(self):
-        """兼容旧表结构：添加缺失的列，事务保护 + schema_version 标记
+        """Backward-compatible: add missing columns, transactional + schema_version flag
 
-        - 原子迁移：BEGIN IMMEDIATE TRANSACTION + COMMIT / ROLLBACK
-        - 幂等：PRAGMA user_version 检测 + 逐表检测列是否存在
-        - 保留旧的 platform 迁移逻辑
+        - Atomic: BEGIN IMMEDIATE TRANSACTION + COMMIT / ROLLBACK
+        - Idempotent: PRAGMA user_version check + per-table column detection
+        - Preserves legacy platform migration logic
         """
-        # 检测当前 schema 版本
+        # Detect current schema version
         cursor = self._conn.execute("PRAGMA user_version")
         current_version = cursor.fetchone()[0]
         if current_version >= SCHEMA_VERSION:
-            return  # 已是最新 schema
+            return  # already at latest schema
 
         try:
-            # IMMEDIATE 获取写入锁，防止其他分身干扰
+            # IMMEDIATE acquires write lock, prevents profile interference
             self._conn.execute("BEGIN IMMEDIATE TRANSACTION")
 
-            # 1. 添加 profile 列（8 张表）
+            # 1. Add profile column (8 tables)
             for table in _PROFILE_TABLES:
                 cursor = self._conn.execute(f"PRAGMA table_info({table})")
                 columns = [row[1] for row in cursor.fetchall()]
@@ -290,7 +290,7 @@ class SqliteStore:
                     )
                     logger.info(f"Migration: added profile column to {table}")
 
-            # 2. 旧的 platform 列迁移（保留兼容）
+            # 2. Legacy platform column migration (keep compat)
             ctx_cols = [r[1] for r in self._conn.execute(
                 "PRAGMA table_info(context_memory)").fetchall()]
             if "platform" not in ctx_cols:
@@ -299,7 +299,7 @@ class SqliteStore:
                 )
                 logger.info("Migration: added platform column to context_memory")
 
-            # 3. 写入 schema 版本号
+            # 3. Write schema version number
             self._conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
             self._conn.commit()
             logger.info(
@@ -793,10 +793,10 @@ class SqliteStore:
             self._conn.close()
             self._conn = None
 
-    # ── Schema 诊断 ──────────────────────────────────────
+    # ── Schema diagnostics ──────────────────────────────────────
 
     def check_migration_status(self) -> Dict[str, Any]:
-        """诊断：检查迁移状态，用于调试和用户报告"""
+        """Diagnostics: check migration status for debugging and reports"""
         if not self._conn:
             return {"schema_version": None, "tables": {}, "error": "not connected"}
         current_version = self._conn.execute(

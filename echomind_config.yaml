@@ -1,15 +1,15 @@
-# echomind_config.yaml — EchoMind 全量可配置参数
-# 版本: v1.1.6
+# echomind_config.yaml — EchoMind full configuration parameters
+# Version: v1.1.6
 #
-# 此文件随 GitHub 分发，包含全部默认值。可直接使用或复制到 ~/.echomind/ 后修改。
-# 配置优先级: 运行时扩展参数 > 本文件覆盖 > 内置 FALLBACK_CONFIG
+# Distributed via GitHub as default config. Use directly or copy to ~/.echomind/ then modify.
+# Priority: runtime ext_params > YAML overrides > built-in FALLBACK_CONFIG
 
 version: 2
 
-# 记忆隔离 — 默认项目标识
+# Memory isolation — default project identifier
 default_project: "default"
 
-# 数据库路径
+# Database path
 db:
   path: "~/.echomind/memory.db"
   pragmas:
@@ -18,10 +18,10 @@ db:
     - "cache_size=-64000"
     - "busy_timeout=30000"
 
-# RL 自优化开关
+# RL self-optimization toggle
 enable_rl_optimizer: true
 
-# 上下文窗口大小（对话记忆保留条数）
+# Context window size (number of conversation turns to retain)
 max_context_tokens: 4096
 
 rl:
@@ -47,54 +47,54 @@ retrieval:
   recency_multiplier: 0.5
 
 llm:
-  # 提供商模式: openai_compatible | ollama | none
-  # openai_compatible: 任何 OpenAI 兼容 API（vLLM、Hermes、OpenAI、DeepSeek 等）
-  # none: 禁用 LLM，回退到关键词匹配
+  # Provider mode: openai_compatible | ollama | none
+  # openai_compatible: any OpenAI-compatible API (vLLM, Hermes, OpenAI, DeepSeek, etc.)
+  # none: disable LLM, fall back to keyword matching
   provider: "openai_compatible"
 
-  # OpenAI 兼容 API 地址（优先级高于 host/port）
+  # OpenAI-compatible API endpoint (higher priority than host/port)
   endpoint: ""  # https://your-api.example.com/v1
 
-  # 旧配置兼容：当 endpoint 为空时自动构造 http://{host}:{port}/v1
-  # host: "localhost"   # 已废弃的回退值，请直接设置 endpoint
-  # port: 9119          # 已废弃的回退值，请直接设置 endpoint
+  # Legacy compat: when endpoint is empty, auto-construct http://{host}:{port}/v1
+  # host: "localhost"   # deprecated fallback, set endpoint directly
+  # port: 9119          # deprecated fallback, set endpoint directly
 
-  # API 密钥（支持 ${ENV_VAR} 引用环境变量）
-  api_key: "" # 支持 ${ENV_VAR}
+  # API key (supports ${ENV_VAR} environment variable reference)
+  api_key: "" # supports ${ENV_VAR}
 
-  # 默认模型
+  # Default model
   model: "local"
   temperature: 0.3
   max_tokens: 1500
   timeout: 60
 
-  # 语义检索专用（可配更轻量的模型降低成本）
-  semantic_model: ""              # 空 = 复用 model
+  # Semantic retrieval model (can use a cheaper model to reduce costs)
+  semantic_model: ""              # empty = reuse model
   semantic_temperature: 0
-  semantic_max_tokens: 4          # 只需 0-10 的整数
+  semantic_max_tokens: 4          # only needs integer 0-10
 
 server:
   host: "127.0.0.1"
   port: 8005
-  api_key: "" # API Key 认证（空=跳过认证）支持 ${ECHOMIND_API_KEY} 引用环境变量
+  api_key: "" # API Key auth (empty=skip) supports ${ECHOMIND_API_KEY} env var
 
 inference:
   min_occurrence: 2
   strategy: "keyword"
   keywords:
-    concise_response: ["简短","简洁"]
+    concise_response: ["brief","concise"]
     detailed_type: ["type hint","Optional[str]"]
-    concise_code: ["简洁","不要注释"]
+    concise_code: ["concise","no comments"]
 
-# domain.keywords 已移至 domain_keywords.yaml（内置默认，随 GitHub 分发）
-# 如需自定义，可在此添加 domain 段覆盖内置值：
+# domain.keywords moved to domain_keywords.yaml (built-in default, distributed via GitHub)
+# To customize, add a domain section here to override built-in values:
 # domain:
 #   keywords:
 #     my_domain:
 #       zh: ["自定义关键词"]
 #       en: ["custom keyword"]
 
-# 话题标签提取 — 关键词到标签的映射
+# Topic tag extraction — keyword to tag mapping
 topic_keywords:
   coding:
     zh: ["代码", "编程", "函数", "bug", "模块", "重构"]

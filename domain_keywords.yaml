@@ -1,8 +1,8 @@
-# domain_keywords.yaml — EchoMind 科研领域关键词
-# 版本: v1.1.6
-# 此文件随 GitHub 分发，作为内置默认领域关键词。
-# 用户可通过 echomind_config.yaml 的 domain.keywords 覆盖（整个字典替换）。
-# 注意：配置中的 domain.keywords 会完全替换此文件中的内容，而非追加。
+# domain_keywords.yaml — EchoMind research domain keywords (built-in defaults)
+# Version: v1.1.6
+# Distributed with GitHub as the built-in default domain keywords.
+# Users can override via domain.keywords in echomind_config.yaml (full dict replacement).
+# Note: domain.keywords from config completely replaces this file's content (not merged).
 
 operations_research:
   zh: ["运筹学","线性规划","整数规划","网络优化","排队论","库存管理","运输问题","指派问题"]

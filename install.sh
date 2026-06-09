@@ -1,8 +1,8 @@
 #!/bin/bash
-# install.sh — EchoMind v1.1.6 一键安装 (含开机自启)
+# install.sh — EchoMind v1.1.6 one-click install (with auto-start)
 set -e
 
-# Hermes 安装目录检测（优先级: 环境变量 > XDG > 默认）
+# Hermes install path detection (priority: env var > XDG > default)
 if [ -n "${HERMES_HOME}" ]; then
     HERMES_HOME_DIR="${HERMES_HOME}"
 elif [ -n "${XDG_DATA_HOME}" ]; then
@@ -20,29 +20,29 @@ CONFIG_DIR="${HOME}/.echomind"
 echo "=== EchoMind v1.1.6 Install ==="
 echo "  Hermes home: ${HERMES_HOME_DIR}"
 
-# 1. 安装到 Hermes skill
+# 1. Install to Hermes skill
 echo "  [1/4] Installing to $INSTALL_DIR..."
 mkdir -p "$INSTALL_DIR"
 cp -r "$SKILL_DIR"/. "$INSTALL_DIR/"
 
-# 2. 安装到 Hermes plugin (仅运行时文件)
+# 2. Install to Hermes plugin (runtime files only)
 echo "  [2/4] Installing to $PLUGIN_DIR..."
 mkdir -p "$PLUGIN_DIR"
-# 拷贝核心文件，排除构建/文档/测试/dev文件
+# Copy core files, exclude build/docs/test/dev files
 cp -r "$INSTALL_DIR"/. "$PLUGIN_DIR/"
-# 清理不应部署到运行时的文件
+# Clean up files not meant for runtime deployment
 rm -rf "$PLUGIN_DIR"/setup.py        "$PLUGIN_DIR"/doc        "$PLUGIN_DIR"/test        "$PLUGIN_DIR"/build        "$PLUGIN_DIR"/__pycache__        "$PLUGIN_DIR"/echomind_memory.egg-info        "$PLUGIN_DIR"/.claude        "$PLUGIN_DIR"/setup.py.bak        "$PLUGIN_DIR"/.git        "$PLUGIN_DIR"/.gitignore 2>/dev/null
 find "$PLUGIN_DIR" -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
 find "$PLUGIN_DIR" -name "*.pyc" -delete 2>/dev/null || true
 
-# 3. 生成默认配置 (保留已有)
+# 3. Generate default config (preserve existing)
 mkdir -p "$CONFIG_DIR"
 if [ ! -f "$CONFIG_DIR/echomind_config.yaml" ]; then
     echo "  [3/4] Creating default config..."
     cp "$INSTALL_DIR/echomind_config.yaml" "$CONFIG_DIR/" 2>/dev/null || true
 fi
 
-# 4. 注册开机自启（HTTP 服务，可选）
+# 4. Register auto-start (HTTP service, optional)
 _AUTO_HTTP="${ECHOMIND_HTTP_SERVICE:-0}"
 if [ "${_AUTO_HTTP}" = "1" ]; then
     echo "  [4/4] Setting up HTTP service auto-start..."
@@ -128,18 +128,18 @@ else
     echo "  To enable HTTP service: ECHOMIND_HTTP_SERVICE=1 ./install.sh"
 fi
 
-# ── Profile 隔离配置提示（v1.1.6+） ──────────────────────
+# ── Profile isolation info (v1.1.6+) ──────────────────────
 echo ""
 echo "  ╔══════════════════════════════════════════════════════╗"
-echo "  ║  EchoMind Profile 隔离已就绪                        ║"
+echo "  ║  EchoMind Profile isolation ready                   ║"
 echo "  ╠══════════════════════════════════════════════════════╣"
-echo "  ║  ✅ 记忆按分身（Profile）自动隔离                    ║"
+echo "  ║  ✅ Memory auto-isolated by Profile                   ║"
 echo "  ║                                                     ║"
-echo "  ║  ⚠️  如需同一分身内按项目隔离，请在 config.yaml 中   ║"
-echo "  ║  配置:                                              ║"
+echo "  ║  ⚠️  For per-project isolation, configure in config.yaml ║"
+echo "  ║  Add:                                                ║"
 echo "  ║    memory:                                          ║"
 echo "  ║      provider: echomind                             ║"
-echo "  ║      project: <你的项目名>                          ║"
+echo "  ║      project: <your-project-name>                    ║"
 echo "  ║                                                     ║"
-echo "  ║  未设置 project 时，默认为全局共享（仅按 profile 隔离）║"
+echo "  ║  Without project, defaults to global (profile-only isolation)  ║"
 echo "  ╚══════════════════════════════════════════════════════╝"

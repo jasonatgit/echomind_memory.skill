@@ -1,8 +1,8 @@
-# install.ps1 — EchoMind v1.1.6 Windows 一键安装 (含开机自启)
+# install.ps1 — EchoMind v1.1.6 Windows one-click install (with auto-start)
 $ErrorActionPreference = "Stop"
 $SKILL_DIR = $PSScriptRoot
 
-# Hermes 安装目录检测（优先级: 环境变量 > AppData\Local\hermes > ~\.hermes）
+# Hermes install path detection (priority: env var > AppData\Local\hermes > ~\.hermes)
 if ($env:HERMES_HOME) {
     $HERMES_DIR = $env:HERMES_HOME
 } elseif (Test-Path "$env:LOCALAPPDATA\hermes") {
@@ -12,7 +12,7 @@ if ($env:HERMES_HOME) {
 }
 $PLUGIN_DIR = "$HERMES_DIR\plugins\echomind"
 
-# EchoMind 配置目录（优先级: 环境变量 > HERMES_HOME 子目录 > %USERPROFILE%\.echomind）
+# EchoMind config dir (priority: env var > HERMES_HOME subdir > %USERPROFILE%\.echomind)
 if ($env:ECHOMIND_HOME) {
     $CONFIG_DIR = $env:ECHOMIND_HOME
 } else {
@@ -22,19 +22,19 @@ if ($env:ECHOMIND_HOME) {
 Write-Host "=== EchoMind v1.1.6 Windows Install ==="
 Write-Host "  Hermes home: $HERMES_DIR"
 
-# 1. 安装到 Hermes
+# 1. Install to Hermes
 Write-Host "  [1/4] Installing to $PLUGIN_DIR"
 New-Item -ItemType Directory -Force -Path $PLUGIN_DIR | Out-Null
 Copy-Item -Path "$SKILL_DIR\*" -Destination $PLUGIN_DIR -Recurse -Force
 
-# 2. 生成配置
+# 2. Generate config
 New-Item -ItemType Directory -Force -Path $CONFIG_DIR | Out-Null
 if (-not (Test-Path "$CONFIG_DIR\echomind_config.yaml")) {
     Write-Host "  [2/4] Creating default config..."
     Copy-Item -Path "$PLUGIN_DIR\echomind_config.yaml" -Destination "$CONFIG_DIR\" -ErrorAction SilentlyContinue
 }
 
-# 3. 验证
+# 3. Verify
 Write-Host "  [3/4] Verification..."
 $python = (Get-Command python -ErrorAction SilentlyContinue).Source
 if (-not $python) { $python = (Get-Command python3 -ErrorAction SilentlyContinue).Source }
@@ -46,7 +46,7 @@ try {
     Write-Host "    Warning: verification failed ($_), but files installed correctly"
 }
 
-# 4. 注册开机自启
+# 4. Register auto-start
 # Step 4: HTTP service auto-start (optional, default: skipped)
 # Set $env:ECHOMIND_HTTP_SERVICE=1 to enable
 if ($env:ECHOMIND_HTTP_SERVICE -eq "1") {
@@ -54,17 +54,17 @@ if ($env:ECHOMIND_HTTP_SERVICE -eq "1") {
     $STARTUP_DIR = [Environment]::GetFolderPath("Startup")
     $VBS_PATH = "$PLUGIN_DIR\echomind_start.vbs"
 
-    # 创建 VBS 无窗口启动器
+    # Create VBS windowless launcher
 @"
 Set ws = CreateObject("WScript.Shell")
 ws.Run "$python $PLUGIN_DIR\main.py", 0, False
 "@ | Out-File -FilePath $VBS_PATH -Encoding ASCII
 
-    # 注册到 Run 注册表（持久生效，不受快捷方式删除影响）
+    # Register to Run registry (persistent, survives shortcut deletion)
     $regPath = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
     Set-ItemProperty -Path $regPath -Name "EchoMindMemory" -Value "wscript.exe `"$VBS_PATH`"" -Force
 
-    # 同时也放到 Startup 文件夹（双重保障）
+    # Also place in Startup folder (double safeguard)
     $shortcutPath = Join-Path $STARTUP_DIR "EchoMindMemory.lnk"
     $WScriptShell = New-Object -ComObject WScript.Shell
     $Shortcut = $WScriptShell.CreateShortcut($shortcutPath)

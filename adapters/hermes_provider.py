@@ -80,24 +80,24 @@ class EchomindMemoryProvider(MemoryProvider):
         return True
 
     def _derive_profile(self, hermes_home: str) -> str:
-        """从 hermes_home 路径中提取 profile 名称，跨平台兼容。
+        """Extract profile name from hermes_home path, cross-platform compatible.
 
-        策略（按优先级）:
-        1. pathlib.Path.parts 匹配 "profiles" 目录段（Linux/WSL/macOS）
-        2. 字符串匹配 "/profiles/"（Unix 路径字符串）
-        3. 字符串匹配 "\\profiles\\" 或 "\\profiles/"（Windows 路径字符串）
-        4. 回退 "default"
+        Strategy (by priority):
+        1. pathlib.Path.parts matches "profiles" segment (Linux/WSL/macOS)
+        2. String match "/profiles/" (Unix path string)
+        3. String match "\\profiles\\" or "\\profiles/" (Windows path string)
+        4. Fallback "default"
 
-        支持:
+        Supports:
         - Linux: /home/user/.hermes/profiles/weixin/plugins/echomind → weixin
         - Windows: C:\\Users\\user\\.hermes\\profiles\\weixin\\plugins\\echomind → weixin
         - WSL: /mnt/c/Users/user/.hermes/profiles/weixin/plugins/echomind → weixin
-        - 默认/无 profile: → default
+        - Default/no profile: → default
         """
         if not hermes_home:
             return "default"
 
-        # 策略1: pathlib 路径段匹配（纯 Unix/WSL 路径）
+        # Strategy 1: pathlib path parts match (Unix/WSL path)
         try:
             hermes_path = Path(hermes_home).resolve()
             parts = hermes_path.parts
@@ -107,11 +107,11 @@ class EchomindMemoryProvider(MemoryProvider):
         except (IndexError, AttributeError, ValueError):
             pass
 
-        # 策略2: Unix 风格 /profiles/ 字符串匹配
+        # Strategy 2: Unix-style /profiles/ string match
         if "/profiles/" in hermes_home:
             return hermes_home.split("/profiles/")[-1].split("/")[0]
 
-        # 策略3: Windows 风格 \profiles\ 字符串匹配
+        # Strategy 3: Windows-style \\profiles\\ string match
         for sep in ('\\profiles\\', '\\profiles/'):
             if sep in hermes_home:
                 return hermes_home.split(sep)[-1].split("\\")[0].split("/")[0]

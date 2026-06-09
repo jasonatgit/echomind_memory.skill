@@ -1,5 +1,5 @@
 # EchoMind — Experience Memory Agent
-# Fix: 添加倒排索引加速搜索
+# Fix: add inverted index for faster search
 
 import logging
 from typing import Dict, List, Optional, Set
@@ -21,7 +21,7 @@ class ExperienceMemoryAgent:
         for k in evicted_keys:
             entry = self.store.get(k)
             if entry:
-                # 从索引中移除
+                # Remove from index
                 self._user_index.get(entry.user_id, set()).discard(k)
                 self._type_index.get(entry.task_type, set()).discard(k)
             del self.store[k]
@@ -29,7 +29,7 @@ class ExperienceMemoryAgent:
     def __init__(self):
         self.store: Dict[str, ExperienceEntry] = {}
         self._summary_index: Dict[int, str] = {}
-        # 倒排索引
+        # Inverted index
         self._user_index: Dict[str, Set[str]] = {}
         self._type_index: Dict[str, Set[str]] = {}
 
@@ -73,7 +73,7 @@ class ExperienceMemoryAgent:
                            tags: List[str] = None,
                            min_success_rate: float = 0.7, limit: int = 3,
                            profile: str = None) -> List[Dict]:
-        # 利用倒排索引快速定位候选集合
+        # Use inverted index to quickly locate candidates
         candidate_ids = set(self.store.keys())
         if user_id and user_id in self._user_index:
             candidate_ids &= self._user_index[user_id]

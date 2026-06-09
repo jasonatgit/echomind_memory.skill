@@ -1,5 +1,5 @@
 # EchoMind — Knowledge Memory Agent
-# Fix: user_id 过滤改用 entry.user_id, 关键词匹配扩展至所有词, 添加倒排索引
+# Fix: user_id filter uses entry.user_id, keyword match on all tokens, add inverted index
 
 import logging
 import re
@@ -23,7 +23,7 @@ class KnowledgeMemoryAgent:
     def __init__(self):
         self.store: Dict[str, KnowledgeEntry] = {}
         self._content_index: Dict[int, str] = {}
-        # 倒排索引: {user_id → set(entry_ids)}
+        # Inverted index: {user_id → set(entry_ids)}
         self._user_index: Dict[str, Set[str]] = {}
 
     def _add_to_index(self, entry: KnowledgeEntry):
@@ -41,14 +41,14 @@ class KnowledgeMemoryAgent:
                tags: List[str] = None, top_k: int = 5,
                profile: str = None) -> List[Dict]:
         results = []
-        # 利用倒排索引快速定位候选
+        # Use inverted index to quickly locate candidates
         if user_id and user_id in self._user_index:
             candidate_ids = self._user_index[user_id]
             candidates = [self.store[eid] for eid in candidate_ids if eid in self.store]
         else:
             candidates = list(self.store.values())
 
-        # 过滤停用词，构建查询词集
+        # Filter stopwords, build query token set
         stop_words = {"the", "is", "are", "a", "an", "and", "or", "but", "in", "on",
                       "to", "for", "of", "with", "at", "from", "by", "that", "this",
                       "it", "as", "be", "was", "has", "have", "had", "not", "no"}
@@ -58,7 +58,7 @@ class KnowledgeMemoryAgent:
             q_words = [w for w in query.lower().split() if len(w) > 1][:3]
 
         for entry in candidates:
-            # 过滤条件
+            # Filter conditions
             if user_id and entry.user_id not in (user_id, "default"):
                 if entry.metadata.get("user_id") not in (user_id, None):
                     continue
@@ -77,7 +77,7 @@ class KnowledgeMemoryAgent:
             if domain and entry.metadata.get("category") != domain:
                 continue
 
-            # 关键词匹配打分
+            # Keyword match scoring
             meta_text = " ".join(
                 str(v) for v in entry.metadata.values() if isinstance(v, str)
             )
@@ -88,7 +88,7 @@ class KnowledgeMemoryAgent:
 
             matched = sum(1 for w in q_words if w in searchable)
             if matched == 0:
-                # 尝试精确子串匹配
+                # Try exact substring match
                 if query.lower() not in searchable:
                     continue
                 relevance = 0.5
@@ -105,7 +105,7 @@ class KnowledgeMemoryAgent:
 
     def search_all(self, domain: str = None, project: str = None,
                    user_id: str = None, profile: str = None) -> List[Dict]:
-        """返回所有匹配条目（不作 query 匹配），用于 compact_knowledge 等场景。"""
+        """Return all matching entries (no query matching), for use in compact_knowledge etc."""
         results = []
         for entry in self.store.values():
             if user_id and entry.user_id not in (user_id, "default"):
