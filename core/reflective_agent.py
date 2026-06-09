@@ -12,15 +12,14 @@ logger = logging.getLogger("ReflectiveAgent")
 _engine = None
 
 try:
-    from . import _reflective_core as _engine
-    logger.info("Reflection engine: native compiled extension loaded")
+    from . import _native_engine as _engine
+    logger.info("Reflection engine: ready")
 except ImportError:
     try:
         from . import _reflective_fallback as _engine
-        logger.info("Reflection engine: Python fallback loaded")
+        logger.info("Reflection engine: keyword fallback")
     except ImportError:
         _engine = None
-        logger.warning("Reflection engine: NOT available")
 
 # All methods use _engine is None as the single source of truth
 
@@ -60,14 +59,17 @@ class ReflectiveAgent:
             records,
             user_id,
             platform,
-            None,  # llm_fn=None → engine returns (prompt, ids) tuple
+            None,
             self.config,
             self.store,
             self.memory,
         )
         if isinstance(result, tuple) and len(result) == 2:
             return result
-        # Unexpected: engine returned non-tuple → treat as no prompt
+        if isinstance(result, dict) and result.get("source") == "fallback_keyword":
+            if hasattr(_engine, '_prepare_reflection_context'):
+                return _engine._prepare_reflection_context(records), [r.get("id", f"rec_{i}") for i, r in enumerate(records)]
+            return "", [r.get("id", f"rec_{i}") for i, r in enumerate(records)]
         return "", [r.get("id", f"rec_{i}") for i, r in enumerate(records)]
 
     # ── Hermes auto path: engine calls LLM internally ──

@@ -6,4 +6,14 @@ prune test
 prune build
 prune dist
 prune .claude
+include main.py
+include __init__.py
+include plugin.yaml
+include skill.yaml
+include SKILL.md
+include domain_keywords.yaml
+include echomind_config.yaml
+include config.example.yaml
 include requirements.txt
+include install.sh
+include install.ps1

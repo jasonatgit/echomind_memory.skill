@@ -24,8 +24,14 @@ _SEARCH_PATHS = [
 
 
 def _try_load_ext_params() -> dict:
+    """Load extension parameters if the native engine is available.
+
+    Returns a dict of config overrides (e.g. RL weights) when the
+    native engine is installed, or empty dict.
+    """
+
     try:
-        from ._reflective_core import _get_extra_params
+        from ._native_engine import _get_extra_params
 
         return _get_extra_params()
     except ImportError:
@@ -54,48 +60,50 @@ FALLBACK_CONFIG = {
         "initial_weights": {
             "relevance": [0.30, 0.50],
         },
-        "learning_rate":    0.07,
-        "decay_factor":     0.97,
-        "max_buffer_size":  50,
-        "seed":             None,
+        "learning_rate": 0.07,
+        "decay_factor": 0.97,
+        "max_buffer_size": 50,
+        "seed": None,
     },
-    "reflection": {
+"reflection": {
         "batch_size": [5, 12],
         "max_daily":  [5, 20],
+        "min_records": 6,
     },
     "retrieval": {
-        "experience_top_k":                      5,
-        "experience_min_success_rate_initial":   0.7,
-        "experience_min_success_rate_final":     0.6,
-        "experience_limit":                      5,
-        "research_top_k":                        5,
-        "context_limit":                         2,
-        "preference_score_boost":                0.2,
-        "relevance_multiplier":                  0.6,
-        "recency_multiplier":                    0.5,
+        "experience_top_k": 5,
+        "experience_min_success_rate_initial": 0.7,
+        "experience_min_success_rate_final": 0.6,
+        "experience_limit": 5,
+        "research_top_k": 5,
+        "context_limit": 2,
+        "preference_score_boost": 0.2,
+        "relevance_multiplier": 0.6,
+        "recency_multiplier": 0.5,
     },
     "inference": {
         "min_occurrence": 2,
-        "strategy":       "keyword",
+        "strategy": "keyword",
         "keywords": {
             "concise_response": ["brief", "concise"],
-            "detailed_type":    ["type hint", "Optional[str]"],
-            "concise_code":     ["concise", "no comments"],
+            "detailed_type": ["type hint", "Optional[str]"],
+            "concise_code": ["concise", "no comments"],
         },
     },
+    "topic_keywords": {},
     "llm": {
-        "provider":             "openai_compatible",
-        "endpoint":             "",
-        "host":                 "localhost",
-        "port":                 9119,
-        "api_key":              "",
-        "model":                "local",
-        "temperature":          0.3,
-        "max_tokens":           1500,
-        "timeout":              60,
-        "semantic_model":       "",
+        "provider": "openai_compatible",
+        "endpoint": "",
+        "host": "",
+        "port": 0,
+        "api_key": "",
+        "model": "local",
+        "temperature": 0.3,
+        "max_tokens": 1500,
+        "timeout": 60,
+        "semantic_model": "",
         "semantic_temperature": 0,
-        "semantic_max_tokens":  4,
+        "semantic_max_tokens": 4,
     },
     "server": {
         "host": "0.0.0.0",
@@ -103,18 +111,21 @@ FALLBACK_CONFIG = {
         "cors_origins": ["http://localhost:8005"],
     },
     "domain": {
-        "default":  "general",
+        "default": "general",
         "keywords": _load_bundled_keywords(),
-    }
+    },
 }
 
 
 class ConfigManager:
 
-    def __init__(self, config_path: Optional[str] = None,
-                 ext_params: Optional[dict] = None):
+    def __init__(
+        self, config_path: Optional[str] = None, ext_params: Optional[dict] = None
+    ):
         self._config_path = _resolve_config_path(config_path)
-        self._ext_params = ext_params if ext_params is not None else _try_load_ext_params()
+        self._ext_params = (
+            ext_params if ext_params is not None else _try_load_ext_params()
+        )
         self._search_paths = _SEARCH_PATHS.copy()
         self._search_paths.append(self._config_path)
         self._yaml_cache: dict = {}
@@ -136,8 +147,9 @@ class ConfigManager:
                 logger.info("Config loaded from: %s", full_path)
                 return
             except (yaml.YAMLError, OSError) as e:
-                logger.warning("Config parse error (%s): %s, trying next path",
-                               full_path, e)
+                logger.warning(
+                    "Config parse error (%s): %s, trying next path", full_path, e
+                )
                 continue
         logger.info("No valid config found, using FALLBACK_CONFIG")
         self._active_path = None
@@ -192,6 +204,12 @@ class ConfigManager:
     def reload(self):
         self._load_config()
         self._runtime_overrides.clear()
+        # Notify LLM client singleton to reload on next get (if any)
+        try:
+            from .llm_client import reload_llm_client
+            reload_llm_client()
+        except Exception:
+            pass
         for cb in self._observers:
             try:
                 cb()
@@ -207,8 +225,9 @@ _config_manager: Optional[ConfigManager] = None
 _config_manager_lock = threading.Lock()
 
 
-def get_config_manager(config_path: Optional[str] = None,
-                       ext_params: Optional[dict] = None) -> ConfigManager:
+def get_config_manager(
+    config_path: Optional[str] = None, ext_params: Optional[dict] = None
+) -> ConfigManager:
     global _config_manager
     if config_path is None and ext_params is None:
         with _config_manager_lock:

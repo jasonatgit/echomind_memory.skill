@@ -237,7 +237,7 @@ pip install -r requirements.txt
 
 ```bash
 curl http://localhost:8005/health
-# 预期返回: {"status": "ok", "version": "1.1.5"}
+# 预期返回: {"status": "ok", "version": "1.1.6"}
 ```
 
 ---
@@ -369,3 +369,97 @@ EchoMind 让你的 AI：
 - 记得你研究过的论文和理论模型
 - 拥有 RL 驱动的自我优化权重系统，每次交互后越用越聪明
 - 这不是一个插件，这是具有*自我反思记忆*的*AI 多智能体记忆神经网络*。
+
+
+---
+
+## Q&A *点击展开*
+
+<details>
+<summary><b>Hermes Agent分身隔离及常见问题</b></summary>
+
+### Q: 如何在 Hermes 分身（Profile）中使用 EchoMind？
+
+EchoMind v1.1.6+ 支持 Hermes Profile 级别的记忆隔离。
+
+**安装一次即可**：
+```bash
+./install.sh
+```
+
+**自动行为**：
+- 默认分身 → 记忆存储在 `profile='default'`
+- 其他分身（如 weixin）→ 自动创建符号链接，记忆存储在 `profile='weixin'`
+- 两个分身的记忆在同一 `~/.echomind/memory.db` 中，互不干扰
+- 历史数据自动归入 `default` profile
+
+**同一分身内按项目隔离**：
+```yaml
+# hermes config.yaml
+memory:
+  provider: echomind
+  project: echomind  # 可选，同一分身内按项目过滤
+```
+
+**手动为新分身建立链接**（如果创建分身在安装之后）：
+```bash
+ln -s ~/.hermes/plugins/echomind ~/.hermes/profiles/微信分身名/plugins/echomind
+```
+
+---
+
+### Q: EchoMind 是否支持 Windows？
+
+支持。v1.1.6+ 已修复跨平台路径解析，Windows 路径（如 `C:\Users\...\profiles\weixin\...`）可正确提取 profile 名称。
+如果使用 WSL，路径格式与 Linux 一致。
+
+---
+
+### Q: 多个分身同时使用 EchoMind 会冲突吗？
+
+不会。v1.1.6+ 采用以下机制保障并发安全：
+1. **WAL 模式**：SQLite 写前日志，支持多进程并发读
+2. **busy_timeout=5000**：遇到锁等待 5 秒
+3. **自动重试**：极端情况下指数退避重试 3 次
+
+---
+
+### Q: 如何降级到旧版本？
+
+> ⚠️ **重要**：降级时旧版 SELECT 无 `WHERE profile = ?` 过滤，所有分身数据对默认分身可见。
+
+**安全降级步骤**：
+1. 备份 `~/.echomind/memory.db`
+2. 清除非 default 数据：
+   ```sql
+   DELETE FROM task_memory WHERE profile != 'default';
+   DELETE FROM user_memory WHERE profile != 'default';
+   ```
+3. 再回退旧版
+
+**推荐**：保留新版，不做降级。
+
+---
+
+### Q: 数据存储在哪里？如何备份？
+
+所有数据存储在单文件 `~/.echomind/memory.db` 中。备份只需复制该文件：
+```bash
+cp ~/.echomind/memory.db ~/.echomind/memory.db.backup-$(date +%Y%m%d)
+```
+
+---
+
+### Q: 迁移后数据会丢失吗？
+
+不会。SQLite `ALTER TABLE ADD COLUMN ... DEFAULT 'default'` 是 O(1) 元数据操作，不逐行修改数据，存量 37MB 数据完整保留，自动归入 `default` profile。
+
+---
+
+### Q: EchoMind 是否兼容 Hermes v0.16.0？
+
+是。EchoMind v1.1.6+ 已适配 Hermes v0.16.0 新增的 `on_session_switch(rewound=True)` 参数。
+当用户执行 `/undo N` 截断对话历史时，EchoMind 自动清空上下文缓存，避免记忆污染。
+兼容范围：Hermes v0.13.0 – v0.16.0。
+
+</details>

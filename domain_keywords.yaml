@@ -1,7 +1,8 @@
 # domain_keywords.yaml — EchoMind 科研领域关键词
-# 版本: v1.1.0
+# 版本: v1.1.6
 # 此文件随 GitHub 分发，作为内置默认领域关键词。
-# 用户可通过 echomind_config.yaml 的 domain.keywords 覆盖或追加。
+# 用户可通过 echomind_config.yaml 的 domain.keywords 覆盖（整个字典替换）。
+# 注意：配置中的 domain.keywords 会完全替换此文件中的内容，而非追加。
 
 operations_research:
   zh: ["运筹学","线性规划","整数规划","网络优化","排队论","库存管理","运输问题","指派问题"]
@@ -81,74 +82,62 @@ computer_science:
        "Git","Linux","Shell","CI/CD","agile","Scrum"]
 
 nlp:
-  name: "自然语言处理"
-  keywords:
-    zh: ["自然语言处理","NLP","文本分类","命名实体识别","关系抽取",
-        "文本生成","机器翻译","摘要","问答系统","文本理解",
-        "情感分析","词向量","Word2Vec","GloVe","BERT",
-        "序列标注","句法分析","语义角色标注","语料库","分词"]
-    en: ["NLP","natural language processing","text classification",
-        "named entity recognition","relation extraction",
-        "text generation","machine translation","summarization",
-        "question answering","sentiment analysis","word embedding",
-        "Word2Vec","GloVe","BERT","sequence labeling","parsing",
-        "semantic role labeling","corpus","tokenization"]
+  zh: ["自然语言处理","NLP","文本分类","命名实体识别","关系抽取",
+      "文本生成","机器翻译","摘要","问答系统","文本理解",
+      "情感分析","词向量","Word2Vec","GloVe","BERT",
+      "序列标注","句法分析","语义角色标注","语料库","分词"]
+  en: ["NLP","natural language processing","text classification",
+      "named entity recognition","relation extraction",
+      "text generation","machine translation","summarization",
+      "question answering","sentiment analysis","word embedding",
+      "Word2Vec","GloVe","BERT","sequence labeling","parsing",
+      "semantic role labeling","corpus","tokenization"]
 
 speech_audio:
-  name: "语音与音频"
-  keywords:
-    zh: ["语音识别","语音合成","ASR","TTS","Whisper","说话人识别",
-        "声纹","音频分类","音乐生成","语音增强","语音分离",
-        "端到端语音","WFST","CTC","RNN-T"]
-    en: ["speech recognition","speech synthesis","ASR","TTS","Whisper",
-        "speaker recognition","voiceprint","audio classification",
-        "music generation","speech enhancement","speech separation",
-        "end-to-end speech","CTC","RNN-T"]
+  zh: ["语音识别","语音合成","ASR","TTS","Whisper","说话人识别",
+      "声纹","音频分类","音乐生成","语音增强","语音分离",
+      "端到端语音","WFST","CTC","RNN-T"]
+  en: ["speech recognition","speech synthesis","ASR","TTS","Whisper",
+      "speaker recognition","voiceprint","audio classification",
+      "music generation","speech enhancement","speech separation",
+      "end-to-end speech","CTC","RNN-T"]
 
 robotics:
-  name: "机器人学"
-  keywords:
-    zh: ["机器人","ROS","路径规划","运动控制","机械臂","移动机器人",
-        "SLAM","自主导航","抓取","操作","仿真","Gazebo"]
-    en: ["robotics","ROS","path planning","motion control","manipulator",
-        "mobile robot","SLAM","autonomous navigation","grasping",
-        "manipulation","Gazebo"]
+  zh: ["机器人","ROS","路径规划","运动控制","机械臂","移动机器人",
+      "SLAM","自主导航","抓取","操作","仿真","Gazebo"]
+  en: ["robotics","ROS","path planning","motion control","manipulator",
+      "mobile robot","SLAM","autonomous navigation","grasping",
+      "manipulation","Gazebo"]
 
 recommendation:
-  name: "推荐系统"
-  keywords:
-    zh: ["推荐系统","协同过滤","矩阵分解","内容推荐","序列推荐",
-        "CTR预估","冷启动","召回","排序","多目标优化","图推荐"]
-    en: ["recommendation","recommender","collaborative filtering",
-        "matrix factorization","content-based","sequential recommendation",
-        "CTR prediction","cold start","recall","ranking","multi-objective"]
+  zh: ["推荐系统","协同过滤","矩阵分解","内容推荐","序列推荐",
+      "CTR预估","冷启动","召回","排序","多目标优化","图推荐"]
+  en: ["recommendation","recommender","collaborative filtering",
+      "matrix factorization","content-based","sequential recommendation",
+      "CTR prediction","cold start","recall","ranking","multi-objective"]
 
 biology:
-  name: "生物学"
-  keywords:
-    zh: ["生物学","生物信息学","基因组","蛋白质","DNA","RNA","基因",
-        "遗传学","细胞","分子生物学","进化","生态学","微生物",
-        "生物化学","生物物理","神经科学","免疫学","癌症","药物",
-        "CRISPR","基因编辑","测序","转录组","代谢组","蛋白质组",
-        "Bioinformatics","BLAST","序列比对","系统发育","聚类",
-        "统计学","R","Python","数据可视化","生物统计"]
-    en: ["biology","bioinformatics","genome","protein","DNA","RNA","gene",
-        "genetics","cell","molecular biology","evolution","ecology",
-        "microbiology","biochemistry","biophysics","neuroscience",
-        "immunology","cancer","drug","CRISPR","gene editing",
-        "sequencing","transcriptomics","metabolomics","proteomics",
-        "Bioinformatics","BLAST","sequence alignment","phylogeny",
-        "statistics","R","Python","data visualization","biostatistics"]
+  zh: ["生物学","生物信息学","基因组","蛋白质","DNA","RNA","基因",
+      "遗传学","细胞","分子生物学","进化","生态学","微生物",
+      "生物化学","生物物理","神经科学","免疫学","癌症","药物",
+      "CRISPR","基因编辑","测序","转录组","代谢组","蛋白质组",
+      "Bioinformatics","BLAST","序列比对","系统发育","聚类",
+      "统计学","R","Python","数据可视化","生物统计"]
+  en: ["biology","bioinformatics","genome","protein","DNA","RNA","gene",
+      "genetics","cell","molecular biology","evolution","ecology",
+      "microbiology","biochemistry","biophysics","neuroscience",
+      "immunology","cancer","drug","CRISPR","gene editing",
+      "sequencing","transcriptomics","metabolomics","proteomics",
+      "Bioinformatics","BLAST","sequence alignment","phylogeny",
+      "statistics","R","Python","data visualization","biostatistics"]
 
 management_science:
-  name: "管理科学"
-  keywords:
-    zh: ["管理科学","运筹学","供应链","物流","库存","配送","排产",
-        "设施选址","网络优化","路径规划","线性规划","整数规划",
-        "非线性规划","动态规划","凸优化","拉格朗日","启发式算法",
-        "遗传算法","粒子群","模拟退火","多目标优化","排队论",
-        "决策分析","风险管理","最优化","敏感性分析","仿真"]
-    en: ["management science","operations research","supply chain",
+  zh: ["管理科学","运筹学","供应链","物流","库存","配送","排产",
+      "设施选址","网络优化","路径规划","线性规划","整数规划",
+      "非线性规划","动态规划","凸优化","拉格朗日","启发式算法",
+      "遗传算法","粒子群","模拟退火","多目标优化","排队论",
+      "决策分析","风险管理","最优化","敏感性分析","仿真"]
+  en: ["management science","operations research","supply chain",
         "logistics","inventory","distribution","scheduling",
         "facility location","network optimization","vehicle routing",
         "linear programming","integer programming","nonlinear programming",

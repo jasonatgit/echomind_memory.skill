@@ -1,5 +1,5 @@
 # echomind_config.yaml — EchoMind 全量可配置参数
-# 版本: v1.1.0
+# 版本: v1.1.6
 #
 # 此文件随 GitHub 分发，包含全部默认值。可直接使用或复制到 ~/.echomind/ 后修改。
 # 配置优先级: 运行时扩展参数 > 本文件覆盖 > 内置 FALLBACK_CONFIG
@@ -56,8 +56,8 @@ llm:
   endpoint: ""  # https://your-api.example.com/v1
 
   # 旧配置兼容：当 endpoint 为空时自动构造 http://{host}:{port}/v1
-  host: "localhost"
-  port: 9119
+  # host: "localhost"   # 已废弃的回退值，请直接设置 endpoint
+  # port: 9119          # 已废弃的回退值，请直接设置 endpoint
 
   # API 密钥（支持 ${ENV_VAR} 引用环境变量）
   api_key: "" # 支持 ${ENV_VAR}

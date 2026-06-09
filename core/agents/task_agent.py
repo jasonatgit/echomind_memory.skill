@@ -55,9 +55,10 @@ class TaskMemoryAgent:
         }
 
     def get_recent_tasks(self, user_id: str, task_type: str, project: str = None,
-                        limit: int = 5) -> List[Dict]:
+                        limit: int = 5, profile: str = None) -> List[Dict]:
         tasks = [t for t in self.store.values()
-                 if t.user_id == user_id and t.metadata.get("task_type") == task_type
-                 and (not project or t.project == project)]
+                 if t.user_id == user_id
+                 and (not project or t.project == project)
+                 and (not profile or t.profile == profile)]
         tasks.sort(key=lambda x: x.updated_at, reverse=True)
         return [{"task_id": t.task_id, "title": t.title, "status": t.status} for t in tasks[:limit]]

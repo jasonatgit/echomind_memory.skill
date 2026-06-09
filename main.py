@@ -44,7 +44,7 @@ def call(tool_name: str, config_path: str = None, **kwargs):
 
     # Cache hit: reuse agent (avoids re-creating DB connection per call)
     if resolved not in _call_agents:
-        cfg = ConfigManager(config_path=config_path) if config_path else get_config_manager()
+        cfg = ConfigManager(config_path=resolved) if config_path else get_config_manager()
         agent = MainMemoryAgent(config_manager=cfg)
         agent.enable_persistence()
         _call_agents[resolved] = (agent, cfg)
@@ -53,93 +53,91 @@ def call(tool_name: str, config_path: str = None, **kwargs):
         if not agent.is_persistence_enabled():
             agent.enable_persistence()
 
-    try:
-        if tool_name == "retrieve_memory":
-            result = agent.retrieve_for_task(
-                task_context=kwargs.get("query", ""),
-                user_id=kwargs.get("user_id", ""),
-                task_id=kwargs.get("task_id"),
-                platform=kwargs.get("platform"),
-            )
-            working = [
-                {"source": m.source, "content": m.content,
-                 "importance": m.importance, "metadata": m.metadata}
-                for m in result.get("retrieved_memories", [])[:kwargs.get("max_results", 5)]
-            ]
-            confidence = sum(m.importance for m in result.get("retrieved_memories", [])) \
-                / max(len(result.get("retrieved_memories", [])), 1)
-            return {
-                "working_memory": working,
-                "confidence_score": float(confidence),
-                "used_weights": agent.rl_optimizer.get_current_weights(),
-                "feedback_requested": result.get("feedback_request", False),
-            }
+    if tool_name == "retrieve_memory":
+        result = agent.retrieve_for_task(
+            task_context=kwargs.get("query", ""),
+            user_id=kwargs.get("user_id", ""),
+            task_id=kwargs.get("task_id"),
+            platform=kwargs.get("platform"),
+            profile=kwargs.get("profile", "default"),
+        )
+        working = [
+            {"source": m.source, "content": m.content,
+             "importance": m.importance, "metadata": m.metadata}
+            for m in result.get("retrieved_memories", [])[:kwargs.get("max_results", 5)]
+        ]
+        confidence = sum(m.importance for m in result.get("retrieved_memories", [])) \
+            / max(len(result.get("retrieved_memories", [])), 1)
+        return {
+            "working_memory": working,
+            "confidence_score": float(confidence),
+            "used_weights": agent.rl_optimizer.get_current_weights(),
+            "feedback_requested": result.get("feedback_request", False),
+        }
 
-        elif tool_name == "store_memory":
-            agent.store(
-                user_id=kwargs.get("user_id", ""),
-                task_id=kwargs.get("task_id", ""),
-                context=kwargs.get("context", []),
-                task_status=kwargs.get("task_status", "completed"),
-                success=kwargs.get("success", False),
-                experience_summary=kwargs.get("experience_summary"),
-                platform=kwargs.get("platform"),
-                project=kwargs.get("project", "default"),
-                session_id=kwargs.get("session_id", ""),
-            )
-            return {"status": "stored",
-                    "user_id": kwargs["user_id"],
-                    "task_id": kwargs["task_id"]}
+    elif tool_name == "store_memory":
+        agent.store(
+            user_id=kwargs.get("user_id", ""),
+            task_id=kwargs.get("task_id", ""),
+            context=kwargs.get("context", []),
+            task_status=kwargs.get("task_status", "completed"),
+            success=kwargs.get("success", False),
+            experience_summary=kwargs.get("experience_summary"),
+            platform=kwargs.get("platform"),
+            project=kwargs.get("project", "default"),
+            session_id=kwargs.get("session_id", ""),
+            profile=kwargs.get("profile", "default"),
+        )
+        return {"status": "stored",
+                "user_id": kwargs["user_id"],
+                "task_id": kwargs["task_id"]}
 
-        elif tool_name == "record_feedback":
-            agent.record_feedback(
-                user_id=kwargs.get("user_id", ""),
-                task_id=kwargs.get("task_id", ""),
-                feedback=kwargs.get("feedback", "positive"),
-                retrieved_memories=kwargs.get("retrieved_memories", []),
-            )
-            return {"status": "feedback_received", "user_id": kwargs["user_id"]}
+    elif tool_name == "record_feedback":
+        agent.record_feedback(
+            user_id=kwargs.get("user_id", ""),
+            task_id=kwargs.get("task_id", ""),
+            feedback=kwargs.get("feedback", "positive"),
+            retrieved_memories=kwargs.get("retrieved_memories", []),
+        )
+        return {"status": "feedback_received", "user_id": kwargs["user_id"]}
 
-        elif tool_name == "sync_code_memory":
-            agent.sync_to_code_project(
-                project_root=kwargs.get("project_root", "."),
-                user_id=kwargs.get("user_id", ""),
-            )
-            return {"status": "synced",
-                    "path": f"{kwargs['project_root']}/.echomind"}
+    elif tool_name == "sync_code_memory":
+        agent.sync_to_code_project(
+            project_root=kwargs.get("project_root", "."),
+            user_id=kwargs.get("user_id", ""),
+        )
+        return {"status": "synced",
+                "path": f"{kwargs['project_root']}/.echomind"}
 
-        elif tool_name == "add_research_paper":
-            paper_id = agent.add_research_paper(
-                title=kwargs.get("title", ""),
-                authors=kwargs.get("authors"),
-                year=kwargs.get("year"),
-                journal=kwargs.get("journal"),
-                abstract=kwargs.get("abstract", ""),
-                keywords=kwargs.get("keywords"),
-                domain=kwargs.get("domain", "general"),
-                paper_type=kwargs.get("paper_type", "theory"),
-                key_points=kwargs.get("key_points"),
-                importance_score=kwargs.get("importance_score", 0.5),
-            )
-            return {"status": "stored", "paper_id": paper_id,
-                    "title": kwargs["title"]}
+    elif tool_name == "add_research_paper":
+        paper_id = agent.add_research_paper(
+            title=kwargs.get("title", ""),
+            authors=kwargs.get("authors"),
+            year=kwargs.get("year"),
+            journal=kwargs.get("journal"),
+            abstract=kwargs.get("abstract", ""),
+            keywords=kwargs.get("keywords"),
+            domain=kwargs.get("domain", "general"),
+            paper_type=kwargs.get("paper_type", "theory"),
+            key_points=kwargs.get("key_points"),
+            importance_score=kwargs.get("importance_score", 0.5),
+        )
+        return {"status": "stored", "paper_id": paper_id,
+                "title": kwargs["title"]}
 
-        elif tool_name == "add_research_note":
-            note_id = agent.add_research_note(
-                user_id=kwargs.get("user_id", ""),
-                topic=kwargs.get("topic", ""),
-                content=kwargs.get("content", ""),
-                linked_papers=kwargs.get("linked_papers"),
-                tags=kwargs.get("tags"),
-            )
-            return {"status": "stored", "note_id": note_id,
-                    "topic": kwargs["topic"]}
+    elif tool_name == "add_research_note":
+        note_id = agent.add_research_note(
+            user_id=kwargs.get("user_id", ""),
+            topic=kwargs.get("topic", ""),
+            content=kwargs.get("content", ""),
+            linked_papers=kwargs.get("linked_papers"),
+            tags=kwargs.get("tags"),
+        )
+        return {"status": "stored", "note_id": note_id,
+                "topic": kwargs["topic"]}
 
-        else:
-            raise ValueError(f"Unknown tool: {tool_name}")
-
-    except Exception:
-        raise
+    else:
+        raise ValueError(f"Unknown tool: {tool_name}")
 
 
 @atexit.register

@@ -70,7 +70,7 @@ When a query involves the following *domain keywords* or related *semantics*, th
 
 | Framework | Integration Method | Reliability |
 |------|----------|--------|
-| **Hermes-Agent** | MemoryProvider Plugin (automatic) | ★★★★★ 100% |
+| **Hermes-Agent** | MemoryProvider Plugin (automatic, v0.13.0–v0.16.0) | ★★★★★ 100% |
 | **OpenClaw** | `skill.yaml` + HTTP API tool invocation | ★★★★☆ LLM-decision |
 | **OpenCode** | CLI + HTTP API or MCP stdio | ★★★★☆ LLM-decision |
 | **Claude Code** | MCP stdio or HTTP API | ★★★★☆ LLM-decision |
@@ -242,7 +242,7 @@ pip install -r requirements.txt
 
 ```bash
 curl http://localhost:8005/health
-# Expected: {"status": "ok", "version": "1.1.5"}
+# Expected: {"status": "ok", "version": "1.1.6"}
 ```
 
 ---
@@ -373,3 +373,95 @@ EchoMind enables your AI to:
 - Remember the papers and theoretical models you've researched
 - Possess an RL-driven self-optimizing weight system — gets smarter with every interaction
 - This is not a plugin, this is an **AI Multi-Agent Memory Neural Network** with *self-reflective memory*.
+
+## Q&A *Click to expand*
+
+<details>
+<summary><b>Hermes Agent Profile Isolation & FAQ</b></summary>
+
+### Q: How do I use EchoMind across Hermes Profiles?
+
+EchoMind v1.1.6+ supports Hermes Profile-level memory isolation.
+
+**Install once**:
+```bash
+./install.sh
+```
+
+**Automatic behavior**:
+- Default profile → memory stored under `profile='default'`
+- Other profiles (e.g. weixin) → symlinks created automatically, memory stored under `profile='weixin'`
+- Both profiles' memories live in the same `~/.echomind/memory.db`, completely isolated
+- Historical data is automatically assigned to the `default` profile
+
+**Per-project isolation within the same profile**:
+```yaml
+# hermes config.yaml
+memory:
+  provider: echomind
+  project: echomind  # optional, filters by project within the same profile
+```
+
+**Manually linking a new profile** (if the profile was created after installation):
+```bash
+ln -s ~/.hermes/plugins/echomind ~/.hermes/profiles/<profile-name>/plugins/echomind
+```
+
+---
+
+### Q: Does EchoMind support Windows?
+
+Yes. v1.1.6+ has fixed cross-platform path resolution. Windows paths (e.g. `C:\Users\...\profiles\weixin\...`) correctly extract the profile name.
+If using WSL, paths follow the Linux convention.
+
+---
+
+### Q: Will multiple profiles conflict when using EchoMind simultaneously?
+
+No. v1.1.6+ uses the following mechanisms to guarantee concurrency safety:
+1. **WAL mode**: SQLite write-ahead logging, supports concurrent reads across multiple processes
+2. **busy_timeout=5000**: waits up to 5 seconds when encountering a lock
+3. **Auto-retry**: exponential backoff retry up to 3 times in edge cases
+
+---
+
+### Q: How do I downgrade to an older version?
+
+> ⚠️ **Important**: When downgrading, older versions' `SELECT` queries lack `WHERE profile = ?` filtering, making all profile data visible to the default profile.
+
+**Safe downgrade steps**:
+1. Backup `~/.echomind/memory.db`
+2. Clear non-default data:
+   ```sql
+   DELETE FROM task_memory WHERE profile != 'default';
+   DELETE FROM user_memory WHERE profile != 'default';
+   ```
+3. Then roll back to the older version
+
+**Recommendation**: Keep the new version. Do not downgrade.
+
+---
+
+### Q: Where is data stored? How do I back it up?
+
+All data is stored in a single file `~/.echomind/memory.db`. To back up, simply copy the file:
+```bash
+cp ~/.echomind/memory.db ~/.echomind/memory.db.backup-$(date +%Y%m%d)
+```
+
+---
+
+### Q: Will data be lost after migration?
+
+No. SQLite `ALTER TABLE ADD COLUMN ... DEFAULT 'default'` is an O(1) metadata operation — it does not modify rows row-by-row. Existing 37MB of data is fully preserved, automatically assigned to the `default` profile.
+
+---
+
+### Q: Is EchoMind compatible with Hermes v0.16.0?
+
+Yes. EchoMind v1.1.6+ has been adapted to Hermes v0.16.0's new `on_session_switch(rewound=True)` parameter.
+When the user executes `/undo N` to truncate conversation history, EchoMind automatically clears the context cache to prevent memory contamination.
+Compatibility range: Hermes v0.13.0 – v0.16.0.
+
+</details>
+

@@ -2,7 +2,10 @@
 # Pure-function safe fallback: Return empty when unavailable / Basic keyword extraction
 
 import re
+import logging
 from collections import Counter
+
+logger = logging.getLogger("ReflectiveFallback")
 
 
 def _build_prompt(context, config):
@@ -14,10 +17,17 @@ def _load_few_shot():
 
 
 def _get_extra_params():
-    return []
+    return {}
 
 
 def _parse_result(raw):
+    """Parse LLM JSON response, returning raw string if not valid JSON."""
+    if isinstance(raw, str) and raw.strip():
+        try:
+            import json
+            return json.loads(raw)
+        except (json.JSONDecodeError, ValueError):
+            return raw
     return raw
 
 
@@ -41,21 +51,15 @@ _STOPWORDS_EN = {
     "put", "move", "work", "old", "long", "even", "back", "still",
     "here", "there", "up", "out", "new", "like", "good", "great",
     "right", "same", "while", "really", "again", "go", "first",
+    "already", "maybe", "always", "never", "because", "therefore",
+    "itself", "indeed", "although", "rather", "quite", "perhaps",
 }
 
 _STOPWORDS_ZH = {
-    "", "了", "is", "我", "在", "有", "和", "就", "不", "人",
-    "都", "一", "a", "上", "也", "很", "到", "说", "要", "去",
-    "你", "会", "着", "no", "看", "好", "itself", "这", "他", "她",
-    "它", "们", "那", "些", "what", "how", "how to", "can", "this",
-    "that", "because", "therefore", "but", "although", "If", "or", "already",
-    "maybe", "should", "must", "think", "know", "", "一种", "some",
-    "not", "or", "here", "there", "this way", "that way", "when", "after",
-    "before", "then", "now", "comparison", "need", "use", "issue", "work",
-    "content", "perform", "system", "method", "passed", "implement", "Completed", "process",
-    "situation", "relationship", "part", "result", "start", "end", "Handle", "manage",
-    "support", "development", "test", "check", "confirm", "maintain", "maintenance", "Update",
-    "related", "consider", "suggestion", "note", "indeed", "really", "very", "many",
+    "", "一", "上", "不", "了", "人", "也", "他", "她",
+    "它", "们", "在", "有", "和", "这", "那", "些",
+    "都", "就", "我", "你", "要", "说", "看",
+    "会", "去", "着", "好", "很", "到", "是",
 }
 
 
@@ -115,22 +119,41 @@ def _extract_keywords(records, top_k=10):
 def _reflect_records(
     records, user_id, platform, llm_fn, config, store, memory
 ):
-    """Basic keyword-based reflection when the compiled extension is unavailable.
+    """Basic keyword-based reflection when LLM provider is 'none'.
 
-    Only activates when provider is explicitly 'none' (no LLM available).
-    Extracts top frequent keywords as key_insights with low confidence.
+    Two-phase API:
+    - llm_fn=None → returns (prompt: str, record_ids: list) for two-phase HTTP API
+    - llm_fn=callable → runs full reflection, returns ReflectionOutput dict or None
+
+    When llm_fn is provided and provider is not 'none', uses the LLM to generate
+    reflection. When provider is 'none', extracts top frequent keywords as fallback.
     """
     provider = ""
     if isinstance(config, dict):
         provider = config.get("provider", "")
         if not provider:
-            # Check nested llm config (from ConfigManager path)
             llm_cfg = config.get("llm", {})
             if isinstance(llm_cfg, dict):
                 provider = llm_cfg.get("provider", "")
 
+    if llm_fn is None:
+        # Two-phase HTTP API: return prompt for caller-side LLM processing
+        prompt = _prepare_reflection_context(records)
+        record_ids = [r.get("id", f"rec_{i}") for i, r in enumerate(records)]
+        return (prompt, record_ids)
+
+    # Hermes auto path: llm_fn provided → use LLM for reflection
     if provider != "none":
-        return None
+        try:
+            prompt = _prepare_reflection_context(records)
+            raw_response = llm_fn(prompt)
+            if raw_response:
+                return _process_reflection(
+                    raw_response, records, user_id, platform, config, store, memory,
+                )
+        except Exception:
+            logger.debug("reflection: LLM call failed, falling back to keyword")
+            pass
 
     keywords = _extract_keywords(records)
     if not keywords:
@@ -149,12 +172,10 @@ def _reflect_records(
     }
 
     # Try to classify keywords into categories
-    pref_kw = {"like", "prefer", "want", "need", "okay", "good", "like",
-               "preference", "style", "format", "language", "language",
-               "habit", "usually", "always", "never", "avoid", "不", "like",
-               "preferences", "habits", "always", "never", "avoid"}
-    rule_kw = {"rule", "must", "should", "always", "never", "require",
-               "rule", "must", "require", "rule", "must", "should"}
+    pref_kw = {"like", "prefer", "want", "need", "okay", "good",
+               "preference", "style", "format", "language",
+               "habit", "usually", "always", "never", "avoid", "不"}
+    rule_kw = {"rule", "must", "should", "always", "never", "require"}
     
     for kw in keywords:
         kw_lower = kw.lower()
@@ -173,11 +194,52 @@ def _reflect_records(
 def _process_reflection(
     raw_response, records, user_id, platform, config, store, memory_agent
 ):
-    return None
+    """Process LLM reflection result with fallback.
+
+    When called without a valid LLM, returns an empty valid result
+    so the caller does not receive None (which triggers HTTP 400).
+    """
+    if not raw_response:
+        # No LLM response → return empty valid result, not None
+        return {
+            "key_insights": [],
+            "preferences": {},
+            "rules": [],
+            "knowledge": [],
+            "experience": [],
+            "procedural_rules": [],
+            "confidence": 0.3,
+            "source": "fallback_empty",
+        }
+    # Try to parse as JSON; if it fails, return raw string as-is
+    return _parse_result(raw_response)
 
 
 def _prepare_reflection_context(records):
-    return ""
+    """Build a keyword-based prompt for two-phase reflection API when LLM is unavailable."""
+    keywords = _extract_keywords(records, top_k=10)
+    if not keywords:
+        return ""
+    texts = []
+    for r in records:
+        if isinstance(r, dict):
+            txt = r.get("content", "") or r.get("text", "") or r.get("title", "")
+            if txt:
+                texts.append(txt[:200])
+        elif isinstance(r, str):
+            texts.append(r[:200])
+    record_text = "\n".join(f"- {t}" for t in texts[:10])
+    keyword_text = ", ".join(keywords[:8])
+    return (
+        f"Review the following records and extract:\n"
+        f"1. Key insights (3-5 bullet points)\n"
+        f"2. User preferences (format: key=value, one per line)\n"
+        f"3. Procedural rules (if-then format)\n"
+        f"4. New knowledge (abstract domain concepts)\n\n"
+        f"Keywords detected: {keyword_text}\n\n"
+        f"Records:\n{record_text}\n\n"
+        f"Respond in JSON format with keys: key_insights, user_preferences, procedural_rules, new_knowledge"
+    )
 
 
 def _merge_semantic(output, knowledge_agent):

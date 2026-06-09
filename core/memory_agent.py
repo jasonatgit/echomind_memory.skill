@@ -1,6 +1,7 @@
 # echomind_memory.skill/memory_agent.py
 
 import json
+import threading
 import uuid
 import random
 import re
@@ -9,8 +10,8 @@ from typing import List, Dict, Any, Optional
 from pydantic import BaseModel, Field
 import logging
 
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("MemoryAgent")
+logger.setLevel(logging.INFO)
 
 from .models.context import ContextMessage, ContextMemory
 from .models.task import TaskMemory
@@ -37,6 +38,22 @@ from .storage.sqlite_store import SqliteStore
 
 
 class MainMemoryAgent:
+    # ── Importance scoring constants ──
+    _SCORE_USER_BASE = 0.8
+    _SCORE_USER_PREF_BOOST = 0.2
+    _SCORE_USER_HABITS_MULT = 0.8
+    _SCORE_EXPERIENCE_BASE = 0.6
+    _SCORE_TASK_PROGRESS = 0.9
+    _SCORE_TASK_HISTORY = 0.6
+    _SCORE_CONTEXT_BASE = 0.7
+    _SCORE_CROSS_PLATFORM_MULT = 0.5
+    _SCORE_DOMAIN_BOOST = 0.1
+    _SCORE_RESEARCH_DOMAIN_BOOST = 0.15
+    _SCORE_FAILED_MULT = 1.3
+    _SCORE_COMPLETED_MULT = 0.9
+    _SCORE_RECENCY_DECAY_DAYS = 30
+    _SCORE_RESEARCH_IMPORTANCE_WEIGHT = 0.3
+
     def __init__(self, db_path: str = None, config_manager=None):
         self.context_agent = ContextMemoryAgent()
         self.task_agent = TaskMemoryAgent()
@@ -61,6 +78,7 @@ class MainMemoryAgent:
         self._persistence_enabled = False
         self._store_count: dict = {}
         self._pending_reflection = False
+        self._store_lock = threading.Lock()
         self._research_kw_cache = None
 
         ref_config = self.cfg.get_section("reflection")
@@ -108,6 +126,7 @@ class MainMemoryAgent:
         for e in all_data.get("experiences", []):
             exp = ExperienceEntry(
                 user_id=e.get("user_id",""), project=e.get("project","default"),
+                profile=e.get("profile","default"),
                 session_id=e.get("session_id",""),
                 session_title=e.get("session_title",""),
                 task_type=e.get("task_type","default"),
@@ -140,9 +159,11 @@ class MainMemoryAgent:
                 metadata["category"] = k["domain"]
             entry = KnowledgeEntry(
                 content=k.get("content",""),
-                metadata=metadata)
+                metadata=metadata,
+                user_id=k.get("user_id", k.get("metadata", {}).get("user_id", "default")))
             entry.id = k.get("id", entry.id)
             self.knowledge_agent.store[entry.id] = entry
+            self.knowledge_agent._add_to_index(entry)
             loaded["knowledge"] += 1
 
         # 6. Research papers
@@ -150,6 +171,7 @@ class MainMemoryAgent:
             paper = ResearchPaper(
                 id=p.get("id",""), user_id=p.get("user_id","default"),
                 project=p.get("project","default"),
+                profile=p.get("profile","default"),
                 title=p.get("title",""),
                 authors=p.get("authors",[]), year=p.get("year"),
                 journal=p.get("journal",""), abstract=p.get("abstract",""),
@@ -164,6 +186,7 @@ class MainMemoryAgent:
         for n in all_data.get("research_notes", []):
             note = ResearchNote(id=n.get("id",""), user_id=n.get("user_id",""),
                 project=n.get("project","default"),
+                profile=n.get("profile","default"),
                 topic=n.get("topic",""), content=n.get("content",""),
                 linked_papers=n.get("linked_papers",[]),
                 tags=n.get("tags",[]))
@@ -175,8 +198,14 @@ class MainMemoryAgent:
         else:
             logger.info("Empty DB — fresh start")
 
-        # 8. RL Weight restoration
+        # 8. RL Weight restoration — first available user, fall back to "default"
         saved_weights = self.db.load_rl_weights("default")
+        if loaded.get("users", 0) > 0 and self.user_agent.store:
+            for uid in self.user_agent.store:
+                w = self.db.load_rl_weights(uid)
+                if w:
+                    saved_weights = w
+                    break
         if saved_weights:
             self.rl_optimizer.weights = saved_weights
             self.rl_optimizer.ema_weights = saved_weights.copy()
@@ -193,26 +222,32 @@ class MainMemoryAgent:
     def clear_pending_reflection(self):
         self._pending_reflection = False
 
+    @staticmethod
+    def _flatten_domain_keywords(domain_entry) -> list:
+        """Extract zh+en keyword lists from either flat or nested domain entry format."""
+        if not isinstance(domain_entry, dict):
+            return []
+        if "keywords" in domain_entry and isinstance(domain_entry["keywords"], dict):
+            inner = domain_entry["keywords"]
+            return inner.get("zh", []) + inner.get("en", [])
+        return domain_entry.get("zh", []) + domain_entry.get("en", [])
+
     def _extract_task_features(self, task_context: str) -> Dict[str, Any]:
         if self._research_kw_cache is None:
             domain_keywords = self.cfg.get("domain", "keywords", default={})
             research_keywords = []
-            for domain_id, keywords in domain_keywords.items():
-                if isinstance(keywords, dict):
-                    research_keywords.extend(keywords.get("zh", []))
-                    research_keywords.extend(keywords.get("en", []))
-                elif isinstance(keywords, list):
-                    research_keywords.extend(keywords)
+            for domain_id, entry in domain_keywords.items():
+                research_keywords.extend(self._flatten_domain_keywords(entry))
             self._research_kw_cache = set(kw.lower() for kw in research_keywords)
         research_keywords = self._research_kw_cache
         features = {
             "is_complex": any(k in task_context.lower() for k in ["detailed", "in-depth", "comparative", "comprehensive"]),
             "has_history": any(k in task_context.lower() for k in ["last", "previous", "continue", "next", "previously done"]),
-            "domain": "finance" if any(k in task_context.lower() for k in ["finance", "budget", "reimbursement", "investment"]) else "general",
+            "domain": self._detect_research_domain(task_context),
             "task_type": "analysis" if any(k in task_context.lower() for k in ["analysis", "report"]) else "general",
             "requires_research": any(k in task_context.lower() for k in research_keywords),
             "requires_knowledge": any(k in task_context.lower() for k in
-                ["knowledge", "documentation", "standard", "agreement", "knowledge", "documentation"]),
+                ["knowledge", "documentation", "standard", "agreement"]),
             "research_domain": self._detect_research_domain(task_context),
         }
         return features
@@ -246,13 +281,8 @@ class MainMemoryAgent:
         t = text.lower()
 
         # Phase 1: fast keyword match
-        for domain_id, keywords in domain_keywords.items():
-            if isinstance(keywords, dict):
-                all_kw = keywords.get("zh", []) + keywords.get("en", [])
-            elif isinstance(keywords, list):
-                all_kw = keywords
-            else:
-                continue
+        for domain_id, entry in domain_keywords.items():
+            all_kw = self._flatten_domain_keywords(entry)
             if any(k.lower() in t for k in all_kw):
                 return domain_id
 
@@ -270,7 +300,7 @@ class MainMemoryAgent:
     def _llm_detect_domain(self, llm, text: str, domain_keywords: dict) -> str:
         """Use LLM to determine which domain best matches the text."""
         domain_list = "\n".join(
-            f"- {did}: {kw.get('zh', kw)[:3] if isinstance(kw, dict) else kw[:3]}"
+            f"- {did}: {self._flatten_domain_keywords(kw)[:3]}"
             for did, kw in domain_keywords.items()
         )
         prompt = (
@@ -288,17 +318,19 @@ class MainMemoryAgent:
     _llm_client_cache = None
 
     def _get_llm_client(self):
-        """Lazy-init via singleton factory (dedup: same client as hermes_provider)."""
-        if self._llm_client_cache is None:
+        """Lazy-init via module-level singleton (shared across instances)."""
+        cls = type(self)
+        if cls._llm_client_cache is None:
             from .llm_client import get_llm_client
-            self._llm_client_cache = get_llm_client()
-        return self._llm_client_cache
+            cls._llm_client_cache = get_llm_client()
+        return cls._llm_client_cache
 
     def retrieve_for_task(self, task_context: str, user_id: str,
                          task_id: Optional[str] = None,
                          platform: Optional[str] = None,
                          project: str = "default",
-                         session_id: str = "") -> Dict[str, Any]:
+                         session_id: str = "",
+                         profile: str = "default") -> Dict[str, Any]:
         logger.info(f"Retrieving memory for task: {task_context[:50]}...")
         features = self._extract_task_features(task_context)
         retrieved = {}
@@ -313,23 +345,27 @@ class MainMemoryAgent:
 
         # Always retrieve knowledge and experience (Bug fix: previously gated on rigid keywords)
         retrieved["knowledge"] = self.knowledge_agent.search(
-            query=task_context, domain=features["domain"], user_id=user_id,
-            project=project, session_id=session_id, top_k=5)
+            query=task_context, domain=features.get("research_domain", "general"), user_id=user_id,
+            project=project, session_id=session_id, top_k=5,
+            profile=profile)
         retrieved["experience"] = self.experience_agent.find_similar_tasks(
             task_context=task_context, task_type=features["task_type"],
             user_id=user_id, project=project, session_id=session_id,
-            min_success_rate=0.5, limit=5)
+            min_success_rate=0.5, limit=5,
+            profile=profile)
         if features["has_history"]:
             if task_id:
                 retrieved["task_progress"] = self.task_agent.get_task_progress(task_id)
             else:
                 retrieved["task_history"] = self.task_agent.get_recent_tasks(
                     user_id=user_id, task_type=features["task_type"],
-                    project=project, limit=5)
+                    project=project, limit=5,
+                    profile=profile)
         if features.get("requires_research"):
             retrieved["research"] = self.research_agent.search_papers(
                 query=task_context, domain=features.get("research_domain"),
-                user_id=user_id, project=project, top_k=research_top_k)
+                user_id=user_id, project=project, top_k=research_top_k,
+                profile=profile)
 
         if self._persistence_enabled:
             recent_contexts = self.db.search_context(user_id, platform=platform, limit=context_limit)
@@ -350,47 +386,6 @@ class MainMemoryAgent:
         }
 
 
-    def _compute_freshness_score(self, entry, source):
-        """Compute time-decay freshness factor."""
-        now = datetime.now(timezone.utc)
-        last_verified = None
-        if hasattr(entry, 'last_verified_at') and entry.last_verified_at:
-            try:
-                last_verified = datetime.fromisoformat(entry.last_verified_at)
-            except (ValueError, TypeError):
-                last_verified = now
-        if isinstance(entry, dict):
-            lv = entry.get("last_verified_at")
-            if lv:
-                try:
-                    last_verified = datetime.fromisoformat(lv)
-                except (ValueError, TypeError):
-                    last_verified = now
-            else:
-                last_verified = now
-        
-        if last_verified:
-            age_days = (now - last_verified).days
-            half_life = getattr(entry, 'half_life_days', 90)
-            if isinstance(entry, dict):
-                half_life = entry.get("half_life_days", 90)
-            return 0.5 ** (age_days / half_life)
-        return 1.0
-
-    def _compute_platform_bias(self, platform):
-        """Platform-aware weight for cross-platform vs same-platform retrieval."""
-        if not platform:
-            return 1.0
-        task_platform = getattr(self, '_current_platform', None)
-        return 1.0 if task_platform == platform else 0.5
-
-    def _compute_task_status_weight(self, task_status):
-        """Weight based on task status: failed tasks are more relevant."""
-        if task_status == "failed":
-            return 1.3
-        elif task_status == "completed":
-            return 0.9
-        return 1.0
     def _compute_importance(self, retrieved: Dict[str, Any], query: str,
                             user_id: str, platform: Optional[str] = None,
                             features: Dict[str, Any] = None) -> List[MemoryRecord]:
@@ -402,9 +397,9 @@ class MainMemoryAgent:
         for source, memories in retrieved.items():
             if source == "user":
                 user_mem = memories
-                score = 0.8
+                score = self._SCORE_USER_BASE
                 if user_mem.get("preferences", {}).get("response_style") == "concise":
-                    score += 0.2 * weights["explicit_feedback"]
+                    score += self._SCORE_USER_PREF_BOOST * weights["explicit_feedback"]
                 scored.append(MemoryRecord(
                     source=source,
                     content=f"User preferences: {json.dumps(user_mem.get('preferences', {}), ensure_ascii=False)}",
@@ -415,7 +410,7 @@ class MainMemoryAgent:
                     scored.append(MemoryRecord(
                         source=source,
                         content=f"User habits: {json.dumps(habits, ensure_ascii=False)}",
-                        importance=round(score * 0.8, 3), metadata=habits,
+                        importance=round(score * self._SCORE_USER_HABITS_MULT, 3), metadata=habits,
                     ))
 
             elif source == "knowledge":
@@ -424,14 +419,13 @@ class MainMemoryAgent:
                     recency = 1.0
                     if "last_updated" in mem["metadata"]:
                         age = (datetime.now(timezone.utc) - datetime.fromisoformat(mem["metadata"]["last_updated"])).days
-                        recency = max(0, 1 - age / 30)
+                        recency = max(0, 1 - age / self._SCORE_RECENCY_DECAY_DAYS)
                     trust = mem["metadata"].get("trust_score", 0.5)
                     # Freshness decay: older knowledge entries fade
                     created = mem.get("created_at") or mem["metadata"].get("created_at", "")
                     freshness = 1.0
                     if created:
                         try:
-                            from datetime import datetime, timezone
                             age_days = (datetime.now(timezone.utc) - datetime.fromisoformat(created)).days
                             half_life = mem["metadata"].get("half_life_days", 90)
                             freshness = 0.5 ** (age_days / max(half_life, 1))
@@ -439,25 +433,25 @@ class MainMemoryAgent:
                             logger.debug("Failed to calculate freshness score")
                     # Domain boost: same-domain memories get +0.1
                     mem_domain = mem["metadata"].get("domain") or mem["metadata"].get("category", "")
-                    domain_boost = 0.1 if (detected_domain != "general" and mem_domain == detected_domain) else 0
+                    domain_boost = self._SCORE_DOMAIN_BOOST if (research_domain != "general" and mem_domain == research_domain) else 0
                     score = (relevance * weights["relevance"] + recency * weights["recency"] + trust * weights["trust_score"] + domain_boost) * freshness
                     scored.append(MemoryRecord(source=source, content=mem["content"], importance=round(score, 3), metadata=mem))
 
             elif source == "experience":
                 for mem in memories:
                     recency_mult = self.cfg.get("retrieval", "recency_multiplier", 0.5)
-                    score = 0.6 * weights["relevance"] + mem["frequency"] * weights["frequency"] + recency_mult * weights["recency"]
-                    # P3-8: task status weighting
+                    score = self._SCORE_EXPERIENCE_BASE * weights["relevance"] + mem["frequency"] * weights["frequency"] + recency_mult * weights["recency"]
+                    # task status weighting
                     task_status = mem.get("metadata", {}).get("task_status", "")
-                    if task_status == "failed": score *= 1.3
-                    elif task_status == "completed": score *= 0.9
+                    if task_status == "failed": score *= self._SCORE_FAILED_MULT
+                    elif task_status == "completed": score *= self._SCORE_COMPLETED_MULT
                     scored.append(MemoryRecord(source=source, content=mem["summary"], importance=round(score, 3), metadata=mem))
 
             elif source == "task_progress":
                 scored.append(MemoryRecord(
                     source=source,
                     content=f"Task progress: {json.dumps(memories, ensure_ascii=False)}",
-                    importance=0.9, metadata=memories,
+                    importance=self._SCORE_TASK_PROGRESS, metadata=memories,
                 ))
 
             elif source == "task_history":
@@ -465,14 +459,14 @@ class MainMemoryAgent:
                     scored.append(MemoryRecord(
                         source=source,
                         content=f"Previous task: {mem['title']} ({mem['status']})",
-                        importance=0.6, metadata=mem,
+                        importance=self._SCORE_TASK_HISTORY, metadata=mem,
                     ))
 
             elif source == "research":
                 for mem in memories:
                     mem_paper_domain = mem.get("domain", "")
-                    research_domain_boost = 0.15 if (detected_domain != "general" and mem_paper_domain == detected_domain) else 0
-                    score = mem["relevance"] * weights["relevance"] + mem["importance_score"] * 0.3 + research_domain_boost
+                    research_domain_boost = self._SCORE_RESEARCH_DOMAIN_BOOST if (research_domain != "general" and mem_paper_domain == research_domain) else 0
+                    score = mem["relevance"] * weights["relevance"] + mem["importance_score"] * self._SCORE_RESEARCH_IMPORTANCE_WEIGHT + research_domain_boost
                     key_points_str = "; ".join(mem.get("key_points", [])[:3])
                     scored.append(MemoryRecord(
                         source=source,
@@ -487,11 +481,11 @@ class MainMemoryAgent:
                         continue
                     # Preserve full message structure — content is JSON array
                     ctx_platform = ctx.get("platform", "")
-                    platform_mult = 1.0 if (not platform or ctx_platform == platform) else 0.5
+                    platform_mult = 1.0 if (not platform or ctx_platform == platform) else self._SCORE_CROSS_PLATFORM_MULT
                     scored.append(MemoryRecord(
                         source="context",
                         content=json.dumps(messages, ensure_ascii=False),
-                        importance=round(0.7 * platform_mult, 3),
+                        importance=round(self._SCORE_CONTEXT_BASE * platform_mult, 3),
                         metadata={
                             "session_id": ctx.get("session_id", ""),
                             "platform": ctx_platform,
@@ -513,9 +507,7 @@ class MainMemoryAgent:
         """Merge redundant knowledge entries within same domain+project via LLM."""
         if not self._persistence_enabled:
             return 0
-        import json
-        knowledge = self.knowledge_agent.search("", domain=domain,
-            project=project, top_k=max_items * 2)
+        knowledge = self.knowledge_agent.search_all(domain=domain, project=project)
         if len(knowledge) <= max_items:
             return 0
 
@@ -550,7 +542,7 @@ class MainMemoryAgent:
                 logger.debug("Knowledge compaction failed, skipping")
         return merged
 
-    def _cosine_prefilter(self, query: str, candidates: list,
+    def _jaccard_prefilter(self, query: str, candidates: list,
                           text_key: str = "content", top_n: int = 20) -> list:
         """Pre-filter candidates via simple n-gram Jaccard similarity."""
         import re
@@ -575,7 +567,8 @@ class MainMemoryAgent:
     def store(self, user_id: str, task_id: str, context: List[Dict],
               task_status: str, success: bool = False, experience_summary: str = None,
               platform: str = None, title: str = None,
-              project: str = "default", session_id: str = ""):
+              project: str = "default", session_id: str = "",
+              profile: str = "default") -> bool:
         """
         Store a task interaction and update all memory layers.
         """
@@ -602,11 +595,13 @@ class MainMemoryAgent:
                     preferences=user_data.get("preferences", {}),
                     habits=user_data.get("habits", {}),
                     history=user_data.get("history", []),
-                    platform=platform)
+                    platform=platform,
+                    profile=profile)
                 self.db.save_task(user_id, task_id, title or "auto-task", task_status,
                                   steps=[{"step": "Initialize", "status": task_status}],
                                   project=project, session_id=session_id or "",
-                                  session_title=session_title, tags=task_tags)
+                                  session_title=session_title, tags=task_tags,
+                                  profile=profile)
                 # Save context memory (with platform tags)
                 all_text = "".join(m.get("content", "") for m in context)
                 chinese_chars = len(re.findall(r'[\u4e00-\u9fff]', all_text))
@@ -617,25 +612,28 @@ class MainMemoryAgent:
                     messages=context,
                     token_count=token_est,
                     platform=platform or "default",
-                    project=project)
-                # If domain keywords found, save knowledge entry
+                    project=project,
+                    profile=profile)
+                # Save knowledge entry when there's substantive assistant content
                 research_domain = features.get("research_domain", "general")
-                if research_domain != "general":
-                    best_content = ""
-                    for msg in context:
-                        if msg.get("role") == "assistant":
-                            c = msg.get("content", "")
-                            if len(c) > len(best_content):
-                                best_content = c
-                    knowledge_content = best_content[:2000] if best_content else (experience_summary or "Auto-extracted knowledge")
+                best_content = ""
+                for msg in context:
+                    if msg.get("role") == "assistant":
+                        c = msg.get("content", "")
+                        if len(c) > len(best_content):
+                            best_content = c
+                knowledge_content = best_content[:2000] if best_content else (experience_summary or "Auto-extracted knowledge")
+                if knowledge_content and knowledge_content != "Auto-extracted knowledge":
                     self.db.save_knowledge(
                         knowledge_id=f"{user_id}:{task_id}",
                         domain=research_domain,
                         content=knowledge_content,
-                        metadata={"source": "task", "task_id": task_id},
+                        metadata={"source": "task", "task_id": task_id, "user_id": user_id},
                         project=project,
                         session_id=session_id or "",
-                        session_title=session_title, tags=task_tags)
+                        session_title=session_title, tags=task_tags,
+                        profile=profile,
+                        user_id=user_id)
 
             if success or experience_summary:
                 steps_from_context = [m["content"] for m in context if m["role"] != "system"]
@@ -643,6 +641,9 @@ class MainMemoryAgent:
                     task_id=task_id, success=success, steps=steps_from_context,
                     summary=experience_summary or "System-generated experience summary",
                     user_id=user_id, task_type=features.get("task_type", "general"),
+                    project=project, session_id=session_id or "",
+                    session_title=session_title, tags=task_tags,
+                    profile=profile,
                 )
                 if self._persistence_enabled:
                     self.db.save_experience(user_id, features.get("task_type", "general"), success,
@@ -650,20 +651,25 @@ class MainMemoryAgent:
                                  experience_summary or "System-generated experience summary",
                                  project=project,
                                  session_id=session_id or "",
-                                 session_title=session_title, tags=task_tags)
+                                 session_title=session_title, tags=task_tags,
+                                 profile=profile)
 
             # Reflection trigger: per-user count, trigger after batch_size
             if self._persistence_enabled:
-                self._store_count[user_id] = self._store_count.get(user_id, 0) + 1
-                batch_size = self.reflective.config.get("batch_size", 8)
-                if isinstance(batch_size, (list, tuple)):
-                    batch_size = int(random.uniform(batch_size[0], batch_size[1]))
-                if self._store_count[user_id] >= batch_size:
-                    self._pending_reflection = True
-                    self._store_count[user_id] = 0
+                with self._store_lock:
+                    self._store_count[user_id] = self._store_count.get(user_id, 0) + 1
+                    batch_size = self.reflective.config.get("batch_size", 8)
+                    if isinstance(batch_size, (list, tuple)):
+                        batch_size = int(random.uniform(batch_size[0], batch_size[1]))
+                    if self._store_count[user_id] >= batch_size:
+                        self._pending_reflection = True
+                        self._store_count[user_id] = 0
+
+            return True
 
         except Exception as e:
             logger.warning(f"store() failed: {e}")
+            return False
 
     def get_recent_episodic(self, user_id: str, count: int = 8) -> List[Dict]:
         """Get recent N episodic records for ReflectiveAgent"""
@@ -718,16 +724,17 @@ class MainMemoryAgent:
         detailed_kw = infer_cfg.get("keywords", {}).get("detailed_type", ["type hint", "Optional[str]"])
         concise_code_kw = infer_cfg.get("keywords", {}).get("concise_code", ["concise","no comments"])
 
-        all_content = " ".join(m["content"] for m in context)
-        concise_count = sum(all_content.count(kw) for kw in concise_kw)
+        all_content = " ".join(m.get("content", "") for m in context)
+        new_prefs = {}
+        concise_count = sum(len(re.findall(r'\b' + re.escape(kw) + r'\b', all_content)) for kw in concise_kw)
         if concise_count >= min_occ:
-            prefs["response_style"] = "concise"
+            new_prefs["response_style"] = "concise"
         if any(kw in all_content for kw in detailed_kw):
-            prefs["code_style"] = "detailed"
+            new_prefs["code_style"] = "detailed"
         elif any(kw in all_content for kw in concise_code_kw):
-            prefs["code_style"] = "concise"
-        if prefs:
-            self.user_agent.update(user_id, "preferences", prefs, source="implicit", platform=platform)
+            new_prefs["code_style"] = "concise"
+        if new_prefs:
+            self.user_agent.update(user_id, "preferences", new_prefs, source="implicit", platform=platform)
 
     def record_feedback(self, user_id: str, task_id: str, feedback: str, retrieved_memories: List[Dict]):
         if feedback not in ["positive", "negative"]:
@@ -745,18 +752,22 @@ class MainMemoryAgent:
 
     def sync_to_code_project(self, project_root: str, user_id: str):
         from pathlib import Path
-        # Path traversal protection: disallow .. components
+        # Path traversal protection: resolve + verify it's within allowed scope
         root_path = Path(project_root).resolve()
 
-        # Use Path.parts for cross-platform .. detection
-        if ".." in Path(project_root).parts:
-            raise ValueError(f"Path traversal not allowed: {project_root}")
-
-        # Whitelist: only allow home or cwd subdirectories
+        # Whitelist: home, cwd, and any extra paths from config
         home = Path.home().resolve()
         cwd = Path.cwd().resolve()
+        allowed_bases = [home, cwd]
+        extra_paths = self.cfg.get("sync", "allowed_paths", default=[])
+        if isinstance(extra_paths, list):
+            for p in extra_paths:
+                try:
+                    allowed_bases.append(Path(p).resolve())
+                except Exception:
+                    continue
         allowed = False
-        for base in (home, cwd):
+        for base in allowed_bases:
             try:
                 root_path.relative_to(base)
                 allowed = True
