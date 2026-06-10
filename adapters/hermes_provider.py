@@ -612,4 +612,6 @@ def _hermes_llm_fn(prompt: str) -> str:
     if client is None:
         return ""
     result = client.chat(prompt)
-    return result if result is not None else ""
+    if result is None or not result.strip():
+        return ""
+    return result
