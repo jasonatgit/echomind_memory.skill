@@ -14,22 +14,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 import requests  # Hermes bundled, zero new dependencies
 
-# Safe import MemoryProvider ABC (supports packaged + source Hermes)
-try:
-    from agent.memory_provider import MemoryProvider
-except ImportError:
-    from abc import ABC, abstractmethod
-
-    class MemoryProvider(ABC):
-        """Minimal MemoryProvider fallback for when Hermes agent module is unavailable."""
-        name: str = ""
-
-        @abstractmethod
-        def is_available(self) -> bool: ...
-        @abstractmethod
-        def initialize(self, session_id: str, **kwargs): ...
-        @abstractmethod
-        def get_tool_schemas(self): ...
+# No ABC inheritance — Hermes discovers methods at runtime via getattr() / inspect.
+# Compatible with Hermes v0.13.0+ without version-specific code.
 
 # Ensure core module is importable
 _skill_dir = os.path.dirname(os.path.abspath(__file__))
@@ -44,9 +30,31 @@ logger = logging.getLogger("EchomindProvider")
 PLATFORM = "hermes"
 
 
-class EchomindMemoryProvider(MemoryProvider):
+class EchomindMemoryProvider:
     """EchoMind Memory Provider — Hermes Agent loop deep integration
-    
+
+    No ABC inheritance.  Hermes discovers available methods at runtime
+    via getattr() and adapts keyword arguments via inspect.signature(),
+    so a plain class without any framework base class works identically.
+
+    Protocol (what Hermes calls when available):
+      initialize(session_id, **kwargs)
+      system_prompt_block() -> str
+      prefetch(query, *, session_id) -> str
+      queue_prefetch(query, *, session_id)
+      sync_turn(user_content, assistant_content, *, session_id, messages)
+      get_tool_schemas() -> list[dict]
+      handle_tool_call(tool_name, args, **kwargs) -> str
+      shutdown()
+      on_turn_start(turn_number, message, **kwargs)
+      on_session_end(messages)
+      on_session_switch(new_session_id, *, parent_session_id, reset, rewound, **kwargs)
+      on_pre_compress(messages) -> str
+      on_delegation(task, result, *, child_session_id, **kwargs)
+      on_memory_write(action, target, content, metadata)
+      get_config_schema() -> list[dict]
+      save_config(values, hermes_home)
+
     Automatic invocation sequence (managed by Hermes run_agent.py):
     - before each turn: prefetch(query, session_id) → retrieve memory, inject system prompt
     - after each turn: sync_turn(user, assistant, session_id) → store current-turn conversation
