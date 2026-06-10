@@ -600,8 +600,16 @@ def _hermes_llm_fn(prompt: str) -> str:
     """passed UnifiedLLMClient calls LLM for reflection.
 
     Supports external API endpoints (OpenAI / vLLM / Ollama, etc.).
+
+    Always returns a string (never None).  Defensive guard: some LLMs
+    (e.g. Ollama, DeepSeek) return finish_reason=stop with content=null,
+    which would become Python None here.  None would be passed as
+    raw_response to _reflect_records, then propagated as the LLM result
+    back to the caller, where the caller's OpenAI SDK raises
+    EmptyModelOutputError("has no usable output").
     """
     client = _get_llm_client()
     if client is None:
         return ""
-    return client.chat(prompt)
+    result = client.chat(prompt)
+    return result if result is not None else ""
