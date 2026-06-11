@@ -1,0 +1,248 @@
+# language_profiles.yaml — EchoMind built-in language profiles
+# Version: v1.1.6
+# Distributed with GitHub as the built-in default language profiles.
+# Users can override via language_profiles in echomind_config.yaml.
+# Note: language_profiles from config deeply merges with this file.
+#
+# Add a new language = add a section here + a detection rule. Zero code changes.
+
+detection:
+  - lang: zh
+    pattern: "[\u4e00-\u9fff]"
+    threshold: 0.30
+
+en:
+  tokenizer: "word_boundary"
+  tokenizer_pattern: "[a-zA-Z]{2,}"
+  stopwords:
+    - the
+    - is
+    - are
+    - a
+    - an
+    - and
+    - or
+    - but
+    - in
+    - on
+    - to
+    - for
+    - of
+    - with
+    - at
+    - from
+    - by
+    - that
+    - this
+    - it
+    - as
+    - be
+    - was
+    - has
+    - have
+    - had
+    - not
+    - "no"
+  features:
+    complex:
+      - detailed
+      - in-depth
+      - comparative
+      - comprehensive
+    history:
+      - last
+      - previous
+      - continue
+      - next
+      - previously done
+    analysis:
+      - analysis
+      - report
+      - evaluate
+      - summarize
+    knowledge:
+      - knowledge
+      - documentation
+      - standard
+      - agreement
+      - convention
+  inference:
+    concise_response:
+      - brief
+      - concise
+    detailed_type:
+      - type hint
+      - "Optional[str]"
+    concise_code:
+      - concise
+      - no comments
+  tool_descriptions:
+    memory_search: "Search long-term memory for relevant content. Used to find previously discussed topics, decisions, or preferences."
+    memory_retrieve: "Get the current user's complete memory profile, including preferences, habits, and recent activity."
+  prompts:
+    score: |
+      Rate how relevant this memory is to the query on a scale of 0-10.
+      Reply with a single integer (0-10) and nothing else.
+
+      Query: {query}
+      Memory: {memory_text}
+    batch_score: |
+      Rate the relevance of each item to this query on a scale of 0-10.
+      Reply with {n} space-separated integers (e.g. '7 3 9').
+      Nothing else.
+
+      Query: {query}
+
+      {items_text}
+    domain_detect: |
+      Which research domain best matches this text?
+      Reply with ONLY the domain ID from the list below.
+
+      Domains:
+      {domain_list}
+
+      Text: {text}
+    reflect: |
+      Review the following records and extract:
+      1. Key insights (3-5 bullet points)
+      2. User preferences (format: key=value, one per line)
+      3. Procedural rules (if-then format)
+      4. New knowledge (abstract domain concepts)
+
+      Keywords detected: {keywords}
+
+      Records:
+      {records}
+
+      Respond in JSON format with keys: key_insights, user_preferences, procedural_rules, new_knowledge
+    hermes_sysprompt: |
+      [EchoMind Memory]
+      Long-term memory system activated. Your conversations will be automatically recorded and retrieved.
+      For explicit search: use memory_search(query) to find relevant memories.
+      To view user profile: use memory_retrieve() to get preferences and history.
+
+zh:
+  tokenizer: "char_ngram"
+  tokenizer_ngram_min: 2
+  tokenizer_ngram_max: 3
+  stopwords:
+    - 的
+    - 是
+    - 了
+    - 在
+    - 和
+    - 也
+    - 都
+    - 就
+    - 我
+    - 你
+    - 他
+    - 她
+    - 它
+    - 们
+    - 这
+    - 那
+    - 些
+    - 要
+    - 说
+    - 看
+    - 会
+    - 去
+    - 着
+    - 好
+    - 很
+    - 到
+    - 不
+    - 人
+    - 有
+    - 一
+    - 上
+  features:
+    complex:
+      - 详细
+      - 深入
+      - 比较
+      - 全面
+      - 综合
+      - 复杂
+      - 系统
+    history:
+      - 上次
+      - 之前
+      - 继续
+      - 接着
+      - 前面做了
+      - 接上文
+    analysis:
+      - 分析
+      - 报告
+      - 评估
+      - 总结
+      - 复盘
+    knowledge:
+      - 知识
+      - 文档
+      - 标准
+      - 协议
+      - 规范
+      - 约定
+  inference:
+    concise_response:
+      - 简洁
+      - 简短
+      - 简要
+      - 别废话
+    detailed_type:
+      - 详细
+      - 类型标注
+      - 文档先行
+      - 带注释
+    concise_code:
+      - 简洁
+      - 不写注释
+      - 精简
+      - 无注释
+  tool_descriptions:
+    memory_search: "搜索长期记忆中的相关内容，用于查找之前讨论过的话题、决策或偏好。"
+    memory_retrieve: "获取当前用户的完整记忆档案，包括偏好、习惯和最近活动。"
+  prompts:
+    score: |
+      评估这条记忆与查询的相关性，评分 0-10。
+      只回复一个整数（0-10），不要回复其他内容。
+
+      查询: {query}
+      记忆: {memory_text}
+    batch_score: |
+      评估以下各项与查询的相关性，评分 0-10。
+      回复 {n} 个空格分隔的整数（例如 '7 3 9'）。
+      不要回复其他内容。
+
+      查询: {query}
+
+      {items_text}
+    domain_detect: |
+      以下哪一领域最匹配该文本？
+      只回复下方列表中的领域 ID。
+
+      领域列表:
+      {domain_list}
+
+      文本: {text}
+    reflect: |
+      审阅以下记录并提取:
+      1. 关键洞察（3-5 条要点）
+      2. 用户偏好（格式: 键=值，每行一条）
+      3. 程序规则（if-then 格式）
+      4. 新知识（抽象领域概念）
+
+      检测到的关键词: {keywords}
+
+      记录:
+      {records}
+
+      以 JSON 格式回复，键名为: key_insights, user_preferences, procedural_rules, new_knowledge
+    hermes_sysprompt: |
+      [EchoMind 记忆系统]
+      长期记忆系统已激活。对话将被自动记录和检索。
+      显式搜索: 使用 memory_search(查询) 查找相关记忆。
+      查看档案: 使用 memory_retrieve() 获取偏好和历史。

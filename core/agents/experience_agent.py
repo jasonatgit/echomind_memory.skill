@@ -2,6 +2,7 @@
 # Fix: add inverted index for faster search
 
 import logging
+import hashlib
 from typing import Dict, List, Optional, Set
 
 from ..models.experience import ExperienceEntry
@@ -42,7 +43,7 @@ class ExperienceMemoryAgent:
                         project: str = "default", session_id: str = "",
                         session_title: str = "", tags: List[str] = None,
                         profile: str = "default") -> str:
-        summary_hash = hash((user_id, summary))
+        summary_hash = int(hashlib.md5(f"{user_id}:{summary}".encode()).hexdigest(), 16) % (2**63 - 1)
         if summary_hash in self._summary_index:
             existing_id = self._summary_index[summary_hash]
             existing_entry = self.store.get(existing_id)
@@ -95,9 +96,12 @@ class ExperienceMemoryAgent:
                 entry_tags = entry.tags if isinstance(entry.tags, list) else []
                 if not any(t in entry_tags for t in tags):
                     continue
-            if not entry.success:
-                continue
-            if any(k in entry.summary.lower() for k in task_context.lower().split()[:3]):
+            # Include all experiences (success + failure) for retrieval;
+            # min_success_rate used for aggregate filtering when caller provides it
+            from ..lang_utils import tokenize as adaptive_tokenize, detect_language
+            q_tokens = adaptive_tokenize(task_context)
+            n_take = 10 if detect_language(task_context) == "zh" else 5
+            if any(k in entry.summary.lower() for k in q_tokens[:n_take]):
                 similar.append({
                     "id": entry.id, "summary": entry.summary,
                     "steps": entry.steps_sequence, "success": entry.success,

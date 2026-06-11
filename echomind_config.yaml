@@ -82,9 +82,9 @@ inference:
   min_occurrence: 2
   strategy: "keyword"
   keywords:
-    concise_response: ["brief","concise"]
-    detailed_type: ["type hint","Optional[str]"]
-    concise_code: ["concise","no comments"]
+    concise_response: ["brief","concise","简洁","简短","简要"]
+    detailed_type: ["type hint","Optional[str]","详细","类型标注","文档先行"]
+    concise_code: ["concise","no comments","简洁","不写注释","精简"]
 
 # domain.keywords moved to domain_keywords.yaml (built-in default, distributed via GitHub)
 # To customize, add a domain section here to override built-in values:
@@ -111,3 +111,52 @@ topic_keywords:
   devops:
     zh: ["CI/CD", "GitHub", "自动化", "流水线", "测试", "监控"]
     en: ["CI", "CD", "GitHub", "automation", "pipeline", "testing", "monitor"]
+
+# Language profiles — built-in en/zh support out of the box (see FALLBACK_CONFIG).
+# Add a profile block below to support additional languages. Zero code changes needed.
+# language_profiles:
+#   detection:
+#     - lang: ja
+#       pattern: "[\u3040-\u309f\u30a0-\u30ff]"
+#       threshold: 0.15
+#   ja:
+#     tokenizer: "char_ngram"
+#     tokenizer_ngram_min: 2
+#     tokenizer_ngram_max: 3
+#     stopwords: [の, は, が, を, に, で, と, も]
+#     features:
+#       complex: [詳細, 徹底的, 包括的]
+#       history: [前回, 以前, 続き]
+#       analysis: [分析, レポート, 評価]
+#       knowledge: [知識, ドキュメント, 標準]
+#     inference:
+#       concise_response: [簡潔, 手短に]
+#       detailed_type: [詳細, 型注釈]
+#       concise_code: [簡潔, コメントなし]
+#     prompts:
+#       score: |
+#         このメモリのクエリとの関連性を 0-10 で評価してください。
+#         整数のみ返信してください（0-10）。
+#         クエリ: {query}
+#         メモリ: {memory_text}
+#       batch_score: |
+#         各項目の関連性を 0-10 で評価してください。
+#         {n} 個のスペース区切り整数で返信（例: '7 3 9'）。
+#         クエリ: {query}
+#         {items_text}
+#       domain_detect: |
+#         このテキストに最も一致する研究分野は？
+#         分野IDのみ返信してください。
+#         分野:
+#         {domain_list}
+#         テキスト: {text}
+#       reflect: |
+#         以下の記録を確認し抽出してください:
+#         1. 重要な洞察（3-5項目）
+#         2. ユーザー設定（key=value形式）
+#         3. 手順ルール（if-then形式）
+#         4. 新しい知識（抽象的な分野概念）
+#         検出キーワード: {keywords}
+#         記録:
+#         {records}
+#         JSON形式で返信: key_insights, user_preferences, procedural_rules, new_knowledge

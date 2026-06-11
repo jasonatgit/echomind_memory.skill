@@ -47,6 +47,7 @@ def call(tool_name: str, config_path: str = None, **kwargs):
         cfg = ConfigManager(config_path=resolved) if config_path else get_config_manager()
         agent = MainMemoryAgent(config_manager=cfg)
         agent.enable_persistence()
+        cfg.on_reload(agent.refresh_config)
         _call_agents[resolved] = (agent, cfg)
     else:
         agent, cfg = _call_agents[resolved]
@@ -66,11 +67,9 @@ def call(tool_name: str, config_path: str = None, **kwargs):
              "importance": m.importance, "metadata": m.metadata}
             for m in result.get("retrieved_memories", [])[:kwargs.get("max_results", 5)]
         ]
-        confidence = sum(m.importance for m in result.get("retrieved_memories", [])) \
-            / max(len(result.get("retrieved_memories", [])), 1)
         return {
             "working_memory": working,
-            "confidence_score": float(confidence),
+            "confidence_score": result.get("confidence_score", 0.0),
             "used_weights": agent.rl_optimizer.get_current_weights(),
             "feedback_requested": result.get("feedback_request", False),
         }

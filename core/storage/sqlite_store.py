@@ -21,7 +21,46 @@ DB_PATH = DB_DIR / "memory.db"
 # on databases with very large record counts (>10,000).
 _LOAD_LIMIT = 1000
 
-SCHEMA_VERSION = 2  # v1: 无 profile 列 (v1.1.5-), v2: 有 profile 列 (v1.1.6+)
+# Text columns that should never be None when loaded from DB
+# (ALTER TABLE ADD COLUMN leaves NULL in existing rows even with DEFAULT)
+_NULLABLE_TEXT_COLS = {
+    "session_id", "session_title", "project", "profile", "platform",
+    "language", "compressed_summary",
+    # JSON columns: ALTER TABLE ADD COLUMN leaves NULL
+    "preferences", "habits", "history",
+    "steps", "metadata", "tags",
+    "steps_sequence",
+    "messages",
+    "prerequisites", "output_template",
+    "authors", "keywords", "key_points",
+    "linked_papers",
+    "key_decisions",
+}
+
+# Default values for JSON columns when NULL is encountered
+_JSON_DEFAULTS = {
+    "preferences": "{}", "habits": "{}", "history": "[]",
+    "steps": "[]", "metadata": "{}", "tags": "[]",
+    "steps_sequence": "[]",
+    "messages": "[]",
+    "prerequisites": "[]", "output_template": "",
+    "authors": "[]", "keywords": "[]", "key_points": "[]",
+    "linked_papers": "[]",
+    "key_decisions": "[]",
+}
+
+
+def _normalize_row(row) -> Dict:
+    """Normalize None values in text columns to empty string/json default.
+    Returns a mutable dict (converts sqlite3.Row if needed)."""
+    if not isinstance(row, dict):
+        row = dict(row)
+    for k in list(row.keys()):
+        if k in _NULLABLE_TEXT_COLS and row[k] is None:
+            row[k] = _JSON_DEFAULTS.get(k, "")
+    return row
+
+SCHEMA_VERSION = 3  # v1: 无 profile 列 (v1.1.5-), v2: 有 profile 列 (v1.1.6+), v3: user_memory 复合PK (v1.2.0)
 # Tables that need a profile column
 _PROFILE_TABLES = [
     "user_memory", "task_memory", "experience_memory",
@@ -34,6 +73,18 @@ _PROFILE_TABLES = [
 
 MAX_RETRIES = 3
 RETRY_DELAY_MS = 100  # initial delay 100ms, exponential backoff
+
+
+def _require_conn(method):
+    """Decorator: raise RuntimeError if DB not connected (instead of silent return)."""
+    @functools.wraps(method)
+    def wrapper(self, *args, **kwargs):
+        if not self._conn:
+            raise RuntimeError(
+                f"{method.__name__}: SQLite not connected. Call connect() first."
+            )
+        return method(self, *args, **kwargs)
+    return wrapper
 
 
 def with_retry_on_busy(max_retries=MAX_RETRIES):
@@ -76,12 +127,17 @@ class SqliteStore:
     def connect(self):
         self._conn = sqlite3.connect(self.db_path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
+        # Force checkpoint stale WAL from previous unclean shutdown
+        try:
+            self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        except sqlite3.OperationalError:
+            pass
         self._conn.execute("PRAGMA journal_mode=WAL")
-        self._conn.execute("PRAGMA busy_timeout=5000")
+        self._conn.execute("PRAGMA busy_timeout=10000")
         self._conn.execute("PRAGMA synchronous=NORMAL")
         self._conn.execute("PRAGMA foreign_keys=ON")
         self._lock = threading.Lock()
-        logger.info(f"Connected to SQLite: {self.db_path} (WAL + busy_timeout=5000)")
+        logger.info(f"Connected to SQLite: {self.db_path} (WAL + busy_timeout=10000)")
 
     def ensure_tables(self):
         """Create complete 9 memory data tables"""
@@ -89,16 +145,17 @@ class SqliteStore:
             return
         with self._lock:
             self._conn.executescript("""
-                -- 1. User memory: preferences, habits, interaction history
-                CREATE TABLE IF NOT EXISTS user_memory (
-                    user_id TEXT PRIMARY KEY,
-                    preferences TEXT DEFAULT '{}',
-                    habits TEXT DEFAULT '{}',
-                    history TEXT DEFAULT '[]',
-                    profile TEXT DEFAULT 'default',
-                    last_updated TEXT DEFAULT (datetime('now')),
-                    version INTEGER DEFAULT 1
-                );
+-- 1. User memory: preferences, habits, interaction history
+                    CREATE TABLE IF NOT EXISTS user_memory (
+                        user_id TEXT NOT NULL,
+                        profile TEXT NOT NULL DEFAULT 'default',
+                        preferences TEXT DEFAULT '{}',
+                        habits TEXT DEFAULT '{}',
+                        history TEXT DEFAULT '[]',
+                        last_updated TEXT DEFAULT (datetime('now')),
+                        version INTEGER DEFAULT 1,
+                        PRIMARY KEY (user_id, profile)
+                    );
 
                 -- 2. Task memory: status, steps, metadata
                 CREATE TABLE IF NOT EXISTS task_memory (
@@ -114,7 +171,8 @@ class SqliteStore:
                     session_title TEXT DEFAULT '',
                     tags TEXT DEFAULT '[]',
                     created_at TEXT DEFAULT (datetime('now')),
-                    updated_at TEXT DEFAULT (datetime('now'))
+                    updated_at TEXT DEFAULT (datetime('now')),
+                    language TEXT DEFAULT ''
                 );
 
                 -- 3. Experience memory: success/failure experience, step sequences
@@ -131,7 +189,8 @@ class SqliteStore:
                     session_title TEXT DEFAULT '',
                     tags TEXT DEFAULT '[]',
                     created_at TEXT DEFAULT (datetime('now')),
-                    frequency INTEGER DEFAULT 1
+                    frequency INTEGER DEFAULT 1,
+                    language TEXT DEFAULT ''
                 );
 
                 -- 4. Context memory: conversation context, token count, session ID、Platform source
@@ -167,7 +226,8 @@ class SqliteStore:
                     tags TEXT DEFAULT '[]',
                     user_id TEXT DEFAULT 'default',
                     created_at TEXT DEFAULT (datetime('now')),
-                    updated_at TEXT DEFAULT (datetime('now'))
+                    updated_at TEXT DEFAULT (datetime('now')),
+                    language TEXT DEFAULT ''
                 );
 
                 -- 6. Research papers: academic paper metadata
@@ -261,6 +321,16 @@ class SqliteStore:
                 CREATE INDEX IF NOT EXISTS idx_transcripts_profile ON session_transcripts(profile);
             """)
             self._conn.commit()
+            # Auto-migrate: add language column to existing databases (idempotent)
+            _LANG_TABLES = ["task_memory", "experience_memory", "knowledge_memory"]
+            for table in _LANG_TABLES:
+                try:
+                    self._conn.execute(
+                        f"ALTER TABLE {table} ADD COLUMN language TEXT DEFAULT ''"
+                    )
+                    logger.debug("Migration: added language column to %s", table)
+                except sqlite3.OperationalError:
+                    pass
             logger.info("All 9 memory tables ensured")
 
     def _migrate_existing_tables(self):
@@ -299,7 +369,54 @@ class SqliteStore:
                 )
                 logger.info("Migration: added platform column to context_memory")
 
-            # 3. Write schema version number
+            # 3. Migrate user_memory to composite PK (v2→v3)
+            um_cols = [r[1] for r in self._conn.execute(
+                "PRAGMA table_info(user_memory)").fetchall()]
+            # Check if old single-PK schema
+            pk_info = self._conn.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='user_memory'"
+            ).fetchone()
+            if pk_info and "user_id TEXT PRIMARY KEY" in pk_info[0]:
+                logger.info("Migration v3: recreating user_memory with composite PK")
+                self._conn.execute("""
+                    CREATE TABLE user_memory_new (
+                        user_id TEXT NOT NULL,
+                        profile TEXT NOT NULL DEFAULT 'default',
+                        preferences TEXT DEFAULT '{}',
+                        habits TEXT DEFAULT '{}',
+                        history TEXT DEFAULT '[]',
+                        last_updated TEXT DEFAULT (datetime('now')),
+                        version INTEGER DEFAULT 1,
+                        PRIMARY KEY (user_id, profile)
+                    )
+                """)
+                # Copy only columns that exist in the old table
+                old_cols = [c for c in um_cols if c not in ('habits', 'history', 'version')
+                            or c in um_cols]
+                insert_cols = ["user_id", "preferences"]
+                select_cols = ["user_id", "COALESCE(preferences, '{}')"]
+                if "profile" in um_cols:
+                    insert_cols.append("profile")
+                    select_cols.append("COALESCE(NULLIF(profile,''), 'default')")
+                if "habits" in um_cols:
+                    insert_cols.append("habits")
+                    select_cols.append("COALESCE(habits, '{}')")
+                if "history" in um_cols:
+                    insert_cols.append("history")
+                    select_cols.append("COALESCE(history, '[]')")
+                if "last_updated" in um_cols:
+                    insert_cols.append("last_updated")
+                    select_cols.append("last_updated")
+                if "version" in um_cols:
+                    insert_cols.append("version")
+                    select_cols.append("version")
+                ins_sql = f"INSERT INTO user_memory_new ({', '.join(insert_cols)}) SELECT {', '.join(select_cols)} FROM user_memory"
+                self._conn.execute(ins_sql)
+                self._conn.execute("DROP TABLE user_memory")
+                self._conn.execute("ALTER TABLE user_memory_new RENAME TO user_memory")
+                logger.info("Migration v3: user_memory composite PK complete")
+
+            # 4. Write schema version number
             self._conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
             self._conn.commit()
             logger.info(
@@ -312,8 +429,9 @@ class SqliteStore:
             raise RuntimeError(
                 f"DB migration to schema v{SCHEMA_VERSION} failed: {e}"
             ) from e
+    @_require_conn
     def load_all(self) -> Dict[str, Any]:
-        return {
+        raw = {
             "users": self.load_users(),
             "tasks": self.load_tasks(),
             "experiences": self.load_experiences(),
@@ -322,60 +440,66 @@ class SqliteStore:
             "research_papers": self.load_research_papers(),
             "research_notes": self.load_research_notes(),
         }
+        for key, rows in raw.items():
+            if isinstance(rows, list):
+                for row in rows:
+                    if isinstance(row, dict):
+                        _normalize_row(row)
+        return raw
 
+    @_require_conn
     def load_users(self) -> List[Dict]:
-        if not self._conn: return []
         rows = self._conn.execute(
             "SELECT * FROM user_memory ORDER BY last_updated DESC LIMIT ?",
             (_LOAD_LIMIT,)).fetchall()
         if len(rows) >= _LOAD_LIMIT:
             logger.warning("load_users: truncated at LIMIT=%d (more rows in DB)", _LOAD_LIMIT)
         return [{k: (json.loads(r[k]) if k in ('preferences','habits','history') else r[k])
-                 for k in r.keys()} for r in rows]
+                 for k in r.keys()} for r in (_normalize_row(r) or r for r in rows)]
 
+    @_require_conn
     def load_tasks(self) -> List[Dict]:
-        if not self._conn: return []
         rows = self._conn.execute(
             "SELECT * FROM task_memory ORDER BY updated_at DESC LIMIT ?",
             (_LOAD_LIMIT,)).fetchall()
         if len(rows) >= _LOAD_LIMIT:
             logger.warning("load_tasks: truncated at LIMIT=%d (more rows in DB)", _LOAD_LIMIT)
         return [{k: (json.loads(r[k]) if k in ('steps','metadata','tags') else r[k])
-                 for k in r.keys()} for r in rows]
+                 for k in r.keys()} for r in (_normalize_row(r) or r for r in rows)]
 
+    @_require_conn
     def load_experiences(self) -> List[Dict]:
-        if not self._conn: return []
         rows = self._conn.execute(
             "SELECT * FROM experience_memory ORDER BY created_at DESC LIMIT ?",
             (_LOAD_LIMIT,)).fetchall()
         if len(rows) >= _LOAD_LIMIT:
             logger.warning("load_experiences: truncated at LIMIT=%d (more rows in DB)", _LOAD_LIMIT)
         return [{k: (json.loads(r[k]) if k in ('steps_sequence','tags') else r[k])
-                 for k in r.keys()} for r in rows]
+                 for k in r.keys()} for r in (_normalize_row(r) or r for r in rows)]
 
+    @_require_conn
     def load_contexts(self) -> List[Dict]:
-        if not self._conn: return []
         rows = self._conn.execute(
             "SELECT * FROM context_memory ORDER BY updated_at DESC LIMIT ?",
             (_LOAD_LIMIT,)).fetchall()
         if len(rows) >= _LOAD_LIMIT:
             logger.warning("load_contexts: truncated at LIMIT=%d (more rows in DB)", _LOAD_LIMIT)
         return [{k: (json.loads(r[k]) if k in ('messages',) else r[k])
-                 for k in r.keys()} for r in rows]
+                 for k in r.keys()} for r in (_normalize_row(r) or r for r in rows)]
 
+    @_require_conn
     def load_knowledge(self) -> List[Dict]:
-        if not self._conn: return []
         rows = self._conn.execute(
             "SELECT * FROM knowledge_memory ORDER BY updated_at DESC LIMIT ?",
             (_LOAD_LIMIT,)).fetchall()
         if len(rows) >= _LOAD_LIMIT:
             logger.warning("load_knowledge: truncated at LIMIT=%d (more rows in DB)", _LOAD_LIMIT)
         return [{k: (json.loads(r[k]) if k in ('metadata','prerequisites','tags') else r[k])
-                 for k in r.keys()} for r in rows]
+                 for k in r.keys()} for r in (_normalize_row(r) or r for r in rows)]
 
+    @_require_conn
     def load_research_papers(self, domain: str = None, project: str = None,
                              user_id: str = None, limit: int = 100) -> List[Dict]:
-        if not self._conn: return []
         where = []
         params = []
         if domain:
@@ -392,10 +516,10 @@ class SqliteStore:
             f"SELECT * FROM research_papers{w} ORDER BY importance_score DESC LIMIT ?",
             params + [limit]).fetchall()
         return [{k: (json.loads(r[k]) if k in ('authors','keywords','key_points','metadata') else r[k])
-                 for k in r.keys()} for r in rows]
+                 for k in r.keys()} for r in (_normalize_row(r) or r for r in rows)]
 
+    @_require_conn
     def load_research_notes(self, user_id: str = None, project: str = None) -> List[Dict]:
-        if not self._conn: return []
         where = []
         params = []
         if user_id:
@@ -408,7 +532,7 @@ class SqliteStore:
         rows = self._conn.execute(
             f"SELECT * FROM research_notes{w} ORDER BY updated_at DESC").fetchall()
         return [{k: (json.loads(r[k]) if k in ('linked_papers','tags') else r[k])
-                 for k in r.keys()} for r in rows]
+                 for k in r.keys()} for r in (_normalize_row(r) or r for r in rows)]
 
     # ═══════════════════════════════════════════════════
     # SAVE
@@ -447,18 +571,18 @@ class SqliteStore:
             merged["_default"].update(platform_prefs)
         return merged
     @with_retry_on_busy()
+    @_require_conn
     def save_user(self, user_id: str, preferences: Dict = None, habits: Dict = None,
                   history: List = None, version: int = 1, platform: str = None,
                   profile: str = "default"):
-        if not self._conn: return
         with self._lock:
             if platform:
-                existing = self._get_user_raw(user_id)
+                existing = self._get_user_raw(user_id, profile)
                 preferences = self._merge_platform_prefs(
                     existing.get("preferences", {}), preferences or {}, platform)
             else:
                 # No platform: merge into _default, preserving existing platform keys
-                existing = self._get_user_raw(user_id)
+                existing = self._get_user_raw(user_id, profile)
                 existing_prefs = existing.get("preferences", {})
                 if isinstance(existing_prefs, dict) and "_default" in existing_prefs:
                     existing_prefs["_default"].update(preferences or {})
@@ -468,7 +592,7 @@ class SqliteStore:
             self._conn.execute("""
                 INSERT INTO user_memory (user_id, preferences, habits, history, profile, last_updated, version)
                 VALUES (?, ?, ?, ?, ?, datetime('now'), ?)
-                ON CONFLICT(user_id) DO UPDATE SET
+                ON CONFLICT(user_id, profile) DO UPDATE SET
                     preferences=excluded.preferences, habits=excluded.habits,
                     history=excluded.history, last_updated=datetime('now'),
                     version=COALESCE(user_memory.version, 0) + 1
@@ -480,10 +604,10 @@ class SqliteStore:
                   version))
             self._conn.commit()
 
-    def _get_user_raw(self, user_id: str) -> Dict:
-        if not self._conn: return {}
+    def _get_user_raw(self, user_id: str, profile: str = "default") -> Dict:
         row = self._conn.execute(
-            "SELECT * FROM user_memory WHERE user_id = ?", (user_id,)
+            "SELECT * FROM user_memory WHERE user_id = ? AND profile = ?",
+            (user_id, profile)
         ).fetchone()
         if not row: return {}
         result = {k: row[k] for k in row.keys()}
@@ -495,54 +619,54 @@ class SqliteStore:
         return result
 
     @with_retry_on_busy()
+    @_require_conn
     def save_task(self, user_id: str, task_id: str, title: str, status: str,
                   steps: List = None, metadata: Dict = None,
                   project: str = "default", session_id: str = "",
                   session_title: str = "", tags: List = None,
-                  profile: str = "default"):
-        if not self._conn: return
+                  profile: str = "default", language: str = ""):
         with self._lock:
             task_pk = f"{user_id}:{task_id}"
             self._conn.execute("""
                 INSERT INTO task_memory (id, user_id, title, status, steps, metadata,
-                    project, profile, session_id, session_title, tags, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+                    project, profile, session_id, session_title, tags, language, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
                 ON CONFLICT(id) DO UPDATE SET
                     status=excluded.status, steps=excluded.steps,
                     metadata=excluded.metadata, updated_at=datetime('now')
             """, (task_pk, user_id, title, status,
                   json.dumps(steps or []), json.dumps(metadata or {}),
                   project, profile, session_id, session_title,
-                  json.dumps(tags or [])))
+                  json.dumps(tags or []), language))
             self._conn.commit()
 
     @with_retry_on_busy()
+    @_require_conn
     def save_experience(self, user_id: str, task_type: str, success: bool,
                         steps: List, summary: str, experience_id: str = None,
                         project: str = "default", session_id: str = "",
                         session_title: str = "", tags: List = None,
-                        profile: str = "default"):
-        if not self._conn: return
+                        profile: str = "default", language: str = ""):
         with self._lock:
             eid = experience_id or f"{user_id}:{summary[:20]}:{int(datetime.now(timezone.utc).timestamp())}"
             self._conn.execute("""
                 INSERT INTO experience_memory (id, user_id, task_type, success,
-                    steps_sequence, summary, project, profile, session_id, session_title, tags)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    steps_sequence, summary, project, profile, session_id, session_title, tags, language)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                     steps_sequence=excluded.steps_sequence,
                     summary=excluded.summary,
                     frequency=experience_memory.frequency + 1
             """, (eid, user_id, task_type, int(success), json.dumps(steps),
                   summary, project, profile, session_id, session_title,
-                  json.dumps(tags or [])))
+                  json.dumps(tags or []), language))
             self._conn.commit()
 
     @with_retry_on_busy()
+    @_require_conn
     def save_context(self, session_id: str, user_id: str, messages: List,
                      token_count: int = 0, platform: str = "default",
                      project: str = "default", profile: str = "default"):
-        if not self._conn: return
         with self._lock:
             self._conn.execute("""
                 INSERT INTO context_memory (session_id, user_id, messages, token_count, platform, project, profile, updated_at)
@@ -556,30 +680,31 @@ class SqliteStore:
             self._conn.commit()
 
     @with_retry_on_busy()
+    @_require_conn
     def save_knowledge(self, knowledge_id: str, domain: str, content: str,
                        metadata: Dict = None, trust_score: float = 0.5,
                        entry_type: str = "fact", prerequisites: List = None,
                        output_template: str = "", user_id: str = "default",
                        project: str = "default", session_id: str = "",
                        session_title: str = "", tags: List = None,
-                       profile: str = "default"):
-        if not self._conn: return
+                       profile: str = "default", language: str = ""):
         with self._lock:
             self._conn.execute("""
                 INSERT INTO knowledge_memory (id, domain, content, metadata, trust_score,
                     entry_type, prerequisites, output_template, user_id, project, profile,
-                    session_id, session_title, tags, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+                    session_id, session_title, tags, language, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
                 ON CONFLICT(id) DO UPDATE SET
                     content=excluded.content, metadata=excluded.metadata,
                     trust_score=excluded.trust_score, updated_at=datetime('now')
             """, (knowledge_id, domain, content, json.dumps(metadata or {}), trust_score,
                   entry_type, json.dumps(prerequisites or []), output_template,
                   user_id, project, profile, session_id, session_title,
-                  json.dumps(tags or [])))
+                  json.dumps(tags or []), language))
             self._conn.commit()
 
     @with_retry_on_busy()
+    @_require_conn
     def save_research_paper(self, paper_id: str, title: str, authors: List = None,
                             year: int = None, journal: str = None, abstract: str = "",
                             keywords: List = None, domain: str = "general",
@@ -587,7 +712,6 @@ class SqliteStore:
                             importance_score: float = 0.5, metadata: Dict = None,
                             project: str = "default", user_id: str = "default",
                             profile: str = "default"):
-        if not self._conn: return
         with self._lock:
             self._conn.execute("""
                 INSERT INTO research_papers (id, title, authors, year, journal,
@@ -606,10 +730,10 @@ class SqliteStore:
             self._conn.commit()
 
     @with_retry_on_busy()
+    @_require_conn
     def save_research_note(self, note_id: str, user_id: str, topic: str,
                            content: str, linked_papers: List = None, tags: List = None,
                            project: str = "default", profile: str = "default"):
-        if not self._conn: return
         with self._lock:
             self._conn.execute("""
                 INSERT INTO research_notes (id, user_id, topic, content, linked_papers, tags, project, profile)
@@ -627,11 +751,12 @@ class SqliteStore:
     # SEARCH
     # ═══════════════════════════════════════════════════
 
+    @_require_conn
     def search_context(self, user_id: str, query: str = None,
-                        platform: str = None, limit: int = 3) -> List[Dict]:
-        if not self._conn: return []
-        where = "WHERE user_id = ?"
-        params = [user_id]
+                        platform: str = None, limit: int = 3,
+                        profile: str = "default") -> List[Dict]:
+        where = "WHERE user_id = ? AND profile = ?"
+        params = [user_id, profile]
         if platform:
             where += " AND platform = ?"
             params.append(platform)
@@ -645,11 +770,11 @@ class SqliteStore:
                  for k in r.keys()} for r in rows]
 
     @with_retry_on_busy()
+    @_require_conn
     def save_rl_weights(self, user_id: str, weights: Dict[str, float],
                         profile: str = "default"):
-        if not self._conn: return
         with self._lock:
-            existing = self._get_user_raw(user_id)
+            existing = self._get_user_raw(user_id, profile)
             if existing:
                 self._conn.execute("""
                     UPDATE user_memory SET preferences = json_set(
@@ -665,8 +790,8 @@ class SqliteStore:
                 """, (user_id, json.dumps(weights), profile))
             self._conn.commit()
 
+    @_require_conn
     def load_rl_weights(self, user_id: str, profile: str = None) -> Optional[Dict[str, float]]:
-        if not self._conn: return None
         if profile:
             row = self._conn.execute(
                 "SELECT preferences FROM user_memory WHERE user_id = ? AND profile = ?",
@@ -687,9 +812,9 @@ class SqliteStore:
     # ── Transcripts (v1.1.0) ─────────────────────────────
 
     @with_retry_on_busy()
+    @_require_conn
     def save_transcript(self, session_id: str, user_id: str, messages: List,
                         project: str = "default", profile: str = "default"):
-        if not self._conn: return
         with self._lock:
             self._conn.execute("""
                 INSERT INTO session_transcripts (session_id, user_id, project, profile, messages, updated_at)
@@ -700,9 +825,9 @@ class SqliteStore:
             self._conn.commit()
 
     @with_retry_on_busy()
+    @_require_conn
     def save_transcript_summary(self, session_id: str, summary: str,
                                 key_decisions: List = None):
-        if not self._conn: return
         with self._lock:
             self._conn.execute("""
                 UPDATE session_transcripts
@@ -712,9 +837,9 @@ class SqliteStore:
             """, (summary, json.dumps(key_decisions or []), session_id))
             self._conn.commit()
 
+    @_require_conn
     def search_transcripts(self, query: str, user_id: str = None,
                            project: str = None, limit: int = 5) -> List[Dict]:
-        if not self._conn: return []
         # Escape LIKE wildcards to prevent unintended broad matching
         safe_query = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
         where_parts = []
@@ -736,8 +861,8 @@ class SqliteStore:
     # ── Reflection ───────────────────────────────────────
 
     @with_retry_on_busy()
+    @_require_conn
     def save_reflection(self, data: dict):
-        if not self._conn: return
         with self._lock:
             ref = data.get("reflection", {})
             self._conn.execute(
@@ -765,8 +890,8 @@ class SqliteStore:
             )
             self._conn.commit()
 
+    @_require_conn
     def get_recent_episodic(self, user_id: str, count: int = 8) -> List[Dict]:
-        if not self._conn: return []
         rows = self._conn.execute(
             "SELECT id, user_id, title, status, steps, created_at, project, tags "
             "FROM task_memory WHERE user_id=? ORDER BY created_at DESC LIMIT ?",
@@ -777,21 +902,36 @@ class SqliteStore:
         # Match by id prefix (task id = user_id:task_id, experience id = user_id:task_id:ts)
         for rec in records:
             rec_id = rec.get("id", "")
-            exp_row = self._conn.execute(
-                "SELECT summary FROM experience_memory "
-                "WHERE user_id=? AND session_id=? ORDER BY created_at DESC LIMIT 1",
-                (user_id, rec.get("session_id", "") or rec.get("title", "")),
-            ).fetchone()
-            if exp_row:
-                rec["content"] = exp_row["summary"]
-            else:
-                rec["content"] = rec.get("title", "")
+            sid = rec.get("session_id", "")
+            if sid:
+                exp_row = self._conn.execute(
+                    "SELECT summary FROM experience_memory "
+                    "WHERE user_id=? AND session_id=? ORDER BY created_at DESC LIMIT 1",
+                    (user_id, sid),
+                ).fetchone()
+                if exp_row:
+                    rec["content"] = exp_row["summary"]
+                    continue
+            rec["content"] = rec.get("title", "")
         return records
 
     def close(self):
         if self._conn:
-            self._conn.close()
-            self._conn = None
+            try:
+                if self._lock:
+                    acquired = self._lock.acquire(timeout=10)
+                    if not acquired:
+                        logger.warning("close: lock acquire timed out, forcing close")
+                self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                self._conn.execute("PRAGMA optimize")
+            except Exception:
+                pass
+            finally:
+                if self._lock and self._lock.locked():
+                    self._lock.release()
+                self._conn.close()
+                self._conn = None
+                self._lock = None
 
     # ── Schema diagnostics ──────────────────────────────────────
 

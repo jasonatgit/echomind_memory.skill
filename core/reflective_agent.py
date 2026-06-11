@@ -127,4 +127,7 @@ class ReflectiveAgent:
         if result is not None:
             self._daily_count += 1
             self._last_reflection = datetime.now(timezone.utc)
+            if isinstance(result, dict):
+                from .models.reflection import ReflectionOutput
+                return ReflectionOutput(**result)
         return result

@@ -63,11 +63,11 @@ class LLMClient:
 
     @staticmethod
     def _parse_score(text: str) -> float:
-        """Extract a 0-10 score from LLM response. Returns 0.0 on parse failure."""
-        # Try to find an integer 0-10
-        m = re.search(r'\b(10|[0-9])\b', text)
+        """Extract a 0-10 score from LLM response. Returns 0.0 on parse failure.
+        Matches integer or float values; no word boundary (supports CJK text)."""
+        m = re.search(r'(10|\d+(?:\.\d+)?)', text)
         if m:
-            return float(m.group(1)) / 10.0
+            return min(max(float(m.group(1)), 0.0), 10.0) / 10.0
         return 0.0
 
     @property
@@ -112,7 +112,7 @@ class LLMClient:
             logger.warning("LLM chat failed: %s", e)
             return ""
 
-    def score(self, query: str, memory_text: str) -> float:
+    def score(self, query: str, memory_text: str, lang: str = "en") -> float:
         """Semantic relevance score 0.0–1.0 between query and a memory item.
 
         Uses the LLM itself for semantic understanding — no embedding model needed.
@@ -120,11 +120,10 @@ class LLMClient:
         """
         if not self._available:
             return 0.0
-        prompt = (
-            "Rate how relevant this memory is to the query on a scale of 0-10.\n"
-            "Reply with a single integer (0-10) and nothing else.\n\n"
-            f"Query: {query}\nMemory: {memory_text[:500]}"
-        )
+        from .lang_utils import get_prompt
+        prompt = get_prompt("score", lang, query=query, memory_text=memory_text[:500])
+        if not prompt:
+            return 0.0
         try:
             raw = self.chat(
                 prompt,
@@ -138,7 +137,7 @@ class LLMClient:
             return 0.0
 
     def batch_score(self, query: str, items: List[Dict[str, Any]],
-                    text_key: str = "content") -> List[float]:
+                    text_key: str = "content", lang: str = "en") -> List[float]:
         """Score multiple memory items against a query.
 
         Scores items in batches of 5 to avoid LLM output misalignment.
@@ -152,22 +151,21 @@ class LLMClient:
         all_scores = []
         for start in range(0, len(items), batch_size):
             batch = items[start:start + batch_size]
-            all_scores.extend(self._batch_score_inner(query, batch, text_key))
+            all_scores.extend(self._batch_score_inner(query, batch, text_key, lang))
         return all_scores
 
     def _batch_score_inner(self, query: str, items: List[Dict[str, Any]],
-                           text_key: str = "content") -> List[float]:
+                           text_key: str = "content", lang: str = "en") -> List[float]:
         """Score a single batch of items (max 5)."""
         items_text = "\n\n".join(
             f"[{i}] {item.get(text_key, str(item))[:200]}"
             for i, item in enumerate(items)
         )
-        prompt = (
-            f"Rate the relevance of each item to this query on a scale of 0-10.\n"
-            f"Reply with {len(items)} space-separated integers (e.g. '7 3 9').\n"
-            f"Nothing else.\n\n"
-            f"Query: {query}\n\n{items_text}"
-        )
+        from .lang_utils import get_prompt
+        prompt = get_prompt("batch_score", lang, n=len(items),
+                            query=query, items_text=items_text)
+        if not prompt:
+            return [0.0] * len(items)
         try:
             raw = self.chat(
                 prompt,
@@ -188,7 +186,7 @@ class LLMClient:
             return scores[:len(items)]
         except Exception as e:
             logger.debug("Batch semantic score failed, falling back: %s", e)
-            return [self.score(query, item.get(text_key, str(item))) for item in items]
+            return [self.score(query, item.get(text_key, str(item)), lang) for item in items]
 
 
 # ── module-level singleton ──────────────────────────────────────
@@ -218,7 +216,8 @@ def get_llm_client(config: Optional[dict] = None) -> Optional[LLMClient]:
             client = LLMClient(config)
             _client_singleton = client
             return client if client.available else None
-    return _client_singleton if _client_singleton.available else None
+        result = _client_singleton
+        return result if result and result.available else None
 
 
 def reload_llm_client():

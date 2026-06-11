@@ -61,15 +61,23 @@ class RLWeightOptimizer:
         self.update_counter = 0
         self.max_buffer_size = max_buffer_size
         self.history: List[Dict] = []
-        self._source_order = ["user", "knowledge", "experience", "task_progress", "task_history"]
+        self._source_order = ["user", "knowledge", "experience", "task_progress",
+                               "task_history", "research", "context"]
 
     @staticmethod
     def _build_feedback_features(fb: FeedbackRecord) -> dict:
         """Build task_features dict from feedback record when original context is lost."""
         mem_sources = [m.get("source", "") for m in fb.retrieved_memories[:8]]
+        # Derive domain from retrieved memories
+        domains = [
+            (m.get("metadata", {}).get("domain", "") or
+             m.get("metadata", {}).get("category", ""))
+            for m in fb.retrieved_memories[:5]
+        ]
+        domain = max(set(domains), key=domains.count) if any(domains) else "general"
         return {
             "task_type": "general",
-            "domain": "general",
+            "domain": domain,
             "requires_knowledge": "knowledge" in mem_sources or "research" in mem_sources,
             "is_complex": len(fb.retrieved_memories) > 5,
             "has_history": "task_history" in mem_sources or "context" in mem_sources,
@@ -85,6 +93,7 @@ class RLWeightOptimizer:
         source_count = {
             "user": 0, "knowledge": 0, "experience": 0,
             "task_progress": 0, "task_history": 0,
+            "research": 0, "context": 0,
         }
         for mem in retrieved_memories[:8]:
             source = mem.get("source", "unknown")

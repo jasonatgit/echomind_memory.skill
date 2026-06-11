@@ -62,7 +62,7 @@ class EchomindMemoryProvider:
     - session switch: on_session_switch(new_sid, ...) → Update session state
     - before compression: on_pre_compress(messages) → extract memories about to be compressed
     - session end: shutdown() → Persist + cleanup
-    
+
     also exposes memory_search/memory_retrieve tools, LLM can call explicitly.
     """
 
@@ -78,6 +78,7 @@ class EchomindMemoryProvider:
         self._skip_writes: bool = False  # non-primary context Skip write
         self._project_id: str = "default"
         self._session_title: str = ""
+        self._detected_lang: str = "en"  # auto-detected from user content
 
     # ═══════════════════════════════════════════════════
     # Lifecycle
@@ -120,7 +121,7 @@ class EchomindMemoryProvider:
             return hermes_home.split("/profiles/")[-1].split("/")[0]
 
         # Strategy 3: Windows-style \\profiles\\ string match
-        for sep in ('\\profiles\\', '\\profiles/'):
+        for sep in ("\\profiles\\", "\\profiles/"):
             if sep in hermes_home:
                 return hermes_home.split(sep)[-1].split("\\")[0].split("/")[0]
 
@@ -139,7 +140,8 @@ class EchomindMemoryProvider:
         if agent_ctx != "primary":
             logger.info(
                 "EchoMind: skipping initialize for non-primary context=%s session=%s",
-                agent_ctx, session_id,
+                agent_ctx,
+                session_id,
             )
             self._skip_writes = True
             self._session_id = session_id
@@ -165,6 +167,9 @@ class EchomindMemoryProvider:
     def shutdown(self):
         """Hermes called on exit"""
         if self._agent:
+            pending = getattr(self._agent, "_pending_reflection", False)
+            if pending:
+                self._agent._trigger_auto_reflection(self._user_id)
             self._agent.disable_persistence()
         logger.info("EchoMind Memory shutdown")
 
@@ -182,16 +187,13 @@ class EchomindMemoryProvider:
 
     def system_prompt_block(self) -> str:
         """injected into system prompt static text of"""
-        return (
-            "[EchoMind Memory]\n"
-            "Long-term memory system activated. Your conversations will be automatically recorded and retrieved.\n"
-            "For explicit search: use memory_search(query) to find relevant memories.\n"
-            "To view user profile: use memory_retrieve() to get preferences and history.\n"
-        )
+        from core.lang_utils import get_prompt
+
+        return get_prompt("hermes_sysprompt", self._detected_lang)
 
     def prefetch(self, query: str, session_id: str) -> str:
         """Automatically called before each conversation turn — Retrieve relevant memories and inject into context
-        
+
         Returns:
             Formatted memory text, injected into the current conversation's messages
         """
@@ -215,7 +217,7 @@ class EchomindMemoryProvider:
 
     def queue_prefetch(self, query: str, session_id: str = "") -> None:
         """Queue background prefetch -- Hermes v0.13.0+ new interface.
-        
+
         echomind prefetch is synchronous (local SQLite), no queue needed,
         but must exist for compatibility with MemoryProvider ABC.
         """
@@ -229,15 +231,23 @@ class EchomindMemoryProvider:
         self._turn_count += 1
         self._session_id = session_id
 
+        # Detect language from user content for bilingual prompts
+        if user_content:
+            from core.lang_utils import detect_language
+
+            self._detected_lang = detect_language(user_content)
+
         # Build context message list
         messages = []
         if self._context_buffer:
             messages.extend(self._context_buffer)
             self._context_buffer = []
-        messages.extend([
-            {"role": "user", "content": user_content},
-            {"role": "assistant", "content": assistant_content},
-        ])
+        messages.extend(
+            [
+                {"role": "user", "content": user_content},
+                {"role": "assistant", "content": assistant_content},
+            ]
+        )
 
         try:
             ok = self._agent.store(
@@ -266,10 +276,15 @@ class EchomindMemoryProvider:
 
     def get_tool_schemas(self) -> List[Dict]:
         """exposed to LLM tool definitions for"""
+        from core.lang_utils import get_tool_descriptions
+
+        td = get_tool_descriptions(self._detected_lang)
         return [
             {
                 "name": "memory_search",
-                "description": "Search long-term memory for relevant content. Used to find previously discussed topics, decisions, or preferences.",
+                "description": td.get(
+                    "memory_search", "Search long-term memory for relevant content."
+                ),
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -283,7 +298,9 @@ class EchomindMemoryProvider:
             },
             {
                 "name": "memory_retrieve",
-                "description": "Get the current user's complete memory profile, including preferences, habits, and recent activity.",
+                "description": td.get(
+                    "memory_retrieve", "Get the current user's complete memory profile."
+                ),
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -300,7 +317,7 @@ class EchomindMemoryProvider:
 
     def handle_tool_call(self, tool_name: str, args: Dict[str, Any], **kwargs) -> str:
         """Handle LLM Tools called explicitly.
-        
+
         Hermes ABC Requires returning JSON string.
         """
         if not self._agent:
@@ -314,10 +331,14 @@ class EchomindMemoryProvider:
                 result = self._retrieve(args.get("detail_level", "brief"))
                 return json.dumps({"result": result}, ensure_ascii=False)
             else:
-                return json.dumps({"error": f"Unknown tool: {tool_name}"}, ensure_ascii=False)
+                return json.dumps(
+                    {"error": f"Unknown tool: {tool_name}"}, ensure_ascii=False
+                )
         except Exception as e:
             logger.error(f"handle_tool_call error: {e}")
-            return json.dumps({"error": f"Memory operation failed: {str(e)}"}, ensure_ascii=False)
+            return json.dumps(
+                {"error": f"Memory operation failed: {str(e)}"}, ensure_ascii=False
+            )
 
     # ═══════════════════════════════════════════════════
     # Optional hooks（Hermes v0.13.0+ standard）
@@ -329,19 +350,22 @@ class EchomindMemoryProvider:
 
     def on_session_end(self, messages: List[Dict]):
         """Hook at the end of a session.
-        
+
         Store session summary to long-term memory.
         """
         if self._skip_writes or not self._agent or not messages:
             return
         try:
             # Save full transcript for session search
-            if self._agent and getattr(self._agent, '_persistence_enabled', False):
+            if self._agent and getattr(self._agent, "_persistence_enabled", False):
                 try:
                     self._agent.db.save_transcript(
-                        self._session_id, self._user_id,
-                        messages, project=self._project_id,
-                        profile=self._profile)
+                        self._session_id,
+                        self._user_id,
+                        messages,
+                        project=self._project_id,
+                        profile=self._profile,
+                    )
                 except Exception as ex:
                     logger.error(f"transcript save error: {ex}")
             # Filter to standard role/content messages only
@@ -389,13 +413,17 @@ class EchomindMemoryProvider:
         Hermes v0.16.0+: rewound=True when /undo N truncates conversation history
         without changing session_id. Provider should invalidate caches.
         """
+        # Flush pending reflection before switching context
+        self._trigger_reflection_if_needed()
+
         if reset:
             # /new, /reset: Clear buffer
             self._context_buffer = []
             self._turn_count = 0
 
         if rewound:
-            # /undo N: Clear context cache so subsequent turns don't use stale state
+            # /undo N: Clear context cache and retry buffer
+            self._context_buffer = []
             if self._agent:
                 self._agent.clear_context()
             logger.info(
@@ -406,12 +434,15 @@ class EchomindMemoryProvider:
         self._session_id = new_session_id
         logger.info(
             "on_session_switch: new=%s parent=%s reset=%s rewound=%s",
-            new_session_id, parent_session_id, reset, rewound,
+            new_session_id,
+            parent_session_id,
+            reset,
+            rewound,
         )
 
     def on_pre_compress(self, messages: List[Dict[str, Any]]) -> str:
         """Called before context compression（Hermes v0.13.0+ New）。
-        
+
         Extract retainable memories from messages before they are discarded.
         Return empty string to indicate no additional compression hints（Memory auto-stored）。
         """
@@ -431,16 +462,20 @@ class EchomindMemoryProvider:
                 profile=self._profile,
             )
             if ok:
-                logger.debug("on_pre_compress: %d messages preserved", min(20, len(messages)))
+                logger.debug(
+                    "on_pre_compress: %d messages preserved", min(20, len(messages))
+                )
             else:
                 logger.warning("on_pre_compress: store failed")
         except Exception as e:
             logger.error(f"on_pre_compress error: {e}")
         return ""
 
-    def on_delegation(self, task: str, result: str, child_session_id: str = "", **kwargs):
+    def on_delegation(
+        self, task: str, result: str, child_session_id: str = "", **kwargs
+    ):
         """Sub-agent completed callback (Hermes v0.13.0+).
-        
+
         Store child agent task and result as experience.
         """
         if self._skip_writes or not self._agent:
@@ -451,7 +486,10 @@ class EchomindMemoryProvider:
                 task_id=f"{self._session_id}:delegation:{child_session_id}",
                 context=[
                     {"role": "user", "content": f"[Delegation Task]\n{task}"},
-                    {"role": "assistant", "content": f"[Delegation Result]\n{result[:2000]}"},
+                    {
+                        "role": "assistant",
+                        "content": f"[Delegation Result]\n{result[:2000]}",
+                    },
                 ],
                 task_status="delegated",
                 success=True,
@@ -465,37 +503,18 @@ class EchomindMemoryProvider:
             logger.error(f"on_delegation error: {e}")
 
     def _trigger_reflection_if_needed(self):
-        """If store Count reaches threshold, auto-invoke LLM perform reflection"""
+        """If store count reached threshold, trigger auto-reflection."""
         if not self._agent:
             return
-        from core.config_manager import get_config_manager
-        cfg = get_config_manager().get_section("reflection")
-        batch_size = cfg.get("batch_size", 8)
-        if isinstance(batch_size, (list, tuple)):
-            batch_size = int(random.uniform(batch_size[0], batch_size[1]))
-        min_records = cfg.get("min_records", 6)
-        pending = getattr(self._agent, '_pending_reflection', False)
+        pending = getattr(self._agent, "_pending_reflection", False)
         if not pending:
             return
-        records = self._agent.get_recent_episodic(self._user_id, count=batch_size)
-        if len(records) < min_records:
-            return
-        logger.info(f"Reflection triggered: {len(records)} records")
-        try:
-            result = self._agent.reflective.reflect_with_llm(
-                records, self._user_id, PLATFORM, _hermes_llm_fn,
-            )
-            if result:
-                logger.info(
-                    f"Reflection done: {len(result.key_insights)} insights "
-                    f"(confidence={result.confidence:.2f})"
-                )
-        except Exception as e:
-            logger.warning(f"Reflection failed: {e}")
-        finally:
-            self._agent.clear_pending_reflection()
+        self._agent.clear_pending_reflection()
+        self._agent._trigger_auto_reflection(self._user_id)
 
-    def on_memory_write(self, action: str, target: str, content: str, metadata: Optional[Dict] = None):
+    def on_memory_write(
+        self, action: str, target: str, content: str, metadata: Optional[Dict] = None
+    ):
         """Mirror Hermes built-in memory write operations"""
         if self._skip_writes or not self._agent:
             return
@@ -517,12 +536,17 @@ class EchomindMemoryProvider:
             )
             logger.info(
                 "EchoMind: mirrored memory %s target=%s content_len=%d (ok=%s)",
-                action, target, len(content), ok,
+                action,
+                target,
+                len(content),
+                ok,
             )
         except Exception as e:
             logger.error(
                 "EchoMind: on_memory_write failed action=%s target=%s: %s",
-                action, target, e,
+                action,
+                target,
+                e,
             )
 
     # ═══════════════════════════════════════════════════
@@ -548,7 +572,11 @@ class EchomindMemoryProvider:
             if not prefs:
                 return "No user preference records yet"
             lines = [f"- {k}: {v}" for k, v in list(prefs.items())[:8]]
-            return "User preferences:\n" + "\n".join(lines) if lines else "No user preference records yet"
+            return (
+                "User preferences:\n" + "\n".join(lines)
+                if lines
+                else "No user preference records yet"
+            )
         else:
             return json.dumps(user_data, indent=2, ensure_ascii=False, default=str)
 
@@ -562,7 +590,7 @@ class EchomindMemoryProvider:
         for mem in memories[:5]:
             source_label = mem.source.replace("_", " ").title()
             lines.append(f"[{source_label}] {mem.content[:200]}")
-        
+
         # Append user preferences
         user_data = result.get("user", {})
         prefs = user_data.get("preferences", {})
@@ -600,6 +628,7 @@ def _get_llm_client():
     global _llm_client
     if _llm_client is None:
         from core.llm_client import get_llm_client
+
         _llm_client = get_llm_client()
     return _llm_client
 

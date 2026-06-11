@@ -33,41 +33,17 @@ def _parse_result(raw):
 
 # ── Keyword fallback: provider=none extract high-frequency words as basic reflection ──
 
-_STOPWORDS_EN = {
-    "the", "is", "are", "a", "an", "and", "or", "but", "in", "on",
-    "to", "for", "of", "with", "at", "from", "by", "that", "this",
-    "it", "as", "be", "was", "has", "have", "had", "not", "no",
-    "if", "so", "we", "you", "he", "she", "they", "i", "my", "me",
-    "your", "his", "her", "our", "their", "can", "will", "just",
-    "what", "when", "where", "which", "who", "how", "all", "also",
-    "do", "does", "did", "been", "being", "would", "could", "should",
-    "more", "some", "any", "only", "very", "about", "than", "then",
-    "now", "other", "into", "its", "these", "those", "each", "every",
-    "over", "much", "such", "after", "before", "between", "through",
-    "during", "may", "might", "must", "shall", "need", "want", "know",
-    "think", "thing", "well", "use", "see", "make", "get", "way",
-    "take", "come", "give", "find", "tell", "ask", "try", "leave",
-    "call", "keep", "let", "seem", "help", "show", "mean", "set",
-    "put", "move", "work", "old", "long", "even", "back", "still",
-    "here", "there", "up", "out", "new", "like", "good", "great",
-    "right", "same", "while", "really", "again", "go", "first",
-    "already", "maybe", "always", "never", "because", "therefore",
-    "itself", "indeed", "although", "rather", "quite", "perhaps",
-}
-
-_STOPWORDS_ZH = {
-    "", "一", "上", "不", "了", "人", "也", "他", "她",
-    "它", "们", "在", "有", "和", "这", "那", "些",
-    "都", "就", "我", "你", "要", "说", "看",
-    "会", "去", "着", "好", "很", "到", "是",
-}
-
 
 def _extract_keywords(records, top_k=10):
     """Extract top-K frequent words with TF-IDF weighting from records.
-    Handles mixed EN/ZH text: trigrams for EN (v1.1.0), bigrams for ZH.
+    Handles mixed EN/ZH text: trigrams for EN, bigrams+trigrams for ZH.
+    Stopwords sourced from lang_utils language profiles (no hardcoded lists).
     No jieba dependency.
     """
+    from .lang_utils import get_stopwords
+    en_sw = get_stopwords("en")
+    zh_sw = get_stopwords("zh")
+
     # Collect all text
     texts = []
     for r in records:
@@ -83,28 +59,27 @@ def _extract_keywords(records, top_k=10):
 
     # EN words: regex word boundaries (2+ chars)
     en_words = re.findall(r'\b[a-zA-Z]{2,}\b', all_text.lower())
-    tokens.extend(w for w in en_words if w not in _STOPWORDS_EN)
+    tokens.extend(w for w in en_words if w not in en_sw)
 
     # EN trigrams (3-word phrases) for richer context
-    en_filtered = [w for w in en_words if w not in _STOPWORDS_EN]
+    en_filtered = [w for w in en_words if w not in en_sw]
     for i in range(len(en_filtered) - 2):
         trigram = "_".join(en_filtered[i:i+3])
         tokens.append(trigram)
 
-    # ZH "words": 2-4 char bigrams (no jieba)
+    # ZH "words": 2-3 char n-grams (no jieba)
     zh_chars = re.findall(r'[\u4e00-\u9fff]+', all_text)
     for segment in zh_chars:
         if len(segment) >= 2:
             for i in range(len(segment) - 1):
                 bigram = segment[i:i+2]
-                if bigram not in _STOPWORDS_ZH:
+                if bigram not in zh_sw:
                     tokens.append(bigram)
-            # Also add 3-char trigrams for specificity
-            if len(segment) >= 3:
-                for i in range(len(segment) - 2):
-                    trigram = segment[i:i+3]
-                    if trigram not in _STOPWORDS_ZH:
-                        tokens.append(trigram)
+        if len(segment) >= 3:
+            for i in range(len(segment) - 2):
+                trigram = segment[i:i+3]
+                if trigram not in zh_sw:
+                    tokens.append(trigram)
 
     # TF-IDF: normalize by document frequency (approximate IDF)
     counter = Counter(tokens)
@@ -129,12 +104,11 @@ def _reflect_records(
     reflection. When provider is 'none', extracts top frequent keywords as fallback.
     """
     provider = ""
-    if isinstance(config, dict):
-        provider = config.get("provider", "")
-        if not provider:
-            llm_cfg = config.get("llm", {})
-            if isinstance(llm_cfg, dict):
-                provider = llm_cfg.get("provider", "")
+    try:
+        from .config_manager import get_config_manager
+        provider = get_config_manager().get("llm", "provider", default="")
+    except Exception:
+        pass
 
     if llm_fn is None:
         # Two-phase HTTP API: return prompt for caller-side LLM processing
@@ -221,6 +195,7 @@ def _prepare_reflection_context(records):
     if not keywords:
         return ""
     texts = []
+    all_raw = ""
     for r in records:
         if isinstance(r, dict):
             txt = r.get("content", "") or r.get("text", "") or r.get("title", "")
@@ -228,18 +203,15 @@ def _prepare_reflection_context(records):
                 texts.append(txt[:200])
         elif isinstance(r, str):
             texts.append(r[:200])
+        all_raw += " " + (txt if isinstance(r, dict) else r)
     record_text = "\n".join(f"- {t}" for t in texts[:10])
     keyword_text = ", ".join(keywords[:8])
-    return (
-        f"Review the following records and extract:\n"
-        f"1. Key insights (3-5 bullet points)\n"
-        f"2. User preferences (format: key=value, one per line)\n"
-        f"3. Procedural rules (if-then format)\n"
-        f"4. New knowledge (abstract domain concepts)\n\n"
-        f"Keywords detected: {keyword_text}\n\n"
-        f"Records:\n{record_text}\n\n"
-        f"Respond in JSON format with keys: key_insights, user_preferences, procedural_rules, new_knowledge"
-    )
+    from .lang_utils import detect_language, get_prompt
+    lang = detect_language(all_raw)
+    prompt = get_prompt("reflect", lang, keywords=keyword_text, records=record_text)
+    if not prompt:
+        return ""
+    return prompt
 
 
 def _merge_semantic(output, knowledge_agent):

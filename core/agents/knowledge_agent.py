@@ -3,6 +3,7 @@
 
 import logging
 import re
+import hashlib
 from typing import Dict, List, Set
 
 from ..models.knowledge import KnowledgeEntry
@@ -48,17 +49,18 @@ class KnowledgeMemoryAgent:
         else:
             candidates = list(self.store.values())
 
-        # Filter stopwords, build query token set
-        stop_words = {"the", "is", "are", "a", "an", "and", "or", "but", "in", "on",
-                      "to", "for", "of", "with", "at", "from", "by", "that", "this",
-                      "it", "as", "be", "was", "has", "have", "had", "not", "no"}
-        q_words = [w.lower() for w in re.findall(r'\b[a-zA-Z]{2,}\b', query)
+        # Adaptive tokenizer driven by language profile config
+        from ..lang_utils import detect_language, tokenize, get_stopwords
+        lang = detect_language(query)
+        stop_words = get_stopwords(lang)
+        q_words = [w.lower() for w in tokenize(query, lang)
                    if w.lower() not in stop_words]
         if not q_words:
             q_words = [w for w in query.lower().split() if len(w) > 1][:3]
 
         for entry in candidates:
             # Filter conditions
+            # Entries owned by user_id OR globally shared (user_id="default") pass through
             if user_id and entry.user_id not in (user_id, "default"):
                 if entry.metadata.get("user_id") not in (user_id, None):
                     continue
@@ -149,7 +151,7 @@ class KnowledgeMemoryAgent:
         return results[:limit]
 
     def add_document(self, content: str, metadata: Dict) -> str:
-        content_hash = hash(content)
+        content_hash = int(hashlib.md5(content.encode()).hexdigest(), 16) % (2**63 - 1)
         if content_hash in self._content_index:
             existing_id = self._content_index[content_hash]
             existing_entry = self.store.get(existing_id)

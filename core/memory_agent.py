@@ -5,6 +5,7 @@ import threading
 import uuid
 import random
 import re
+import hashlib
 from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional
 from pydantic import BaseModel, Field
@@ -35,6 +36,7 @@ class MemoryRecord(BaseModel):
 
 from .learning.rl_weight_optimizer import RLWeightOptimizer
 from .storage.sqlite_store import SqliteStore
+from .lang_utils import detect_language, get_features, get_inference_keywords, tokenize as adaptive_tokenize
 
 
 class MainMemoryAgent:
@@ -135,6 +137,8 @@ class MainMemoryAgent:
                 summary=e.get("summary",""), tags=e.get("tags",[]))
             exp.frequency = e.get("frequency", 1)  # restore persisted frequency
             self.experience_agent.store[e.get("id","")] = exp
+            self.experience_agent._index_entry(exp)
+            self.experience_agent._summary_index[int(hashlib.md5(f"{exp.user_id}:{exp.summary}".encode()).hexdigest(), 16) % (2**63 - 1)] = e.get("id","")
             loaded["experiences"] += 1
 
         # 4. Context memory（Restore most recent session）
@@ -201,8 +205,8 @@ class MainMemoryAgent:
         # 8. RL Weight restoration — first available user, fall back to "default"
         saved_weights = self.db.load_rl_weights("default")
         if loaded.get("users", 0) > 0 and self.user_agent.store:
-            for uid in self.user_agent.store:
-                w = self.db.load_rl_weights(uid)
+            for uid, u in list(self.user_agent.store.items()):
+                w = self.db.load_rl_weights(uid, profile=getattr(u, 'profile', 'default'))
                 if w:
                     saved_weights = w
                     break
@@ -219,8 +223,45 @@ class MainMemoryAgent:
     def is_persistence_enabled(self) -> bool:
         return self._persistence_enabled
 
+    def refresh_config(self):
+        """Re-read captured config sections after cfg.on_reload event."""
+        self._research_kw_cache = None
+        try:
+            self.reflective.config = self.cfg.get_section("reflection")
+        except Exception:
+            pass
+
     def clear_pending_reflection(self):
         self._pending_reflection = False
+
+    def _trigger_auto_reflection(self, user_id: str):
+        """Schedule auto-reflection in background thread (non-blocking).
+        Hermes path triggers via on_session_end hook instead."""
+        import threading
+        agent = self
+
+        def _run():
+            try:
+                batch_size = agent.reflective.config.get("batch_size", 8)
+                if isinstance(batch_size, (list, tuple)):
+                    batch_size = int(random.uniform(batch_size[0], batch_size[1]))
+                records = agent.get_recent_episodic(user_id, count=batch_size)
+                min_records = agent.reflective.config.get("min_records", 6)
+                if len(records) < min_records:
+                    return
+                from .llm_client import get_llm_client
+                llm = get_llm_client()
+                if llm and llm.available:
+                    result = agent.reflective.reflect_with_llm(
+                        records, user_id, "http", llm.chat)
+                    if result:
+                        logger.info(
+                            "Auto-reflection: %d insights (confidence=%.2f)",
+                            len(result.key_insights), result.confidence)
+            except Exception as e:
+                logger.debug("Auto-reflection skipped: %s", e)
+
+        threading.Thread(target=_run, daemon=True).start()
 
     @staticmethod
     def _flatten_domain_keywords(domain_entry) -> list:
@@ -240,15 +281,18 @@ class MainMemoryAgent:
                 research_keywords.extend(self._flatten_domain_keywords(entry))
             self._research_kw_cache = set(kw.lower() for kw in research_keywords)
         research_keywords = self._research_kw_cache
+        lang = detect_language(task_context)
+        feat_cfg = get_features(lang)
         features = {
-            "is_complex": any(k in task_context.lower() for k in ["detailed", "in-depth", "comparative", "comprehensive"]),
-            "has_history": any(k in task_context.lower() for k in ["last", "previous", "continue", "next", "previously done"]),
-            "domain": self._detect_research_domain(task_context),
-            "task_type": "analysis" if any(k in task_context.lower() for k in ["analysis", "report"]) else "general",
+            "is_complex": any(k in task_context.lower() for k in feat_cfg.get("complex", [])),
+            "has_history": any(k in task_context.lower() for k in feat_cfg.get("history", [])),
+            "domain": self._detect_research_domain(task_context, lang),
+            "task_type": "analysis" if any(k in task_context.lower() for k in feat_cfg.get("analysis", [])) else "general",
             "requires_research": any(k in task_context.lower() for k in research_keywords),
             "requires_knowledge": any(k in task_context.lower() for k in
-                ["knowledge", "documentation", "standard", "agreement"]),
-            "research_domain": self._detect_research_domain(task_context),
+                feat_cfg.get("knowledge", ["knowledge", "documentation", "standard", "agreement"])),
+            "research_domain": self._detect_research_domain(task_context, lang),
+            "language": lang,
         }
         return features
 
@@ -270,7 +314,7 @@ class MainMemoryAgent:
                 matched.add(tag)
         return list(matched)[:5]
 
-    def _detect_research_domain(self, text: str) -> str:
+    def _detect_research_domain(self, text: str, lang: str = None) -> str:
         """Hybrid domain detection: keyword match → LLM semantic fallback.
 
         Keyword matching is fast and free — always tried first.
@@ -290,40 +334,40 @@ class MainMemoryAgent:
         try:
             llm = self._get_llm_client()
             if llm is not None and llm.available:
-                return self._llm_detect_domain(llm, text, domain_keywords)
+                return self._llm_detect_domain(llm, text, domain_keywords, lang or "en")
         except Exception:
             logger.debug("LLM domain detection unavailable, falling back to keyword match")
             pass
 
         return self.cfg.get("domain", "default", default="general")
 
-    def _llm_detect_domain(self, llm, text: str, domain_keywords: dict) -> str:
+    def _llm_detect_domain(self, llm, text: str, domain_keywords: dict,
+                           lang: str = "en") -> str:
         """Use LLM to determine which domain best matches the text."""
         domain_list = "\n".join(
             f"- {did}: {self._flatten_domain_keywords(kw)[:3]}"
             for did, kw in domain_keywords.items()
         )
-        prompt = (
-            "Which research domain best matches this text? "
-            "Reply with ONLY the domain ID from the list below.\n\n"
-            f"Domains:\n{domain_list}\n\n"
-            f"Text: {text[:300]}"
-        )
+        from .lang_utils import get_prompt
+        prompt = get_prompt("domain_detect", lang,
+                            domain_list=domain_list, text=text[:300])
+        if not prompt:
+            prompt = (
+                "Which research domain best matches this text? "
+                "Reply with ONLY the domain ID from the list below.\n\n"
+                f"Domains:\n{domain_list}\n\n"
+                f"Text: {text[:300]}"
+            )
         result = llm.chat(prompt, temperature=0, max_tokens=20).strip()
         for did in domain_keywords:
             if did in result:
                 return did
         return self.cfg.get("domain", "default", default="general")
 
-    _llm_client_cache = None
-
     def _get_llm_client(self):
-        """Lazy-init via module-level singleton (shared across instances)."""
-        cls = type(self)
-        if cls._llm_client_cache is None:
-            from .llm_client import get_llm_client
-            cls._llm_client_cache = get_llm_client()
-        return cls._llm_client_cache
+        """Lazy-init via thread-safe module-level singleton."""
+        from .llm_client import get_llm_client
+        return get_llm_client()
 
     def retrieve_for_task(self, task_context: str, user_id: str,
                          task_id: Optional[str] = None,
@@ -368,7 +412,7 @@ class MainMemoryAgent:
                 profile=profile)
 
         if self._persistence_enabled:
-            recent_contexts = self.db.search_context(user_id, platform=platform, limit=context_limit)
+            recent_contexts = self.db.search_context(user_id, platform=platform, limit=context_limit, profile=profile)
             if project != "default" and recent_contexts:
                 recent_contexts = [c for c in recent_contexts if c.get("project", "default") == project]
             if recent_contexts:
@@ -376,6 +420,8 @@ class MainMemoryAgent:
 
         scored = self._compute_importance(retrieved, task_context, user_id, platform, features)
         top_memories = sorted(scored, key=lambda x: x.importance, reverse=True)[:8]
+        confidence = (sum(m.importance for m in top_memories)
+                      / max(len(top_memories), 1))
 
         return {
             "working_memory": top_memories,
@@ -383,6 +429,8 @@ class MainMemoryAgent:
             "task_features": features,
             "feedback_request": True,
             "retrieved_memories": top_memories,
+            "confidence_score": float(confidence),
+            "user": retrieved.get("user", {}),
         }
 
 
@@ -520,6 +568,7 @@ class MainMemoryAgent:
 
         llm = self._get_llm_client()
         if not llm:
+            logger.warning("Knowledge compaction skipped: LLM unavailable")
             return 0
 
         for d, items in domain_groups.items():
@@ -545,16 +594,16 @@ class MainMemoryAgent:
     def _jaccard_prefilter(self, query: str, candidates: list,
                           text_key: str = "content", top_n: int = 20) -> list:
         """Pre-filter candidates via simple n-gram Jaccard similarity."""
-        import re
-        def tokenize(s):
-            return set(re.findall(r'\b[a-zA-Z]{2,}\b', s.lower()))
-        q_tokens = tokenize(query)
+        lang = detect_language(query)
+        def tokenize_s(s):
+            return set(adaptive_tokenize(s, lang=lang))
+        q_tokens = tokenize_s(query)
         if not q_tokens:
             return candidates[:top_n]
         scored = []
         for c in candidates:
             text = c.get(text_key, "")
-            c_tokens = tokenize(text)
+            c_tokens = tokenize_s(text)
             if c_tokens:
                 sim = len(q_tokens & c_tokens) / len(q_tokens | c_tokens)
                 scored.append((c, sim))
@@ -577,19 +626,21 @@ class MainMemoryAgent:
             session_title = ""
             for msg in context:
                 if msg.get("role") == "user" and not session_title:
-                    session_title = msg.get("content", "")[:80]
+                    content = msg.get("content", "")
+                    session_title = f"{datetime.now(timezone.utc).strftime('%m%d-%H%M')}_{content[:120]}"
                 self.context_agent.add_message(msg)
             self.task_agent.create_task(user_id=user_id, task_id=task_id,
                                         title=title or "auto-task",
                                         steps=[{"step": "Initialize", "status": task_status}])
             task_tags = self._extract_task_tags(context) if hasattr(self, '_extract_task_tags') else []
-            self._infer_user_preferences(context, user_id, platform=platform)
+            self._infer_user_preferences(context, user_id, platform=platform, profile=profile)
 
             # Extract task features（Shared by persistence and experience store）
             features = self._extract_task_features(
                 " ".join(m.get("content","") for m in context if m.get("role")=="user"))
 
             if self._persistence_enabled:
+                lang = features.get("language", "en")
                 user_data = self.user_agent.get(user_id, platform=platform)
                 self.db.save_user(user_id,
                     preferences=user_data.get("preferences", {}),
@@ -601,7 +652,7 @@ class MainMemoryAgent:
                                   steps=[{"step": "Initialize", "status": task_status}],
                                   project=project, session_id=session_id or "",
                                   session_title=session_title, tags=task_tags,
-                                  profile=profile)
+                                  profile=profile, language=lang)
                 # Save context memory (with platform tags)
                 all_text = "".join(m.get("content", "") for m in context)
                 chinese_chars = len(re.findall(r'[\u4e00-\u9fff]', all_text))
@@ -633,26 +684,37 @@ class MainMemoryAgent:
                         session_id=session_id or "",
                         session_title=session_title, tags=task_tags,
                         profile=profile,
-                        user_id=user_id)
+                        user_id=user_id,
+                        language=lang)
+                    self.knowledge_agent.add_document(knowledge_content, {
+                        "source": "task", "task_id": task_id,
+                        "user_id": user_id, "domain": research_domain,
+                        "project": project, "session_id": session_id or "",
+                        "session_title": session_title, "tags": task_tags,
+                        "category": research_domain,
+                    })
 
             if success or experience_summary:
                 steps_from_context = [m["content"] for m in context if m["role"] != "system"]
+                exp_summary = experience_summary or "System-generated experience summary"
+                exp_type = features.get("task_type", "general")
+                # DB first: if save fails, memory stays clean
+                if self._persistence_enabled:
+                    self.db.save_experience(user_id, exp_type, success,
+                                 steps_from_context,
+                                 exp_summary,
+                                 project=project,
+                                 session_id=session_id or "",
+                                 session_title=session_title, tags=task_tags,
+                                 profile=profile, language=lang)
                 self.experience_agent.store_experience(
                     task_id=task_id, success=success, steps=steps_from_context,
-                    summary=experience_summary or "System-generated experience summary",
-                    user_id=user_id, task_type=features.get("task_type", "general"),
+                    summary=exp_summary,
+                    user_id=user_id, task_type=exp_type,
                     project=project, session_id=session_id or "",
                     session_title=session_title, tags=task_tags,
                     profile=profile,
                 )
-                if self._persistence_enabled:
-                    self.db.save_experience(user_id, features.get("task_type", "general"), success,
-                                 steps_from_context,
-                                 experience_summary or "System-generated experience summary",
-                                 project=project,
-                                 session_id=session_id or "",
-                                 session_title=session_title, tags=task_tags,
-                                 profile=profile)
 
             # Reflection trigger: per-user count, trigger after batch_size
             if self._persistence_enabled:
@@ -662,8 +724,11 @@ class MainMemoryAgent:
                     if isinstance(batch_size, (list, tuple)):
                         batch_size = int(random.uniform(batch_size[0], batch_size[1]))
                     if self._store_count[user_id] >= batch_size:
-                        self._pending_reflection = True
-                        self._store_count[user_id] = 0
+                        del self._store_count[user_id]
+                        if platform == "hermes":
+                            self._pending_reflection = True
+                        else:
+                            self._trigger_auto_reflection(user_id)
 
             return True
 
@@ -715,18 +780,26 @@ class MainMemoryAgent:
         logger.info(f"[Research] Added note: {topic}")
         return note_id
 
-    def _infer_user_preferences(self, context, user_id, platform=None):
-        """Infer user preferences from conversation."""
+    def _infer_user_preferences(self, context, user_id, platform=None, profile="default"):
+        """Infer user preferences from conversation, adaptive to language."""
         prefs = self.user_agent.get(user_id).get("preferences", {})
         infer_cfg = self.cfg.get_section("inference")
         min_occ = infer_cfg.get("min_occurrence", 2)
-        concise_kw = infer_cfg.get("keywords", {}).get("concise_response", ["brief","concise"])
-        detailed_kw = infer_cfg.get("keywords", {}).get("detailed_type", ["type hint", "Optional[str]"])
-        concise_code_kw = infer_cfg.get("keywords", {}).get("concise_code", ["concise","no comments"])
 
         all_content = " ".join(m.get("content", "") for m in context)
+        lang = detect_language(all_content)
+        inf_kw = get_inference_keywords(lang)
+
+        default_infer = infer_cfg.get("keywords", {})
+        concise_kw = inf_kw.get("concise_response",
+                                default_infer.get("concise_response", ["brief", "concise"]))
+        detailed_kw = inf_kw.get("detailed_type",
+                                 default_infer.get("detailed_type", ["type hint", "Optional[str]"]))
+        concise_code_kw = inf_kw.get("concise_code",
+                                     default_infer.get("concise_code", ["concise", "no comments"]))
+
         new_prefs = {}
-        concise_count = sum(len(re.findall(r'\b' + re.escape(kw) + r'\b', all_content)) for kw in concise_kw)
+        concise_count = sum(all_content.count(kw) for kw in concise_kw)
         if concise_count >= min_occ:
             new_prefs["response_style"] = "concise"
         if any(kw in all_content for kw in detailed_kw):
@@ -736,7 +809,8 @@ class MainMemoryAgent:
         if new_prefs:
             self.user_agent.update(user_id, "preferences", new_prefs, source="implicit", platform=platform)
 
-    def record_feedback(self, user_id: str, task_id: str, feedback: str, retrieved_memories: List[Dict]):
+    def record_feedback(self, user_id: str, task_id: str, feedback: str,
+                        retrieved_memories: List[Dict], profile: str = "default"):
         if feedback not in ["positive", "negative"]:
             raise ValueError("feedback must be 'positive' or 'negative'")
         from .learning.rl_weight_optimizer import FeedbackRecord
@@ -747,7 +821,7 @@ class MainMemoryAgent:
         self.rl_optimizer.add_feedback(feedback_record)
         # Persist RL weights
         if self._persistence_enabled:
-            self.db.save_rl_weights(user_id, self.rl_optimizer.weights)
+            self.db.save_rl_weights(user_id, self.rl_optimizer.ema_weights, profile=profile)
         logger.info(f"User {user_id} gave {feedback} feedback on task {task_id}")
 
     def sync_to_code_project(self, project_root: str, user_id: str):

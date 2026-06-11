@@ -18,6 +18,7 @@ import uvicorn
 from core.memory_agent import MainMemoryAgent
 from core._reflective_version import get_echomind_version
 from core.config_manager import get_config_manager
+from core.models.context import ContextMessage
 
 # ── Init ──
 memory_agent = MainMemoryAgent()
@@ -153,15 +154,11 @@ async def api_retrieve(req: RetrieveRequest, auth=Depends(verify_api_key)):
              "importance": m.importance, "metadata": m.metadata}
             for m in result["working_memory"][:req.max_results]
         ]
-        confidence = (
-            sum(m.importance for m in result["working_memory"])
-            / max(len(result["working_memory"]), 1)
-        )
         return {
             "working_memory": working,
             "experience_memory": result.get("raw_memory_sources", {}).get("experience", []),
             "knowledge_memory": result.get("raw_memory_sources", {}).get("knowledge", []),
-            "confidence_score": float(confidence),
+            "confidence_score": result.get("confidence_score", 0.0),
             "used_weights": memory_agent.rl_optimizer.get_current_weights(),
             "feedback_requested": result.get("feedback_request", False),
             "raw_memory_sources": result.get("raw_memory_sources", {}),
@@ -183,6 +180,7 @@ async def api_store(req: StoreRequest, auth=Depends(verify_api_key)):
             [{"role": m.role, "content": m.content} for m in req.context],
             req.task_status, req.success, req.experience_summary,
             platform=req.platform, title=req.title,
+            profile=req.profile,
         )
         return {"status": "stored" if ok else "error", "user_id": req.user_id, "task_id": req.task_id}
     except Exception as e:

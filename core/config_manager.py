@@ -55,6 +55,22 @@ def _load_bundled_keywords() -> dict:
     return {}
 
 
+def _load_bundled_language_profiles() -> dict:
+    """Load language profiles from the bundled language_profiles.yaml.
+    This file is tracked in git and distributed to all users.
+    Returns empty dict on any failure — language detection degrades gracefully.
+    """
+    try:
+        _here = os.path.dirname(os.path.abspath(__file__))
+        _lp_path = os.path.join(_here, "..", "language_profiles.yaml")
+        with open(os.path.normpath(_lp_path), "r", encoding="utf-8") as f:
+            data = yaml.safe_load(f)
+        if isinstance(data, dict):
+            return data
+    except Exception:
+        logger.debug("Failed to load bundled language profiles, using defaults")
+    return {}
+
 FALLBACK_CONFIG = {
     "rl": {
         "initial_weights": {
@@ -114,6 +130,7 @@ FALLBACK_CONFIG = {
         "default": "general",
         "keywords": _load_bundled_keywords(),
     },
+    "language_profiles": _load_bundled_language_profiles(),
 }
 
 
@@ -210,6 +227,12 @@ class ConfigManager:
             reload_llm_client()
         except Exception:
             pass
+        # Invalidate lang_utils profile cache
+        try:
+            from .lang_utils import reload_lang_profiles
+            reload_lang_profiles()
+        except Exception:
+            pass
         for cb in self._observers:
             try:
                 cb()
@@ -230,6 +253,8 @@ def get_config_manager(
 ) -> ConfigManager:
     global _config_manager
     if config_path is None and ext_params is None:
+        if _config_manager is not None:
+            return _config_manager
         with _config_manager_lock:
             if _config_manager is None:
                 _config_manager = ConfigManager()
