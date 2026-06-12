@@ -88,8 +88,8 @@ def call(tool_name: str, config_path: str = None, **kwargs):
             profile=kwargs.get("profile", "default"),
         )
         return {"status": "stored",
-                "user_id": kwargs["user_id"],
-                "task_id": kwargs["task_id"]}
+                "user_id": kwargs.get("user_id", ""),
+                "task_id": kwargs.get("task_id", "")}
 
     elif tool_name == "record_feedback":
         agent.record_feedback(
@@ -98,7 +98,7 @@ def call(tool_name: str, config_path: str = None, **kwargs):
             feedback=kwargs.get("feedback", "positive"),
             retrieved_memories=kwargs.get("retrieved_memories", []),
         )
-        return {"status": "feedback_received", "user_id": kwargs["user_id"]}
+        return {"status": "feedback_received", "user_id": kwargs.get("user_id", "")}
 
     elif tool_name == "sync_code_memory":
         agent.sync_to_code_project(

@@ -603,7 +603,9 @@ class SqliteStore:
                 INSERT INTO user_memory (user_id, preferences, habits, history, profile, last_updated, version)
                 VALUES (?, ?, ?, ?, ?, datetime('now'), ?)
                 ON CONFLICT(user_id, profile) DO UPDATE SET
-                    preferences=excluded.preferences, habits=excluded.habits,
+                    preferences=json_set(excluded.preferences, '$.rl_weights',
+                        COALESCE(json_extract(user_memory.preferences, '$.rl_weights'), '{}')),
+                    habits=excluded.habits,
                     history=excluded.history, last_updated=datetime('now'),
                     version=COALESCE(user_memory.version, 0) + 1
             """, (user_id,

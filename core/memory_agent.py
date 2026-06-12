@@ -303,15 +303,16 @@ class MainMemoryAgent:
         research_keywords = self._research_kw_cache
         lang = detect_language(task_context)
         feat_cfg = get_features(lang)
+        research_domain = self._detect_research_domain(task_context, lang)
         features = {
             "is_complex": any(k in task_context.lower() for k in feat_cfg.get("complex", [])),
             "has_history": any(k in task_context.lower() for k in feat_cfg.get("history", [])),
-            "domain": self._detect_research_domain(task_context, lang),
+            "domain": research_domain,
             "task_type": "analysis" if any(k in task_context.lower() for k in feat_cfg.get("analysis", [])) else "general",
             "requires_research": any(k in task_context.lower() for k in research_keywords),
             "requires_knowledge": any(k in task_context.lower() for k in
                 feat_cfg.get("knowledge", ["knowledge", "documentation", "standard", "agreement"])),
-            "research_domain": self._detect_research_domain(task_context, lang),
+            "research_domain": research_domain,
             "language": lang,
         }
         return features
@@ -811,7 +812,7 @@ class MainMemoryAgent:
 
     def _infer_user_preferences(self, context, user_id, platform=None, profile="default"):
         """Infer user preferences from conversation, adaptive to language."""
-        prefs = self.user_agent.get(user_id).get("preferences", {})
+        prefs = self.user_agent.get(user_id, profile=profile).get("preferences", {})
         infer_cfg = self.cfg.get_section("inference")
         min_occ = infer_cfg.get("min_occurrence", 2)
 
@@ -853,7 +854,8 @@ class MainMemoryAgent:
             self.db.save_rl_weights(user_id, self.rl_optimizer.ema_weights, profile=profile)
         logger.info(f"User {user_id} gave {feedback} feedback on task {task_id}")
 
-    def sync_to_code_project(self, project_root: str, user_id: str):
+    def sync_to_code_project(self, project_root: str, user_id: str,
+                             profile: str = "default"):
         from pathlib import Path
         # Path traversal protection: resolve + verify it's within allowed scope
         root_path = Path(project_root).resolve()
@@ -886,10 +888,11 @@ class MainMemoryAgent:
         except PermissionError as e:
             raise ValueError(f"Cannot create directory at {root_path / '.echomind'}: {e}")
 
-        user_mem = self.user_agent.get(user_id)
+        user_mem = self.user_agent.get(user_id, profile=profile)
         exp_mem = self.experience_agent.find_similar_tasks(
             task_context=f"Code style preferences: {user_mem.get('preferences', {}).get('code_style', 'standard')}",
             task_type="code_review", min_success_rate=0.6,
+            user_id=user_id, profile=profile,
         )
 
         config = {
