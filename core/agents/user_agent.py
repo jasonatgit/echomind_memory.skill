@@ -14,14 +14,19 @@ class UserMemoryAgent:
         self.store: Dict[str, UserMemory] = {}
         self.cache: Dict[str, UserMemory] = {}
 
-    def get(self, user_id: str, platform: str = None) -> Dict[str, Any]:
-        if user_id in self.cache:
-            mem = self.cache[user_id]
+    @staticmethod
+    def _key(user_id: str, profile: str = "default") -> str:
+        return f"{user_id}:{profile}"
+
+    def get(self, user_id: str, platform: str = None, profile: str = "default") -> Dict[str, Any]:
+        key = self._key(user_id, profile)
+        if key in self.cache:
+            mem = self.cache[key]
             return self._extract_platform_prefs(mem, platform)
-        if user_id not in self.store:
-            self.store[user_id] = UserMemory(user_id=user_id)
-        mem = self.store[user_id]
-        self.cache[user_id] = mem
+        if key not in self.store:
+            self.store[key] = UserMemory(user_id=user_id, profile=profile)
+        mem = self.store[key]
+        self.cache[key] = mem
         return self._extract_platform_prefs(mem, platform)
 
     def _extract_platform_prefs(self, mem: UserMemory, platform: str) -> Dict[str, Any]:
@@ -40,10 +45,12 @@ class UserMemoryAgent:
         return raw
 
     def update(self, user_id: str, key: str, value: Any,
-               source: str = "implicit", platform: str = None) -> bool:
-        if user_id not in self.store:
-            self.store[user_id] = UserMemory(user_id=user_id)
-        mem = self.store[user_id]
+               source: str = "implicit", platform: str = None,
+               profile: str = "default") -> bool:
+        store_key = self._key(user_id, profile)
+        if store_key not in self.store:
+            self.store[store_key] = UserMemory(user_id=user_id, profile=profile)
+        mem = self.store[store_key]
         if key in ["preferences", "habits"]:
             if isinstance(value, dict):
                 getattr(mem, key).update(value)
@@ -56,5 +63,5 @@ class UserMemoryAgent:
             setattr(mem, key, value)
         mem.version += 1
         mem.last_updated = datetime.now(timezone.utc)
-        self.cache[user_id] = mem
+        self.cache[store_key] = mem
         return True

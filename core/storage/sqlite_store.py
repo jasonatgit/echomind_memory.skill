@@ -331,6 +331,16 @@ class SqliteStore:
                     logger.debug("Migration: added language column to %s", table)
                 except sqlite3.OperationalError:
                     pass
+            # Auto-migrate: backfill metadata.category from domain column (idempotent)
+            try:
+                self._conn.execute("""
+                    UPDATE knowledge_memory
+                    SET metadata = json_set(metadata, '$.category', domain)
+                    WHERE json_extract(metadata, '$.category') IS NULL
+                """)
+                self._conn.commit()
+            except sqlite3.OperationalError:
+                pass
             logger.info("All 9 memory tables ensured")
 
     def _migrate_existing_tables(self):

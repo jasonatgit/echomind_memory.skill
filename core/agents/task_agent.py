@@ -25,13 +25,16 @@ class TaskMemoryAgent:
     def __init__(self):
         self.store: Dict[str, TaskMemory] = {}
 
-    def create_task(self, user_id: str, task_id: str, title: str, steps: List[Dict]) -> str:
+    def create_task(self, user_id: str, task_id: str, title: str,
+                     steps: List[Dict], profile: str = "default") -> str:
         task = TaskMemory(
-            user_id=user_id, task_id=task_id, title=title, status="pending", steps=steps,
+            user_id=user_id, task_id=task_id, title=title, status="pending",
+            steps=steps, profile=profile,
         )
-        self.store[task_id] = task
+        store_key = f"{user_id}:{task_id}"
+        self.store[store_key] = task
         self._evict_oldest()
-        logger.info(f"Task created: {task_id}")
+        logger.info(f"Task created: {store_key}")
         return task.id
 
     def update_step(self, task_id: str, step_index: int, status: str, result: str) -> bool:

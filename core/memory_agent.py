@@ -104,11 +104,14 @@ class MainMemoryAgent:
         # 1. User memory
         for u in all_data.get("users", []):
             uid = u["user_id"]
-            self.user_agent.store[uid] = UserMemory(
-                user_id=uid, preferences=u["preferences"],
+            uprofile = u.get("profile", "default")
+            store_key = f"{uid}:{uprofile}"
+            self.user_agent.store[store_key] = UserMemory(
+                user_id=uid, profile=uprofile,
+                preferences=u["preferences"],
                 habits=u["habits"], history=u["history"],
                 version=u.get("version", 1))
-            self.user_agent.cache[uid] = self.user_agent.store[uid]
+            self.user_agent.cache[store_key] = self.user_agent.store[store_key]
             loaded["users"] += 1
 
         # 2. Task memory
@@ -205,8 +208,8 @@ class MainMemoryAgent:
         # 8. RL Weight restoration — first available user, fall back to "default"
         saved_weights = self.db.load_rl_weights("default")
         if loaded.get("users", 0) > 0 and self.user_agent.store:
-            for uid, u in list(self.user_agent.store.items()):
-                w = self.db.load_rl_weights(uid, profile=getattr(u, 'profile', 'default'))
+            for store_key, u in list(self.user_agent.store.items()):
+                w = self.db.load_rl_weights(u.user_id, profile=u.profile)
                 if w:
                     saved_weights = w
                     break
@@ -258,6 +261,23 @@ class MainMemoryAgent:
                         logger.info(
                             "Auto-reflection: %d insights (confidence=%.2f)",
                             len(result.key_insights), result.confidence)
+                        if agent._persistence_enabled:
+                            agent.db.save_reflection({
+                                "id": f"auto:{user_id}:{int(datetime.now(timezone.utc).timestamp())}",
+                                "user_id": user_id,
+                                "platform": "http",
+                                "source_episodic_ids": [r.get("id", "") for r in records],
+                                "reflection": {
+                                    "key_insights": result.key_insights,
+                                    "user_preferences": result.user_preferences,
+                                    "procedural_rules": result.procedural_rules,
+                                    "new_knowledge": result.new_knowledge,
+                                    "importance_scores": result.importance_scores,
+                                    "forget_suggestions": result.forget_suggestions,
+                                    "confidence": result.confidence,
+                                },
+                                "meta": {"source": "auto_reflection", "record_count": len(records)},
+                            })
             except Exception as e:
                 logger.debug("Auto-reflection skipped: %s", e)
 
@@ -399,7 +419,8 @@ class MainMemoryAgent:
             profile=profile)
         if features["has_history"]:
             if task_id:
-                retrieved["task_progress"] = self.task_agent.get_task_progress(task_id)
+                composite_id = f"{user_id}:{task_id}"
+                retrieved["task_progress"] = self.task_agent.get_task_progress(composite_id)
             else:
                 retrieved["task_history"] = self.task_agent.get_recent_tasks(
                     user_id=user_id, task_type=features["task_type"],
@@ -630,8 +651,9 @@ class MainMemoryAgent:
                     session_title = f"{datetime.now(timezone.utc).strftime('%m%d-%H%M')}_{content[:120]}"
                 self.context_agent.add_message(msg)
             self.task_agent.create_task(user_id=user_id, task_id=task_id,
-                                        title=title or "auto-task",
-                                        steps=[{"step": "Initialize", "status": task_status}])
+                                        title=title or session_title or "auto-task",
+                                        steps=[{"step": "Initialize", "status": task_status}],
+                                        profile=profile)
             task_tags = self._extract_task_tags(context) if hasattr(self, '_extract_task_tags') else []
             self._infer_user_preferences(context, user_id, platform=platform, profile=profile)
 
@@ -641,7 +663,7 @@ class MainMemoryAgent:
 
             if self._persistence_enabled:
                 lang = features.get("language", "en")
-                user_data = self.user_agent.get(user_id, platform=platform)
+                user_data = self.user_agent.get(user_id, platform=platform, profile=profile)
                 self.db.save_user(user_id,
                     preferences=user_data.get("preferences", {}),
                     habits=user_data.get("habits", {}),
@@ -696,7 +718,14 @@ class MainMemoryAgent:
 
             if success or experience_summary:
                 steps_from_context = [m["content"] for m in context if m["role"] != "system"]
-                exp_summary = experience_summary or "System-generated experience summary"
+                # Extract best assistant reply as fallback summary
+                best_reply = ""
+                for msg in context:
+                    if msg.get("role") == "assistant":
+                        c = msg.get("content", "")
+                        if len(c) > len(best_reply):
+                            best_reply = c
+                exp_summary = experience_summary or best_reply[:200] or "System-generated experience summary"
                 exp_type = features.get("task_type", "general")
                 # DB first: if save fails, memory stays clean
                 if self._persistence_enabled:
@@ -807,7 +836,7 @@ class MainMemoryAgent:
         elif any(kw in all_content for kw in concise_code_kw):
             new_prefs["code_style"] = "concise"
         if new_prefs:
-            self.user_agent.update(user_id, "preferences", new_prefs, source="implicit", platform=platform)
+            self.user_agent.update(user_id, "preferences", new_prefs, source="implicit", platform=platform, profile=profile)
 
     def record_feedback(self, user_id: str, task_id: str, feedback: str,
                         retrieved_memories: List[Dict], profile: str = "default"):

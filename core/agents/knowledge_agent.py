@@ -76,7 +76,7 @@ class KnowledgeMemoryAgent:
                     entry_tags = []
                 if not any(t in entry_tags for t in tags):
                     continue
-            if domain and entry.metadata.get("category") != domain:
+            if domain and entry.metadata.get("category", entry.metadata.get("domain")) != domain:
                 continue
 
             # Keyword match scoring
