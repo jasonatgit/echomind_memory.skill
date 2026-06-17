@@ -79,6 +79,7 @@ class MainMemoryAgent:
         )
         self._persistence_enabled = False
         self._store_count: dict = {}
+        self._pending_reflection_event = threading.Event()
         self._pending_reflection = False
         self._store_lock = threading.Lock()
         self._research_kw_cache = None
@@ -205,13 +206,21 @@ class MainMemoryAgent:
         else:
             logger.info("Empty DB — fresh start")
 
-        # 8. RL Weight restoration — first available user, fall back to "default"
+        # 8. RL Weight restoration — scan ALL users, merge user-specific weights
         saved_weights = self.db.load_rl_weights("default")
         if loaded.get("users", 0) > 0 and self.user_agent.store:
             for store_key, u in list(self.user_agent.store.items()):
                 w = self.db.load_rl_weights(u.user_id, profile=u.profile)
                 if w:
                     saved_weights = w
+                    break
+        # If no user-specific weights found, try loading from user preferences JSON
+        if not saved_weights and loaded.get("users", 0) > 0:
+            for store_key, u in list(self.user_agent.store.items()):
+                prefs = u.preferences if hasattr(u, 'preferences') else {}
+                if isinstance(prefs, dict) and 'rl_weights' in prefs:
+                    saved_weights = prefs['rl_weights']
+                    logger.info("RL weights restored from preferences JSON for %s", u.user_id)
                     break
         if saved_weights:
             self.rl_optimizer.weights = saved_weights
@@ -235,6 +244,7 @@ class MainMemoryAgent:
             pass
 
     def clear_pending_reflection(self):
+        self._pending_reflection_event = threading.Event()
         self._pending_reflection = False
 
     def _trigger_auto_reflection(self, user_id: str):
@@ -709,13 +719,27 @@ class MainMemoryAgent:
                         profile=profile,
                         user_id=user_id,
                         language=lang)
-                    self.knowledge_agent.add_document(knowledge_content, {
-                        "source": "task", "task_id": task_id,
-                        "user_id": user_id, "domain": research_domain,
-                        "project": project, "session_id": session_id or "",
-                        "session_title": session_title, "tags": task_tags,
-                        "category": research_domain,
-                    })
+                    # Dedup check: skip if identical content already in DB
+                    if self._persistence_enabled:
+                        existing_kb = self.db.search_knowledge_by_content(knowledge_content)
+                        if existing_kb:
+                            logger.debug("Knowledge dedup: content exists as %s, skipping", existing_kb["id"])
+                        else:
+                            self.knowledge_agent.add_document(knowledge_content, {
+                                "source": "task", "task_id": task_id,
+                                "user_id": user_id, "domain": research_domain,
+                                "project": project, "session_id": session_id or "",
+                                "session_title": session_title, "tags": task_tags,
+                                "category": research_domain,
+                            })
+                    else:
+                        self.knowledge_agent.add_document(knowledge_content, {
+                            "source": "task", "task_id": task_id,
+                            "user_id": user_id, "domain": research_domain,
+                            "project": project, "session_id": session_id or "",
+                            "session_title": session_title, "tags": task_tags,
+                            "category": research_domain,
+                        })
 
             if success or experience_summary:
                 steps_from_context = [m["content"] for m in context if m["role"] != "system"]
@@ -746,20 +770,7 @@ class MainMemoryAgent:
                     profile=profile,
                 )
 
-            # Reflection trigger: per-user count, trigger after batch_size
-            if self._persistence_enabled:
-                with self._store_lock:
-                    self._store_count[user_id] = self._store_count.get(user_id, 0) + 1
-                    batch_size = self.reflective.config.get("batch_size", 8)
-                    if isinstance(batch_size, (list, tuple)):
-                        batch_size = int(random.uniform(batch_size[0], batch_size[1]))
-                    if self._store_count[user_id] >= batch_size:
-                        del self._store_count[user_id]
-                        if platform == "hermes":
-                            self._pending_reflection = True
-                        else:
-                            self._trigger_auto_reflection(user_id)
-
+            self._store_handle_reflection_trigger(user_id, platform)
             return True
 
         except Exception as e:
@@ -771,6 +782,22 @@ class MainMemoryAgent:
         if self._persistence_enabled:
             return self.db.get_recent_episodic(user_id, count)
         return []
+
+    def _store_handle_reflection_trigger(self, user_id: str, platform: str):
+        """Extracted from store(): handle reflection scheduling."""
+        if not self._persistence_enabled:
+            return
+        with self._store_lock:
+            self._store_count[user_id] = self._store_count.get(user_id, 0) + 1
+            batch_size = self.reflective.config.get("batch_size", 8)
+            if isinstance(batch_size, (list, tuple)):
+                batch_size = int(random.uniform(batch_size[0], batch_size[1]))
+            if self._store_count[user_id] >= batch_size:
+                del self._store_count[user_id]
+                if platform == "hermes":
+                    self._pending_reflection = True
+                else:
+                    self._trigger_auto_reflection(user_id)
 
     def add_research_paper(self, title: str, authors: List[str] = None, year: int = None,
                            journal: str = None, abstract: str = "", keywords: List[str] = None,

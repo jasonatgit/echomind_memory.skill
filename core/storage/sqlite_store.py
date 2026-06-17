@@ -693,6 +693,16 @@ class SqliteStore:
 
     @with_retry_on_busy()
     @_require_conn
+    def search_knowledge_by_content(self, content: str):
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT id, content FROM knowledge_memory WHERE content = ? LIMIT 1",
+                (content,)
+            ).fetchone()
+            if row:
+                return dict(row)
+            return None
+
     def save_knowledge(self, knowledge_id: str, domain: str, content: str,
                        metadata: Dict = None, trust_score: float = 0.5,
                        entry_type: str = "fact", prerequisites: List = None,

@@ -104,7 +104,12 @@ class LLMClient:
             resp.raise_for_status()
             data = resp.json()
             try:
-                return data["choices"][0]["message"]["content"]
+                content = data["choices"][0]["message"]["content"]
+                if content is None or content.strip() == "":
+                    reason = data.get("choices", [{}])[0].get("finish_reason", "?")
+                    logger.warning("LLM returned empty content (finish_reason=%s)", reason)
+                    return ""
+                return content
             except (KeyError, IndexError, TypeError):
                 logger.warning("LLM returned unexpected response format: %s", str(data)[:200])
                 return ""

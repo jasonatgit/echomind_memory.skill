@@ -106,7 +106,7 @@ def call(tool_name: str, config_path: str = None, **kwargs):
             user_id=kwargs.get("user_id", ""),
         )
         return {"status": "synced",
-                "path": f"{kwargs['project_root']}/.echomind"}
+                "path": f"{kwargs.get('project_root', '.')}/.echomind"}
 
     elif tool_name == "add_research_paper":
         paper_id = agent.add_research_paper(
@@ -122,7 +122,7 @@ def call(tool_name: str, config_path: str = None, **kwargs):
             importance_score=kwargs.get("importance_score", 0.5),
         )
         return {"status": "stored", "paper_id": paper_id,
-                "title": kwargs["title"]}
+                "title": kwargs.get("title", "")}
 
     elif tool_name == "add_research_note":
         note_id = agent.add_research_note(
@@ -133,7 +133,7 @@ def call(tool_name: str, config_path: str = None, **kwargs):
             tags=kwargs.get("tags"),
         )
         return {"status": "stored", "note_id": note_id,
-                "topic": kwargs["topic"]}
+                "topic": kwargs.get("topic", "")}
 
     else:
         raise ValueError(f"Unknown tool: {tool_name}")

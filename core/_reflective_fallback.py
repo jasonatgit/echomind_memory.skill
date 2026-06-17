@@ -197,13 +197,15 @@ def _prepare_reflection_context(records):
     texts = []
     all_raw = ""
     for r in records:
+        txt = ""
         if isinstance(r, dict):
             txt = r.get("content", "") or r.get("text", "") or r.get("title", "")
             if txt:
                 texts.append(txt[:200])
         elif isinstance(r, str):
-            texts.append(r[:200])
-        all_raw += " " + (txt if isinstance(r, dict) else r)
+            txt = r[:200]
+            texts.append(txt)
+        all_raw += " " + txt
     record_text = "\n".join(f"- {t}" for t in texts[:10])
     keyword_text = ", ".join(keywords[:8])
     from .lang_utils import detect_language, get_prompt

@@ -413,32 +413,35 @@ class EchomindMemoryProvider:
         Hermes v0.16.0+: rewound=True when /undo N truncates conversation history
         without changing session_id. Provider should invalidate caches.
         """
-        # Flush pending reflection before switching context
-        self._trigger_reflection_if_needed()
+        try:
+            # Flush pending reflection before switching context
+            self._trigger_reflection_if_needed()
 
-        if reset:
-            # /new, /reset: Clear buffer
-            self._context_buffer = []
-            self._turn_count = 0
+            if reset:
+                # /new, /reset: Clear buffer
+                self._context_buffer = []
+                self._turn_count = 0
 
-        if rewound:
-            # /undo N: Clear context cache and retry buffer
-            self._context_buffer = []
-            if self._agent:
-                self._agent.clear_context()
+            if rewound:
+                # /undo N: Clear context cache and retry buffer
+                self._context_buffer = []
+                if self._agent:
+                    self._agent.clear_context()
+                logger.info(
+                    "on_session_switch: rewound=True — context cache cleared for %s",
+                    new_session_id,
+                )
+
+            self._session_id = new_session_id
             logger.info(
-                "on_session_switch: rewound=True — context cache cleared for %s",
+                "on_session_switch: new=%s parent=%s reset=%s rewound=%s",
                 new_session_id,
+                parent_session_id,
+                reset,
+                rewound,
             )
-
-        self._session_id = new_session_id
-        logger.info(
-            "on_session_switch: new=%s parent=%s reset=%s rewound=%s",
-            new_session_id,
-            parent_session_id,
-            reset,
-            rewound,
-        )
+        except Exception as e:
+            logger.error(f"on_session_switch failed: {e}")
 
     def on_pre_compress(self, messages: List[Dict[str, Any]]) -> str:
         """Called before context compression（Hermes v0.13.0+ New）。
