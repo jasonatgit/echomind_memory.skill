@@ -74,6 +74,15 @@ class ReflectiveAgent:
 
     # ── Hermes auto path: engine calls LLM internally ──
 
+    def _check_daily_limit(self) -> bool:
+        """Return True if daily reflection limit reached."""
+        max_daily = self.config.get("max_daily", [5, 20])
+        if isinstance(max_daily, (list, tuple)):
+            limit = int(__import__("random").uniform(max_daily[0], max_daily[1]))
+        else:
+            limit = int(max_daily)
+        return self._daily_count >= limit
+
     def reflect_with_llm(
         self,
         records: List[Dict],
@@ -89,6 +98,9 @@ class ReflectiveAgent:
         if _engine is None:
             logger.info("Reflection skipped: engine unavailable")
             return None
+        if self._check_daily_limit():
+            logger.info("Reflection skipped: daily limit reached")
+            return None
         result = _engine._reflect_records(
             records,
             user_id,
@@ -101,6 +113,14 @@ class ReflectiveAgent:
         if result is not None and not isinstance(result, tuple):
             self._daily_count += 1
             self._last_reflection = datetime.now(timezone.utc)
+        # Unify return type to ReflectionOutput
+        if isinstance(result, dict):
+            from .models.reflection import ReflectionOutput
+
+            try:
+                return ReflectionOutput(**result)
+            except Exception:
+                return result
         return result
 
     # ── Two-phase HTTP API (phase 2): process LLM response ──
@@ -114,6 +134,9 @@ class ReflectiveAgent:
     ):
         """Parse and merge LLM response back into memory."""
         if _engine is None:
+            return None
+        if self._check_daily_limit():
+            logger.info("Reflection skipped: daily limit reached")
             return None
         result = _engine._process_reflection(
             raw_response,

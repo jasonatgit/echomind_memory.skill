@@ -298,13 +298,17 @@ class SqliteStore:
                 CREATE INDEX IF NOT EXISTS idx_task_user ON task_memory(user_id);
                 CREATE INDEX IF NOT EXISTS idx_task_project ON task_memory(project);
                 CREATE INDEX IF NOT EXISTS idx_task_updated ON task_memory(updated_at);
+                CREATE INDEX IF NOT EXISTS idx_task_session ON task_memory(session_id);
                 CREATE INDEX IF NOT EXISTS idx_experience_user ON experience_memory(user_id);
                 CREATE INDEX IF NOT EXISTS idx_experience_project ON experience_memory(project);
+                CREATE INDEX IF NOT EXISTS idx_experience_session ON experience_memory(session_id);
                 CREATE INDEX IF NOT EXISTS idx_context_user ON context_memory(user_id);
                 CREATE INDEX IF NOT EXISTS idx_knowledge_domain ON knowledge_memory(domain);
                 CREATE INDEX IF NOT EXISTS idx_knowledge_user ON knowledge_memory(user_id);
                 CREATE INDEX IF NOT EXISTS idx_knowledge_project ON knowledge_memory(project);
                 CREATE INDEX IF NOT EXISTS idx_research_domain ON research_papers(domain);
+                CREATE INDEX IF NOT EXISTS idx_research_user ON research_papers(user_id);
+                CREATE INDEX IF NOT EXISTS idx_notes_user ON research_notes(user_id);
                 CREATE INDEX IF NOT EXISTS idx_session_transcripts_user ON session_transcripts(user_id);
             """)
             self._conn.commit()
@@ -556,11 +560,21 @@ class SqliteStore:
           - {"response_style": "concise"}  # legacy flat
           - {"_default": {...}, "hermes": {...}}  # multi-platform
           - {"_default": {"_default": {...}, ...}}  # double-nested (bug recovery)
+
+        Preserves top-level metadata keys (e.g. rl_weights) outside _default
+        so that load_rl_weights can find them.
         """
         if not isinstance(existing_prefs, dict):
             existing_prefs = {}
 
         merged = dict(existing_prefs)
+
+        # Extract metadata keys that should stay at top level (not inside _default)
+        _TOP_LEVEL_KEYS = {"rl_weights"}
+        top_level_extras = {}
+        for k in list(merged.keys()):
+            if k in _TOP_LEVEL_KEYS:
+                top_level_extras[k] = merged.pop(k)
 
         # Recover from double-nested _default (bug introduced in earlier versions)
         if isinstance(merged.get("_default"), dict) and "_default" in merged["_default"]:
@@ -579,6 +593,9 @@ class SqliteStore:
         merged[platform] = platform_prefs
         if platform != "_default":
             merged["_default"].update(platform_prefs)
+
+        # Restore top-level metadata keys
+        merged.update(top_level_extras)
         return merged
     @with_retry_on_busy()
     @_require_conn
@@ -703,6 +720,8 @@ class SqliteStore:
                 return dict(row)
             return None
 
+    @with_retry_on_busy()
+    @_require_conn
     def save_knowledge(self, knowledge_id: str, domain: str, content: str,
                        metadata: Dict = None, trust_score: float = 0.5,
                        entry_type: str = "fact", prerequisites: List = None,

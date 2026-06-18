@@ -206,14 +206,13 @@ class MainMemoryAgent:
         else:
             logger.info("Empty DB — fresh start")
 
-        # 8. RL Weight restoration — scan ALL users, merge user-specific weights
+        # 8. RL Weight restoration — scan ALL users, use last found
         saved_weights = self.db.load_rl_weights("default")
         if loaded.get("users", 0) > 0 and self.user_agent.store:
             for store_key, u in list(self.user_agent.store.items()):
                 w = self.db.load_rl_weights(u.user_id, profile=u.profile)
                 if w:
                     saved_weights = w
-                    break
         # If no user-specific weights found, try loading from user preferences JSON
         if not saved_weights and loaded.get("users", 0) > 0:
             for store_key, u in list(self.user_agent.store.items()):
@@ -582,68 +581,6 @@ class MainMemoryAgent:
             return []
         return self.db.search_transcripts(query, user_id, project, limit)
 
-    def compact_knowledge(self, domain: str = None, project: str = "default",
-                         max_items: int = 50) -> int:
-        """Merge redundant knowledge entries within same domain+project via LLM."""
-        if not self._persistence_enabled:
-            return 0
-        knowledge = self.knowledge_agent.search_all(domain=domain, project=project)
-        if len(knowledge) <= max_items:
-            return 0
-
-        # Group by domain, keep newest half, merge older half
-        merged = 0
-        domain_groups = {}
-        for k in knowledge:
-            d = k.get("domain", "general")
-            domain_groups.setdefault(d, []).append(k)
-
-        llm = self._get_llm_client()
-        if not llm:
-            logger.warning("Knowledge compaction skipped: LLM unavailable")
-            return 0
-
-        for d, items in domain_groups.items():
-            if len(items) <= 10:
-                continue
-            items.sort(key=lambda x: x.get("trust_score", 0.5), reverse=True)
-            keep = items[:len(items)//2]
-            merge = items[len(items)//2:]
-            prompt = f"Merge these {d} knowledge entries into a single concise summary (max 300 chars):\n"
-            for m in merge:
-                prompt += f"- {m.get('content','')[:200]}\n"
-            try:
-                summary = llm.chat(prompt).strip()[:500]
-                if summary:
-                    kid = f"compacted:{d}:{project}:{len(items)}"
-                    self.db.save_knowledge(kid, d, summary, project=project,
-                        entry_type="compacted", tags=[d])
-                    merged += 1
-            except Exception:
-                logger.debug("Knowledge compaction failed, skipping")
-        return merged
-
-    def _jaccard_prefilter(self, query: str, candidates: list,
-                          text_key: str = "content", top_n: int = 20) -> list:
-        """Pre-filter candidates via simple n-gram Jaccard similarity."""
-        lang = detect_language(query)
-        def tokenize_s(s):
-            return set(adaptive_tokenize(s, lang=lang))
-        q_tokens = tokenize_s(query)
-        if not q_tokens:
-            return candidates[:top_n]
-        scored = []
-        for c in candidates:
-            text = c.get(text_key, "")
-            c_tokens = tokenize_s(text)
-            if c_tokens:
-                sim = len(q_tokens & c_tokens) / len(q_tokens | c_tokens)
-                scored.append((c, sim))
-            else:
-                scored.append((c, 0))
-        scored.sort(key=lambda x: x[1], reverse=True)
-        return [c for c, _ in scored[:top_n]]
-
 
     def store(self, user_id: str, task_id: str, context: List[Dict],
               task_status: str, success: bool = False, experience_summary: str = None,
@@ -708,31 +645,24 @@ class MainMemoryAgent:
                             best_content = c
                 knowledge_content = best_content[:2000] if best_content else (experience_summary or "Auto-extracted knowledge")
                 if knowledge_content and knowledge_content != "Auto-extracted knowledge":
-                    self.db.save_knowledge(
-                        knowledge_id=f"{user_id}:{task_id}",
-                        domain=research_domain,
-                        content=knowledge_content,
-                        metadata={"source": "task", "task_id": task_id, "user_id": user_id},
-                        project=project,
-                        session_id=session_id or "",
-                        session_title=session_title, tags=task_tags,
-                        profile=profile,
-                        user_id=user_id,
-                        language=lang)
-                    # Dedup check: skip if identical content already in DB
+                    # Dedup check BEFORE DB write
+                    existing_kb = None
                     if self._persistence_enabled:
                         existing_kb = self.db.search_knowledge_by_content(knowledge_content)
-                        if existing_kb:
-                            logger.debug("Knowledge dedup: content exists as %s, skipping", existing_kb["id"])
-                        else:
-                            self.knowledge_agent.add_document(knowledge_content, {
-                                "source": "task", "task_id": task_id,
-                                "user_id": user_id, "domain": research_domain,
-                                "project": project, "session_id": session_id or "",
-                                "session_title": session_title, "tags": task_tags,
-                                "category": research_domain,
-                            })
-                    else:
+                    if not existing_kb:
+                        # Write to DB first, then add to memory
+                        if self._persistence_enabled:
+                            self.db.save_knowledge(
+                                knowledge_id=f"{user_id}:{task_id}",
+                                domain=research_domain,
+                                content=knowledge_content,
+                                metadata={"source": "task", "task_id": task_id, "user_id": user_id},
+                                project=project,
+                                session_id=session_id or "",
+                                session_title=session_title, tags=task_tags,
+                                profile=profile,
+                                user_id=user_id,
+                                language=lang)
                         self.knowledge_agent.add_document(knowledge_content, {
                             "source": "task", "task_id": task_id,
                             "user_id": user_id, "domain": research_domain,
