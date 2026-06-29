@@ -1,5 +1,5 @@
 # EchoMind Memory — Hermes MemoryProvider Adapter
-# implement Hermes v0.13.0+  MemoryProvider interface (v0.16.0 rewound param), providing 100% automated memory access
+# Hermes Agent v0.17.0 MemoryProvider interface
 #
 # Install: copy to ~/.hermes/plugins/echomind-memory/
 # Activate: hermes config set memory.provider echomind
@@ -37,7 +37,9 @@ class EchomindMemoryProvider:
     via getattr() and adapts keyword arguments via inspect.signature(),
     so a plain class without any framework base class works identically.
 
-    Protocol (what Hermes calls when available):
+    Hermes v0.17.0 MemoryProvider protocol:
+      name() -> str
+      is_available() -> bool
       initialize(session_id, **kwargs)
       system_prompt_block() -> str
       prefetch(query, *, session_id) -> str
@@ -52,6 +54,9 @@ class EchomindMemoryProvider:
       on_pre_compress(messages) -> str
       on_delegation(task, result, *, child_session_id, **kwargs)
       on_memory_write(action, target, content, metadata)
+      get_config_schema() -> list[dict]
+      save_config(values, hermes_home)
+      backup_paths() -> list[str]
       get_config_schema() -> list[dict]
       save_config(values, hermes_home)
 
@@ -79,6 +84,8 @@ class EchomindMemoryProvider:
         self._project_id: str = "default"
         self._session_title: str = ""
         self._detected_lang: str = "en"  # auto-detected from user content
+        self._agent_identity: str = ""   # Hermes v0.17.0: profile name
+        self._agent_workspace: str = ""  # Hermes v0.17.0: workspace name
 
     # ═══════════════════════════════════════════════════
     # Lifecycle
@@ -151,7 +158,13 @@ class EchomindMemoryProvider:
         self._session_id = session_id
         self._user_id = kwargs.get("user_id", session_id)
         self._profile = self._derive_profile(kwargs.get("hermes_home", ""))
-        self._project_id = kwargs.get("project", "default")
+        self._agent_identity = kwargs.get("agent_identity", "")
+        self._agent_workspace = kwargs.get("agent_workspace", "default")
+        # Map agent_workspace to project_id for memory scoping
+        if self._agent_workspace and self._agent_workspace != "default":
+            self._project_id = self._agent_workspace
+        else:
+            self._project_id = kwargs.get("project", "default")
         self._turn_count = 0
         self._context_buffer = []
 
@@ -223,13 +236,36 @@ class EchomindMemoryProvider:
         """
         pass
 
-    def sync_turn(self, user_content: str, assistant_content: str, session_id: str):
+    # ── Correction signal detection ──
+
+    _CORRECTION_KEYWORDS_ZH = ["不对", "错了", "应该是", "不是这样", "更正", "改一下", "不对的"]
+    _CORRECTION_KEYWORDS_EN = ["wrong", "not correct", "should be", "actually", "instead", "mistake", "incorrect"]
+
+    def _detect_correction(self, user_content: str) -> bool:
+        """Detect if user is correcting the agent's response.
+
+        Returns True when correction keywords appear in user input.
+        """
+        if not user_content:
+            return False
+        lower = user_content.lower()
+        for kw in self._CORRECTION_KEYWORDS_ZH:
+            if kw in user_content:
+                return True
+        for kw in self._CORRECTION_KEYWORDS_EN:
+            if kw in lower:
+                return True
+        return False
+
+    def sync_turn(self, user_content: str, assistant_content: str, *,
+                  session_id: str = "", messages: Optional[List[Dict]] = None):
         """Automatically called after each conversation turn — store current turn to SQLite"""
         if self._skip_writes or not self._agent:
             return
 
         self._turn_count += 1
-        self._session_id = session_id
+        if session_id:
+            self._session_id = session_id
 
         # Detect language from user content for bilingual prompts
         if user_content:
@@ -249,6 +285,9 @@ class EchomindMemoryProvider:
             ]
         )
 
+        # O-3: Detect user correction signals for immediate reflection
+        correction = self._detect_correction(user_content)
+
         try:
             ok = self._agent.store(
                 user_id=self._user_id,
@@ -260,6 +299,7 @@ class EchomindMemoryProvider:
                 project=self._project_id,
                 session_id=session_id,
                 profile=self._profile,
+                correction=correction,
             )
             if ok:
                 logger.debug(f"sync_turn: turn {self._turn_count} stored")
@@ -386,6 +426,7 @@ class EchomindMemoryProvider:
                 project=self._project_id,
                 session_id=self._session_id,
                 profile=self._profile,
+                correction=any(self._detect_correction(m.get("content", "")) for m in clean_messages if m.get("role") == "user"),
             )
             if ok:
                 logger.info("on_session_end: session summary stored")
@@ -518,7 +559,10 @@ class EchomindMemoryProvider:
     def on_memory_write(
         self, action: str, target: str, content: str, metadata: Optional[Dict] = None
     ):
-        """Mirror Hermes built-in memory write operations"""
+        """Mirror Hermes built-in memory write operations.
+
+        Also parses natural language content to extract preferences and habits.
+        """
         if self._skip_writes or not self._agent:
             return
         mirror = [
@@ -537,6 +581,8 @@ class EchomindMemoryProvider:
                 session_id=self._session_id,
                 profile=self._profile,
             )
+            # Parse memory content for preferences and habits
+            self._parse_memory_write(content, target)
             logger.info(
                 "EchoMind: mirrored memory %s target=%s content_len=%d (ok=%s)",
                 action,
@@ -551,6 +597,84 @@ class EchomindMemoryProvider:
                 target,
                 e,
             )
+
+    def _parse_memory_write(self, content: str, target: str):
+        """Parse natural language memory content for preferences and habits."""
+        if not self._agent or not content:
+            return
+        # 'key=value' syntax: "language=python" → preference
+        if "=" in content:
+            parts = content.split("=", 1)
+            key = parts[0].strip().lower()
+            val = parts[1].strip()
+            self._agent.user_agent.update(
+                self._user_id, "preferences",
+                {key: val}, source="memory_tool", profile=self._profile,
+            )
+            logger.debug("Parsed preference from memory write: %s=%s", key, val)
+        # Natural language patterns
+        lower = content.lower()
+        patterns = [
+            (["like ", "prefer ", "喜欢", "偏好"], "preference"),
+            (["always ", "usually ", "总是", "通常"], "habit"),
+        ]
+        for triggers, field in patterns:
+            if any(t in lower for t in triggers):
+                self._agent.user_agent.update(
+                    self._user_id, field,
+                    {"note": content[:200]}, source="memory_tool", profile=self._profile,
+                )
+                break
+
+    # ═══════════════════════════════════════════════════
+    # Hermes v0.17.0: Config schema, backup, and save
+    # ═══════════════════════════════════════════════════
+
+    def get_config_schema(self) -> List[Dict[str, Any]]:
+        """Return config fields for 'hermes memory setup' wizard."""
+        return [
+            {
+                "key": "db_path",
+                "description": "SQLite database path for EchoMind memory storage",
+                "default": "~/.echomind/memory.db",
+                "required": False,
+                "secret": False,
+            },
+            {
+                "key": "api_key",
+                "description": "API key for EchoMind HTTP API authentication",
+                "required": False,
+                "secret": True,
+                "env_var": "ECHOMIND_API_KEY",
+            },
+        ]
+
+    def save_config(self, values: Dict[str, Any], hermes_home: str) -> None:
+        """Write non-secret config to EchoMind's echomind_config.yaml."""
+        config_dir = Path(hermes_home) / "echomind"
+        config_dir.mkdir(parents=True, exist_ok=True)
+        config_file = config_dir / "echomind_config.yaml"
+        try:
+            import yaml
+            existing = {}
+            if config_file.exists():
+                with open(config_file, encoding="utf-8") as f:
+                    existing = yaml.safe_load(f) or {}
+            existing.update(values)
+            with open(config_file, "w", encoding="utf-8") as f:
+                yaml.dump(existing, f, default_flow_style=False)
+            logger.info("EchoMind config saved to %s", config_file)
+        except ImportError:
+            logger.warning("PyYAML not available, cannot save config")
+        except Exception as e:
+            logger.error("Failed to save EchoMind config: %s", e)
+
+    def backup_paths(self) -> List[str]:
+        """Return paths for 'hermes backup' to include EchoMind data."""
+        import os
+        return [
+            os.path.expanduser("~/.echomind/memory.db"),
+        ]
 
     # ═══════════════════════════════════════════════════
     # Internal method

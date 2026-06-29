@@ -27,17 +27,18 @@
 
 ---
 
-## EchoMind's 10 Core Capabilities
+## EchoMind's 11 Core Capabilities
 
 | Capability | Description |
 |------|------|
-| **Self-Evolving Engine Agent** 🆕 | Automatically reflects on raw memories to distill semantic knowledge and procedural rules, with zero-config LLM injection |
+| **Self-Evolving Engine Agent** | Automatically reflects on raw memories to distill semantic knowledge and procedural rules, with zero-config LLM injection |
 | **Seven Types of Memory** | User / Task / Experience / Context / Knowledge / Research / Reflection |
-| **RL-Enhanced Auto-Optimization** | Automatically adjusts memory weights based on positive/negative user feedback and persists them — gets smarter with use |
+| **Ebbinghaus Forgetting Curve** | Freshness-based memory decay — `freshness = 2^(-days/half_life)`, auto-downranks stale memories |
+| **RL-Enhanced Auto-Optimization** | Automatically adjusts memory weights based on positive/negative user feedback and persists them — gets smarter with use. Cosine learning rate decay + epsilon-greedy exploration to avoid local optima |
 | **Few-Shot Anchoring** | Rapidly builds memory norms from small samples, improving memory quality |
 | **Experience Distillation & Reuse** | Previously fixed bugs / used models → auto-recommended next time |
 | **Multi-Trigger Retrieval** | Keywords + RL weights + LLM semantics, a true "semantic memory system" |
-| **Hallucination-Prevention** 🆕 | Long-term memory safety mechanism — low-confidence reflection results are automatically discarded to prevent hallucination pollution |
+| **Hallucination-Prevention** | Long-term memory safety mechanism — low-confidence reflection results are automatically discarded to prevent hallucination pollution |
 | **Platform-Aware Memory Isolation** | Cross-platform weight decay; isolation by user, project, session, topic, and research domain — no more memory chaos |
 | **Zero-Dependency Local Storage** | SQLite persistence, no Docker / PostgreSQL / Redis required |
 | **Cross-Framework Compatibility** | LLM-independent, adapters for Hermes / OpenClaw / OpenCode / Claude Code |
@@ -70,7 +71,7 @@ When a query involves the following *domain keywords* or related *semantics*, th
 
 | Framework | Integration Method | Reliability |
 |------|----------|--------|
-| **Hermes-Agent** | MemoryProvider Plugin (automatic, v0.13.0–v0.16.0) | ★★★★★ 100% |
+| **Hermes-Agent** | MemoryProvider Plugin (automatic, v0.13.0–v0.17.0) | ★★★★★ 100% |
 | **OpenClaw** | `skill.yaml` + HTTP API tool invocation | ★★★★☆ LLM-decision |
 | **OpenCode** | CLI + HTTP API or MCP stdio | ★★★★☆ LLM-decision |
 | **Claude Code** | MCP stdio or HTTP API | ★★★★☆ LLM-decision |
@@ -79,6 +80,28 @@ When a query involves the following *domain keywords* or related *semantics*, th
 ---
 
 
+## v1.2.0 New Features
+
+**Core Highlights:**
+*MCP stdio gateway for Claude Code, Ebbinghaus forgetting curve, session-isolated context, memory CRUD.*
+
+| Feature | Description |
+|------|------|
+| **MCP stdio Gateway** | 7 native Claude Code tools (retrieve/store/search/feedback/reflect/delete/health) via stdio JSON-RPC |
+| **Ebbinghaus Forgetting Curve** | Freshness-based memory scoring — `freshness = 2^(-days/half_life)` across all 6 memory types, auto-excludes stale records |
+| **Memory Delete API** | DELETE endpoints for individual records, full user data, and TTL-based cleanup |
+| **Session-Isolated Context** | Each session_id gets an independent context window with LRU eviction (up to 5 active sessions) |
+| **Session Message Archive** | Evicted session messages preserved in `context_archive` table |
+| **User Correction Detection** | zh/en keyword matching for correction signals triggers immediate reflection |
+| **6-Category Preference Inference** | code_style, response_style, platform, language, depth, tone — keyword-driven from config |
+| **Adaptive Reflection Batch** | `clamp(7*ln(sessions+1), 6, 20)` based on weekly user activity |
+| **RL Cosine Decay + Epsilon-Greedy** | Cosine learning rate decay prevents late-stage weight oscillations; epsilon-greedy exploration escapes local optima |
+| **SQLite Schema Migrations** | Structured `MIGRATIONS` list with transactional rollback — replaces ad-hoc ALTER TABLE |
+| **Atomic Batch Writes** | `store()` wraps 5 save calls in a single `BEGIN IMMEDIATE` transaction |
+| **Hermes Agent v0.17.0** | Full MemoryProvider compatibility including `get_config_schema()`, `backup_paths()`, and `save_config()` |
+
+
+---
 ## v1.1.0 New Features
 
 **Core Highlights:**
@@ -242,7 +265,7 @@ pip install -r requirements.txt
 
 ```bash
 curl http://localhost:8005/health
-# Expected: {"status": "ok", "version": "1.1.6"}
+# Expected: {"status": "ok", "version": "1.2.0"}
 ```
 
 ---
@@ -467,7 +490,10 @@ No. SQLite `ALTER TABLE ADD COLUMN ... DEFAULT 'default'` is an O(1) metadata op
 
 Yes. EchoMind v1.1.6+ has been adapted to Hermes v0.16.0's new `on_session_switch(rewound=True)` parameter.
 When the user executes `/undo N` to truncate conversation history, EchoMind automatically clears the context cache to prevent memory contamination.
-Compatibility range: Hermes v0.13.0 – v0.16.0.
+
+### Q: Is EchoMind compatible with Hermes v0.17.0?
+
+Yes. EchoMind v1.2.0+ fully supports Hermes v0.17.0's MemoryProvider interface, including `get_config_schema()`, `backup_paths()`, and `save_config()` methods. Compatibility range: Hermes v0.13.0 – v0.17.0.
 
 </details>
 

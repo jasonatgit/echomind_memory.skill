@@ -1,5 +1,5 @@
 # echomind_config.yaml — EchoMind full configuration parameters
-# Version: v1.1.6
+# Version: v1.2.0
 #
 # Distributed via GitHub as default config. Use directly or copy to ~/.echomind/ then modify.
 # Priority: runtime ext_params > YAML overrides > built-in FALLBACK_CONFIG

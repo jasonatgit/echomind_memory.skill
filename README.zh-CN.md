@@ -28,18 +28,19 @@
 ---
 
 
-## EchoMind 核心十大能力
+## EchoMind 核心十一大能力
 
 | 功能 | 说明 |
 |------|------|
-| **自我进化引擎 Agent** 🆕 | 自动从原始记忆中反思后提炼语义知识和程序化规则，零配置 LLM 注入 |
+| **自我进化引擎 Agent** | 自动从原始记忆中反思后提炼语义知识和程序化规则，零配置 LLM 注入 |
 | **七类记忆系统** | User/ Task/ Experience/ Context/ Knowledge/ Research/ Reflection |
-| **RL强化学习自动优化** | 根据用户正/负反馈，AI 自动调整记忆权重并且持久化，越用越聪明 |
+| **艾宾浩斯遗忘曲线** | 基于新鲜度的记忆衰减 — `freshness = 2^(-天数/半衰期)`，自动降低冷数据权重 |
+| **RL强化学习自动优化** | 根据用户正/负反馈，AI 自动调整记忆权重并且持久化，越用越聪明。包含余弦学习率衰减 + epsilon-greedy 探索 |
 | **Few-Shot锚定** | 小样本快速构建记忆规范，提升记忆质量 |
 | **经验沉淀与复用** | 上次修复的问题 / 用过的算法模型 → 下次自动推荐 |
-| **多重检索触发** | 关键词 + RL 权重 + LLM 语义，真正的“语义记忆系统” |
-| **防幻觉污染** 🆕 | 长期记忆安全机制，置信度门控低的反思结果自动丢弃，防止幻觉污染记忆 |
-| **平台感知记忆隔离**  | 跨平台权重衰减，用户、项目、会话、主题、研究领域统统隔离，记忆再也不会混乱 |
+| **多重检索触发** | 关键词 + RL 权重 + LLM 语义，真正的"语义记忆系统" |
+| **防幻觉污染** | 长期记忆安全机制，置信度门控低的反思结果自动丢弃，防止幻觉污染记忆 |
+| **平台感知记忆隔离** | 跨平台权重衰减，用户、项目、会话、主题、研究领域统统隔离，记忆再也不会混乱 |
 | **零依赖本地存储** | SQLite 持久化，无需 Docker / PostgreSQL / Redis |
 | **跨框架兼容** | 独立于任何 LLM，适配 Hermes / OpenClaw / OpenCode / Claude Code |
 
@@ -71,7 +72,7 @@ EchoMind 记忆系统专门针对*科研方向*的记忆进行了优化，对查
 
 | 框架 | 支持方式 | 可靠性 |
 |------|----------|--------|
-| **Hermes-Agent** | MemoryProvider 插件 (自动) | ★★★★★ 100% |
+| **Hermes-Agent** | MemoryProvider 插件 (自动, v0.13.0–v0.17.0) | ★★★★★ 100% |
 | **OpenClaw** | `skill.yaml` + HTTP API 工具调用 | ★★★★☆ LLM 决策 |
 | **OpenCode** | CLI + HTTP API 或 MCP stdio | ★★★★☆ LLM 决策 |
 | **Claude Code** | MCP stdio 或 HTTP API | ★★★★☆ LLM 决策 |
@@ -80,6 +81,28 @@ EchoMind 记忆系统专门针对*科研方向*的记忆进行了优化，对查
 ---
 
 
+## v1.2.0  新增功能
+
+**核心要点：**
+*MCP stdio 网关、艾宾浩斯遗忘曲线、会话隔离上下文管理、记忆 CRUD。*
+
+| 功能 | 说明 |
+|------|------|
+| **MCP stdio 网关** | 7 个原生 Claude Code 工具（retrieve/store/search/feedback/reflect/delete/health），通过 stdio JSON-RPC 协议 |
+| **艾宾浩斯遗忘曲线** | 基于新鲜度的记忆评分 — `freshness = 2^(-天数/半衰期)`，覆盖全部6种记忆类型，自动排除冷数据 |
+| **记忆删除 API** | 支持单条删除、用户数据全清、TTL 过期清理的 REST 端点 |
+| **会话隔离上下文管理** | 每个 session_id 独立上下文窗口，LRU 淘汰（最多 5 个活跃会话） |
+| **会话消息归档** | 淘汰的会话消息自动保存到 `context_archive` 表 |
+| **用户纠正信号检测** | 中英文关键词匹配纠正信号，触发即时反思 |
+| **6 类偏好推理** | code_style, response_style, platform, language, depth, tone — 关键词驱动，配置化 |
+| **自适应反思批处理** | 基于周活跃度动态调整：`clamp(7*ln(sessions+1), 6, 20)` |
+| **RL 余弦衰减 + Epsilon-Greedy** | 余弦学习率衰减防止后期震荡；epsilon-greedy 探索跳出局部最优 |
+| **SQLite Schema 迁移系统** | 结构化迁移列表，支持事务回滚 |
+| **原子化批量写入** | `store()` 将 5 次保存操作包裹在单个 `BEGIN IMMEDIATE` 事务中 |
+| **Hermes Agent v0.17.0 适配** | 完整实现 `get_config_schema()`、`backup_paths()`、`save_config()` 等新接口 |
+
+
+---
 ## v1.1.0  新增功能
 
 **核心要点：**
@@ -237,7 +260,7 @@ pip install -r requirements.txt
 
 ```bash
 curl http://localhost:8005/health
-# 预期返回: {"status": "ok", "version": "1.1.6"}
+# 预期返回: {"status": "ok", "version": "1.2.0"}
 ```
 
 ---
@@ -463,6 +486,10 @@ cp ~/.echomind/memory.db ~/.echomind/memory.db.backup-$(date +%Y%m%d)
 
 是。EchoMind v1.1.6+ 已适配 Hermes v0.16.0 新增的 `on_session_switch(rewound=True)` 参数。
 当用户执行 `/undo N` 截断对话历史时，EchoMind 自动清空上下文缓存，避免记忆污染。
-兼容范围：Hermes v0.13.0 – v0.16.0。
+
+### Q: EchoMind 是否兼容 Hermes v0.17.0？
+
+是。EchoMind v1.2.0+ 完整支持 Hermes v0.17.0 的 MemoryProvider 接口，包括 `get_config_schema()`、`backup_paths()`、`save_config()` 方法。
+兼容范围：Hermes v0.13.0 – v0.17.0。
 
 </details>
