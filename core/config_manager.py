@@ -24,10 +24,9 @@ _SEARCH_PATHS = [
 
 
 def _try_load_ext_params() -> dict:
-    """Load extension parameters if the native engine is available.
+    """Attempt to load supplementary engine parameters.
 
-    Returns a dict of config overrides (e.g. RL weights) when the
-    native engine is installed, or empty dict.
+    Returns a dict of config overrides or empty dict.
     """
 
     try:
@@ -40,8 +39,7 @@ def _try_load_ext_params() -> dict:
 
 def _load_bundled_keywords() -> dict:
     """Load domain keywords from the bundled domain_keywords.yaml.
-    This file is tracked in git and distributed to all users (OSS + Pro).
-    Returns empty dict on any failure — domain detection degrades gracefully.
+    Returns empty dict on any failure — domain detection proceeds gracefully.
     """
     try:
         _here = os.path.dirname(os.path.abspath(__file__))

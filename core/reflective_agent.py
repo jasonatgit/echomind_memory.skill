@@ -13,15 +13,11 @@ _engine = None
 
 try:
     from . import _native_engine as _engine
-    logger.info("Reflection engine: ready")
 except ImportError:
     try:
         from . import _reflective_fallback as _engine
-        logger.info("Reflection engine: keyword fallback")
     except ImportError:
         _engine = None
-
-# All methods use _engine is None as the single source of truth
 
 
 class ReflectiveAgent:
@@ -39,6 +35,26 @@ class ReflectiveAgent:
         self._daily_count = 0
         self._last_reflection: Optional[datetime] = None
 
+    # ── Engine status detection ──
+
+    @staticmethod
+    def is_native_engine_available() -> bool:
+        """Return True if the native reflection engine module is available."""
+        try:
+            from . import _native_engine
+            return True
+        except ImportError:
+            return False
+
+    @staticmethod
+    def get_engine_status() -> dict:
+        """Return engine capabilities as a dict."""
+        if ReflectiveAgent.is_native_engine_available():
+            return {"engine": "native", "build_prompt_available": True, "merge_active": True}
+        if _engine is not None:
+            return {"engine": "keyword", "build_prompt_available": False, "merge_active": False}
+        return {"engine": "none", "build_prompt_available": False, "merge_active": False}
+
     # ── Two-phase HTTP API: build prompt, caller processes externally ──
 
     def build_prompt(
@@ -53,7 +69,6 @@ class ReflectiveAgent:
         Used by HTTP API /api/reflect endpoint (llm_response=None).
         """
         if _engine is None:
-            logger.info("Reflection build_prompt: engine unavailable")
             return "", [r.get("id", f"rec_{i}") for i, r in enumerate(records)]
         result = _engine._reflect_records(
             records,
@@ -66,7 +81,7 @@ class ReflectiveAgent:
         )
         if isinstance(result, tuple) and len(result) == 2:
             return result
-        if isinstance(result, dict) and result.get("source") == "fallback_keyword":
+        if isinstance(result, dict) and result.get("source") == "keyword":
             if hasattr(_engine, '_prepare_reflection_context'):
                 return _engine._prepare_reflection_context(records), [r.get("id", f"rec_{i}") for i, r in enumerate(records)]
             return "", [r.get("id", f"rec_{i}") for i, r in enumerate(records)]
@@ -96,10 +111,8 @@ class ReflectiveAgent:
         Used by Hermes provider (on_session_end → _hermes_llm_fn).
         """
         if _engine is None:
-            logger.info("Reflection skipped: engine unavailable")
             return None
         if self._check_daily_limit():
-            logger.info("Reflection skipped: daily limit reached")
             return None
         result = _engine._reflect_records(
             records,
@@ -136,7 +149,6 @@ class ReflectiveAgent:
         if _engine is None:
             return None
         if self._check_daily_limit():
-            logger.info("Reflection skipped: daily limit reached")
             return None
         result = _engine._process_reflection(
             raw_response,

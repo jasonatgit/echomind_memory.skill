@@ -131,9 +131,9 @@ EXCEPTION_RESPONSE = {"status": "error", "detail": "Internal server error"}
 
 
 def _error_response(e: Exception, log_context: str = "") -> dict:
-    """Unified error response — always returns HTTP 200 with error field."""
+    """Unified error response — logs exception, returns generic message."""
     logger.error(f"{log_context}: {e}", exc_info=True)
-    return {"status": "error", "detail": str(e)}
+    return {"status": "error", "detail": "Operation failed"}
 
 
 @app.exception_handler(HTTPException)
@@ -194,7 +194,8 @@ async def search_sessions(q: str = "", user_id: str = None, project: str = None,
         results = memory_agent.db.search_transcripts(q, user_id, project, limit)
         return {"results": results, "count": len(results)}
     except Exception as e:
-        return {"results": [], "error": str(e)}
+        logger.error("search_sessions: %s", e, exc_info=True)
+        return {"results": [], "error": "Search failed"}
 
 @app.post("/api/memory/feedback")
 async def api_feedback(req: FeedbackRequest, auth=Depends(verify_api_key)):
@@ -323,6 +324,50 @@ async def api_reload_config(auth=Depends(verify_api_key)):
     cfg = get_config_manager()
     cfg.reload()
     return {"status": "reloaded", "config_path": cfg.config_path}
+
+
+# ── Delete API (O-9) ──
+
+
+class DeleteRequest(BaseModel):
+    memory_type: str
+    memory_id: Optional[str] = None
+    user_id: Optional[str] = None
+
+@app.delete("/api/memory/{memory_type}/{memory_id}")
+async def api_delete_memory(memory_type: str, memory_id: str, auth=Depends(verify_api_key)):
+    try:
+        deleted = memory_agent.db.delete_memory(memory_type, memory_id)
+        return {"status": "deleted" if deleted else "not_found", "memory_type": memory_type, "memory_id": memory_id}
+    except Exception as e:
+        logger.error(f"api_delete_memory: {e}", exc_info=True)
+        return {"status": "error", "detail": "Delete failed"}
+
+@app.post("/api/memory/delete-user")
+async def api_delete_user(req: DeleteRequest, auth=Depends(verify_api_key)):
+    if not req.user_id:
+        raise HTTPException(status_code=422, detail="user_id required")
+    try:
+        counts = memory_agent.db.delete_user_memories(req.user_id)
+        return {"status": "deleted", "user_id": req.user_id, "counts": counts}
+    except Exception as e:
+        logger.error(f"api_delete_user: {e}", exc_info=True)
+        return {"status": "error", "detail": "Delete failed"}
+
+@app.post("/api/memory/cleanup")
+async def api_cleanup(auth=Depends(verify_api_key)):
+    try:
+        ttl = {
+            "context": 30,
+            "task": 90,
+            "experience": 180,
+            "knowledge": 0,
+        }
+        counts = memory_agent.db.delete_expired(ttl)
+        return {"status": "cleaned", "counts": counts}
+    except Exception as e:
+        logger.error(f"api_cleanup: {e}", exc_info=True)
+        return {"status": "error", "detail": "Cleanup failed"}
 
 
 # ── Entry ──

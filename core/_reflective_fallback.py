@@ -1,5 +1,5 @@
 # core/_reflective_fallback.py
-# Pure-function safe fallback: Return empty when unavailable / Basic keyword extraction
+# Keyword-based reflection module: builds prompts and extracts keywords.
 
 import re
 import logging
@@ -31,7 +31,7 @@ def _parse_result(raw):
     return raw
 
 
-# ── Keyword fallback: provider=none extract high-frequency words as basic reflection ──
+# ── Keyword extraction: extract high-frequency terms as basic reflection ──
 
 
 def _extract_keywords(records, top_k=10):
@@ -94,14 +94,14 @@ def _extract_keywords(records, top_k=10):
 def _reflect_records(
     records, user_id, platform, llm_fn, config, store, memory
 ):
-    """Basic keyword-based reflection when LLM provider is 'none'.
+    """Keyword-based reflection.
 
     Two-phase API:
     - llm_fn=None → returns (prompt: str, record_ids: list) for two-phase HTTP API
     - llm_fn=callable → runs full reflection, returns ReflectionOutput dict or None
 
     When llm_fn is provided and provider is not 'none', uses the LLM to generate
-    reflection. When provider is 'none', extracts top frequent keywords as fallback.
+    reflection. When provider is 'none', extracts top frequent keywords.
     """
     provider = ""
     try:
@@ -126,7 +126,7 @@ def _reflect_records(
                     raw_response, records, user_id, platform, config, store, memory,
                 )
         except Exception:
-            logger.debug("reflection: LLM call failed, falling back to keyword")
+            logger.debug("reflection: LLM call failed, using keyword extraction")
             pass
 
     keywords = _extract_keywords(records)
@@ -142,7 +142,7 @@ def _reflect_records(
         "experience": [],
         "procedural_rules": [],
         "confidence": 0.3,
-        "source": "fallback_keyword",
+        "source": "keyword",
     }
 
     # Try to classify keywords into categories
@@ -159,7 +159,7 @@ def _reflect_records(
             output["rules"].append(kw)
         else:
             output["knowledge"].append({
-                "content": kw, "domain": "general", "source": "fallback"
+                "content": kw, "domain": "general", "source": "keyword"
             })
 
     return output
@@ -168,9 +168,9 @@ def _reflect_records(
 def _process_reflection(
     raw_response, records, user_id, platform, config, store, memory_agent
 ):
-    """Process LLM reflection result with fallback.
+    """Process LLM reflection result.
 
-    When called without a valid LLM, returns an empty valid result
+    When called without a valid LLM response, returns an empty valid result
     so the caller does not receive None (which triggers HTTP 400).
     """
     if not raw_response:
@@ -183,14 +183,14 @@ def _process_reflection(
             "experience": [],
             "procedural_rules": [],
             "confidence": 0.3,
-            "source": "fallback_empty",
+            "source": "empty",
         }
     # Try to parse as JSON; if it fails, return raw string as-is
     return _parse_result(raw_response)
 
 
 def _prepare_reflection_context(records):
-    """Build a keyword-based prompt for two-phase reflection API when LLM is unavailable."""
+    """Build a keyword-based prompt for two-phase reflection API."""
     keywords = _extract_keywords(records, top_k=10)
     if not keywords:
         return ""

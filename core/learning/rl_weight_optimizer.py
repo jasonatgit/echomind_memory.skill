@@ -57,12 +57,36 @@ class RLWeightOptimizer:
         self.ema_weights = self.weights.copy()
         self.feedback_buffer: List[FeedbackRecord] = []
         self.learning_rate = learning_rate
+        self.base_lr = learning_rate
+        self.lr_min = 0.005
+        self.lr_max_steps = 1000
         self.decay_factor = decay_factor
         self.update_counter = 0
         self.max_buffer_size = max_buffer_size
         self.history: List[Dict] = []
+        # Epsilon-greedy exploration (O-11)
+        self.epsilon_start = 0.1
+        self.epsilon_end = 0.01
+        self.epsilon_step = 0
         self._source_order = ["user", "knowledge", "experience", "task_progress",
                                "task_history", "research", "context"]
+
+    def _get_lr(self) -> float:
+        """Cosine decay learning rate from base_lr to lr_min over lr_max_steps."""
+        if self.update_counter >= self.lr_max_steps:
+            return self.lr_min
+        frac = self.update_counter / self.lr_max_steps
+        cosine = 0.5 * (1 + math.cos(math.pi * frac))
+        return self.lr_min + cosine * (self.base_lr - self.lr_min)
+
+    def _maybe_explore(self):
+        """Epsilon-greedy weight perturbation."""
+        eps = max(self.epsilon_end, self.epsilon_start - (self.epsilon_start - self.epsilon_end) * self.epsilon_step / 500)
+        self.epsilon_step += 1
+        if random.random() < eps:
+            k = random.choice(self._WEIGHT_KEYS)
+            self.weights[k] += random.uniform(-0.02, 0.02)
+            logger.debug("[RL] Exploration: perturbed %s (eps=%.3f)", k, eps)
 
     @staticmethod
     def _build_feedback_features(fb: FeedbackRecord) -> dict:
@@ -134,7 +158,10 @@ class RLWeightOptimizer:
         total_reward = 0
         n = len(self.feedback_buffer)
 
-        # Softmax normalization weight update
+        # Cosine-decayed learning rate (O-10)
+        current_lr = self._get_lr()
+        self.update_counter += 1
+
         weight_keys = self._WEIGHT_KEYS
         for fb in self.feedback_buffer:
             reward = 1 if fb.user_feedback == "positive" else -1
@@ -151,8 +178,11 @@ class RLWeightOptimizer:
                     continue
                 source_idx = self._TASK_FEATURE_COUNT + i
                 if source_idx < len(state):
-                    delta = self.learning_rate * (reward - pred_score) * state[source_idx]
+                    delta = current_lr * (reward - pred_score) * state[source_idx]
                     self.weights[weight_key] += delta
+
+        # Epsilon-greedy exploration (O-11)
+        self._maybe_explore()
 
         # Softmax normalization (replaces clamp + sum norm, eliminates forced 0.01 issue)
         values = np.array([self.weights.get(k, 0.0) for k in weight_keys])

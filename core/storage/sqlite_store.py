@@ -61,6 +61,42 @@ def _normalize_row(row) -> Dict:
     return row
 
 SCHEMA_VERSION = 3  # v1: 无 profile 列 (v1.1.5-), v2: 有 profile 列 (v1.1.6+), v3: user_memory 复合PK (v1.2.0)
+
+# Incremental migrations beyond v3 (stored as PRAGMA user_version)
+# Each entry: (version_num, description, sql_statements_or_callable)
+# Version 4+: added incrementally via _run_schema_migrations()
+_MIGRATIONS = [
+    (4, "Add last_access_at to 6 memory tables",
+     [
+         "ALTER TABLE user_memory ADD COLUMN last_access_at TEXT DEFAULT ''",
+         "ALTER TABLE task_memory ADD COLUMN last_access_at TEXT DEFAULT ''",
+         "ALTER TABLE experience_memory ADD COLUMN last_access_at TEXT DEFAULT ''",
+         "ALTER TABLE context_memory ADD COLUMN last_access_at TEXT DEFAULT ''",
+         "ALTER TABLE knowledge_memory ADD COLUMN last_access_at TEXT DEFAULT ''",
+         "ALTER TABLE research_papers ADD COLUMN last_access_at TEXT DEFAULT ''",
+         "CREATE INDEX IF NOT EXISTS idx_user_last_access ON user_memory(last_access_at)",
+         "CREATE INDEX IF NOT EXISTS idx_task_last_access ON task_memory(last_access_at)",
+         "CREATE INDEX IF NOT EXISTS idx_experience_last_access ON experience_memory(last_access_at)",
+         "CREATE INDEX IF NOT EXISTS idx_knowledge_last_access ON knowledge_memory(last_access_at)",
+     ]),
+    (5, "Add context_archive table for evicted session messages",
+     [
+         "CREATE TABLE IF NOT EXISTS context_archive ("
+         " id INTEGER PRIMARY KEY AUTOINCREMENT,"
+         " session_id TEXT NOT NULL,"
+         " role TEXT NOT NULL,"
+         " content TEXT NOT NULL,"
+         " archived_at TEXT DEFAULT (datetime('now'))"
+         ")",
+         "CREATE INDEX IF NOT EXISTS idx_archive_session ON context_archive(session_id)",
+     ]),
+    (6, "Add language column indexes for faster filtered retrieval",
+     [
+         "CREATE INDEX IF NOT EXISTS idx_task_language ON task_memory(language)",
+         "CREATE INDEX IF NOT EXISTS idx_experience_language ON experience_memory(language)",
+         "CREATE INDEX IF NOT EXISTS idx_knowledge_language ON knowledge_memory(language)",
+     ]),
+]
 # Tables that need a profile column
 _PROFILE_TABLES = [
     "user_memory", "task_memory", "experience_memory",
@@ -346,6 +382,67 @@ class SqliteStore:
             except sqlite3.OperationalError:
                 pass
             logger.info("All 9 memory tables ensured")
+        # Note: _run_schema_migrations() intentionally OUTSIDE the lock to avoid
+        # deadlock — it manages its own transaction with BEGIN IMMEDIATE.
+        self._run_schema_migrations()
+
+    def _run_schema_migrations(self):
+        """Apply incremental schema migrations beyond SCHEMA_VERSION.
+
+        Reads PRAGMA user_version and applies each migration in order.
+        All migrations run inside a single transaction — rolled back on failure.
+        """
+        if not self._conn:
+            return
+        cursor = self._conn.execute("PRAGMA user_version")
+        current = cursor.fetchone()[0]
+        if current >= _MIGRATIONS[-1][0] if _MIGRATIONS else current:
+            return
+        try:
+            with self._lock:
+                self._conn.execute("BEGIN IMMEDIATE TRANSACTION")
+                for version, desc, stmts in _MIGRATIONS:
+                    if version <= current:
+                        continue
+                    for stmt in stmts:
+                        self._conn.execute(stmt)
+                    self._conn.execute(f"PRAGMA user_version = {version}")
+                    logger.info("Migration v%d: %s", version, desc)
+                self._conn.commit()
+        except Exception as e:
+            self._conn.rollback()
+            logger.error("Schema migration failed, rolled back: %s", e, exc_info=True)
+            raise RuntimeError(f"Schema migration failed: {e}") from e
+
+    def transaction(self):
+        """Context manager for atomic batch writes.
+
+        Usage: with store.transaction(): store.save_user(...); store.save_task(...)
+        Uses BEGIN IMMEDIATE to acquire write lock upfront.
+        """
+        return _TransactionContext(self._conn, self._lock)
+
+
+class _TransactionContext:
+    """Internal transaction context manager."""
+
+    def __init__(self, conn, lock):
+        self.conn = conn
+        self.lock = lock
+
+    def __enter__(self):
+        self.lock.acquire()
+        self.conn.execute("BEGIN IMMEDIATE TRANSACTION")
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        try:
+            if exc_type is None:
+                self.conn.commit()
+            else:
+                self.conn.rollback()
+        finally:
+            self.lock.release()
 
     def _migrate_existing_tables(self):
         """Backward-compatible: add missing columns, transactional + schema_version flag
@@ -617,13 +714,14 @@ class SqliteStore:
                 else:
                     preferences = {"_default": preferences or {}}
             self._conn.execute("""
-                INSERT INTO user_memory (user_id, preferences, habits, history, profile, last_updated, version)
-                VALUES (?, ?, ?, ?, ?, datetime('now'), ?)
+                INSERT INTO user_memory (user_id, preferences, habits, history, profile, last_updated, last_access_at, version)
+                VALUES (?, ?, ?, ?, ?, datetime('now'), datetime('now'), ?)
                 ON CONFLICT(user_id, profile) DO UPDATE SET
                     preferences=json_set(excluded.preferences, '$.rl_weights',
                         COALESCE(json_extract(user_memory.preferences, '$.rl_weights'), '{}')),
                     habits=excluded.habits,
                     history=excluded.history, last_updated=datetime('now'),
+                    last_access_at=datetime('now'),
                     version=COALESCE(user_memory.version, 0) + 1
             """, (user_id,
                   json.dumps(preferences, ensure_ascii=False),
@@ -658,11 +756,12 @@ class SqliteStore:
             task_pk = f"{user_id}:{task_id}"
             self._conn.execute("""
                 INSERT INTO task_memory (id, user_id, title, status, steps, metadata,
-                    project, profile, session_id, session_title, tags, language, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+                    project, profile, session_id, session_title, tags, language, updated_at, last_access_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
                 ON CONFLICT(id) DO UPDATE SET
                     status=excluded.status, steps=excluded.steps,
-                    metadata=excluded.metadata, updated_at=datetime('now')
+                    metadata=excluded.metadata, updated_at=datetime('now'),
+                    last_access_at=datetime('now')
             """, (task_pk, user_id, title, status,
                   json.dumps(steps or []), json.dumps(metadata or {}),
                   project, profile, session_id, session_title,
@@ -680,12 +779,13 @@ class SqliteStore:
             eid = experience_id or f"{user_id}:{summary[:20]}:{int(datetime.now(timezone.utc).timestamp())}"
             self._conn.execute("""
                 INSERT INTO experience_memory (id, user_id, task_type, success,
-                    steps_sequence, summary, project, profile, session_id, session_title, tags, language)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    steps_sequence, summary, project, profile, session_id, session_title, tags, language, last_access_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
                 ON CONFLICT(id) DO UPDATE SET
                     steps_sequence=excluded.steps_sequence,
                     summary=excluded.summary,
-                    frequency=experience_memory.frequency + 1
+                    frequency=experience_memory.frequency + 1,
+                    last_access_at=datetime('now')
             """, (eid, user_id, task_type, int(success), json.dumps(steps),
                   summary, project, profile, session_id, session_title,
                   json.dumps(tags or []), language))
@@ -698,12 +798,13 @@ class SqliteStore:
                      project: str = "default", profile: str = "default"):
         with self._lock:
             self._conn.execute("""
-                INSERT INTO context_memory (session_id, user_id, messages, token_count, platform, project, profile, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
+                INSERT INTO context_memory (session_id, user_id, messages, token_count, platform, project, profile, updated_at, last_access_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
                 ON CONFLICT(session_id) DO UPDATE SET
                     messages=excluded.messages, token_count=excluded.token_count,
                     platform=excluded.platform,
-                    updated_at=datetime('now')
+                    updated_at=datetime('now'),
+                    last_access_at=datetime('now')
             """, (session_id, user_id, json.dumps(messages, ensure_ascii=False),
                   token_count, platform, project, profile))
             self._conn.commit()
@@ -733,11 +834,12 @@ class SqliteStore:
             self._conn.execute("""
                 INSERT INTO knowledge_memory (id, domain, content, metadata, trust_score,
                     entry_type, prerequisites, output_template, user_id, project, profile,
-                    session_id, session_title, tags, language, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+                    session_id, session_title, tags, language, updated_at, last_access_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
                 ON CONFLICT(id) DO UPDATE SET
                     content=excluded.content, metadata=excluded.metadata,
-                    trust_score=excluded.trust_score, updated_at=datetime('now')
+                    trust_score=excluded.trust_score, updated_at=datetime('now'),
+                    last_access_at=datetime('now')
             """, (knowledge_id, domain, content, json.dumps(metadata or {}), trust_score,
                   entry_type, json.dumps(prerequisites or []), output_template,
                   user_id, project, profile, session_id, session_title,
@@ -757,14 +859,15 @@ class SqliteStore:
             self._conn.execute("""
                 INSERT INTO research_papers (id, title, authors, year, journal,
                     abstract, keywords, domain, paper_type, key_points,
-                    importance_score, metadata, project, profile, user_id)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    importance_score, metadata, project, profile, user_id, last_access_at)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'))
                 ON CONFLICT(id) DO UPDATE SET
                     title=excluded.title, authors=excluded.authors, year=excluded.year,
                     journal=excluded.journal, abstract=excluded.abstract,
                     keywords=excluded.keywords, domain=excluded.domain,
                     paper_type=excluded.paper_type, key_points=excluded.key_points,
-                    importance_score=excluded.importance_score
+                    importance_score=excluded.importance_score,
+                    last_access_at=datetime('now')
             """, (paper_id, title, json.dumps(authors or []), year, journal, abstract,
                   json.dumps(keywords or []), domain, paper_type, json.dumps(key_points or []),
                   importance_score, json.dumps(metadata or {}), project, profile, user_id))
@@ -821,13 +924,13 @@ class SqliteStore:
                     UPDATE user_memory SET preferences = json_set(
                         CASE WHEN json_type(preferences) IS NULL THEN '{}' ELSE preferences END,
                         '$.rl_weights', json(?)
-                    ), last_updated = datetime('now')
+                    ), last_updated = datetime('now'), last_access_at = datetime('now')
                     WHERE user_id = ? AND profile = ?
                 """, (json.dumps(weights), user_id, profile))
             else:
                 self._conn.execute("""
-                    INSERT INTO user_memory (user_id, preferences, profile, last_updated)
-                    VALUES (?, json_object('rl_weights', json(?)), ?, datetime('now'))
+                    INSERT INTO user_memory (user_id, preferences, profile, last_updated, last_access_at)
+                    VALUES (?, json_object('rl_weights', json(?)), ?, datetime('now'), datetime('now'))
                 """, (user_id, json.dumps(weights), profile))
             self._conn.commit()
 
@@ -877,6 +980,19 @@ class SqliteStore:
                 WHERE session_id=?
             """, (summary, json.dumps(key_decisions or []), session_id))
             self._conn.commit()
+
+    @_require_conn
+    def _get_recent_session_count(self, user_id: str, days: int = 7) -> int:
+        """Count distinct sessions for a user in the last N days."""
+        try:
+            cursor = self._conn.execute(
+                "SELECT COUNT(DISTINCT session_id) FROM session_transcripts "
+                "WHERE user_id=? AND created_at >= datetime('now', ?)",
+                (user_id, f"-{days} days")
+            )
+            return cursor.fetchone()[0]
+        except Exception:
+            return 0
 
     @_require_conn
     def search_transcripts(self, query: str, user_id: str = None,
@@ -955,6 +1071,102 @@ class SqliteStore:
                     continue
             rec["content"] = rec.get("title", "")
         return records
+
+    # ── Delete operations ──────────────────────────────────
+
+    MEMORY_TABLES = {
+        "user": "user_memory",
+        "task": "task_memory",
+        "experience": "experience_memory",
+        "context": "context_memory",
+        "knowledge": "knowledge_memory",
+        "paper": "research_papers",
+        "note": "research_notes",
+        "reflection": "reflections",
+        "transcript": "session_transcripts",
+    }
+
+    @with_retry_on_busy()
+    @_require_conn
+    def delete_memory(self, memory_type: str, memory_id: str) -> bool:
+        """Delete a single memory record by type and ID."""
+        table = self.MEMORY_TABLES.get(memory_type)
+        if not table:
+            raise ValueError(f"Unknown memory type: {memory_type}")
+        id_col = "id"
+        if memory_type == "context":
+            id_col = "session_id"
+        elif memory_type == "transcript":
+            id_col = "session_id"
+        with self._lock:
+            cursor = self._conn.execute(
+                f"DELETE FROM {table} WHERE {id_col}=?", (memory_id,)
+            )
+            self._conn.commit()
+            return cursor.rowcount > 0
+
+    @with_retry_on_busy()
+    @_require_conn
+    def delete_user_memories(self, user_id: str, profile: str = None) -> Dict[str, int]:
+        """Delete all memory records for a user. Returns counts per table."""
+        results = {}
+        with self._lock:
+            for key, table in self.MEMORY_TABLES.items():
+                if profile:
+                    cursor = self._conn.execute(
+                        f"DELETE FROM {table} WHERE user_id=? AND profile=?",
+                        (user_id, profile),
+                    )
+                else:
+                    cursor = self._conn.execute(
+                        f"DELETE FROM {table} WHERE user_id=?", (user_id,)
+                    )
+                results[key] = cursor.rowcount
+            self._conn.commit()
+        return results
+
+    @_require_conn
+    def delete_expired(self, ttl_config: Dict[str, int]) -> Dict[str, int]:
+        """Delete records older than TTL per type. Returns counts per table.
+
+        Uses last_access_at if available, falls back to updated_at/created_at
+        for legacy records created before the last_access_at field was added.
+        """
+        # Fallback timestamp columns per table (for records with empty last_access_at)
+        _FALLBACK_TS = {
+            "user_memory": "last_updated",
+            "task_memory": "updated_at",
+            "context_memory": "updated_at",
+            "knowledge_memory": "updated_at",
+            "research_papers": "created_at",
+            "experience_memory": "",  # No timestamp column — skip legacy records
+        }
+        results = {}
+        with self._lock:
+            for key, days in ttl_config.items():
+                if days <= 0:
+                    continue
+                table = self.MEMORY_TABLES.get(key)
+                if not table:
+                    continue
+                fallback = _FALLBACK_TS.get(table, "")
+                if fallback:
+                    cursor = self._conn.execute(
+                        f"DELETE FROM {table} WHERE "
+                        f"(CASE WHEN last_access_at = '' THEN {fallback} ELSE last_access_at END) "
+                        f"< datetime('now', ?)",
+                        (f"-{days} days",),
+                    )
+                else:
+                    # No fallback column — only delete records with a valid last_access_at
+                    cursor = self._conn.execute(
+                        f"DELETE FROM {table} WHERE last_access_at != '' AND "
+                        f"last_access_at < datetime('now', ?)",
+                        (f"-{days} days",),
+                    )
+                results[key] = cursor.rowcount
+            self._conn.commit()
+        return results
 
     def close(self):
         if self._conn:

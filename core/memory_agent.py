@@ -55,9 +55,11 @@ class MainMemoryAgent:
     _SCORE_COMPLETED_MULT = 0.9
     _SCORE_RECENCY_DECAY_DAYS = 30
     _SCORE_RESEARCH_IMPORTANCE_WEIGHT = 0.3
+    _DECAY_HALF_LIFE = 69  # days — freshness = 2^(-days / half_life)
+    _FRESHNESS_ARCHIVE_THRESHOLD = 0.1  # auto-exclude below this
 
     def __init__(self, db_path: str = None, config_manager=None):
-        self.context_agent = ContextMemoryAgent()
+        self.context_agent = ContextMemoryAgent(max_sessions=5)
         self.task_agent = TaskMemoryAgent()
         self.user_agent = UserMemoryAgent()
         self.knowledge_agent = KnowledgeMemoryAgent()
@@ -89,10 +91,11 @@ class MainMemoryAgent:
 
     def enable_persistence(self):
         if self._persistence_enabled:
-            return  # Avoid duplicate connection creation (security fix v1.2.0)
+            return
         self.db.connect()
         self.db.ensure_tables()
         self._persistence_enabled = True
+        self.context_agent.bind_store(self.db)
         self._load_from_db()  # Load history on startup
         logger.info("SQLite persistence enabled (7 tables, 6 memory types loaded)")
 
@@ -145,12 +148,13 @@ class MainMemoryAgent:
             self.experience_agent._summary_index[int(hashlib.md5(f"{exp.user_id}:{exp.summary}".encode()).hexdigest(), 16) % (2**63 - 1)] = e.get("id","")
             loaded["experiences"] += 1
 
-        # 4. Context memory（Restore most recent session）
+        # 4. Context memory（Restore with session isolation）
         for c in all_data.get("contexts", []):
+            session_id = c.get("session_id", "")
             messages = c.get("messages", [])
             for msg in messages:
                 if isinstance(msg, dict) and "role" in msg:
-                    self.context_agent.add_message(msg)
+                    self.context_agent.add_message(msg, session_id=session_id)
             loaded["contexts"] += 1
 
         # 5. Knowledge memory
@@ -454,6 +458,10 @@ class MainMemoryAgent:
         confidence = (sum(m.importance for m in top_memories)
                       / max(len(top_memories), 1))
 
+        # Update last_access_at for retrieved records so freshness reflects true access time
+        if self._persistence_enabled:
+            self._update_last_access_for_retrieved(retrieved, user_id)
+
         return {
             "working_memory": top_memories,
             "raw_memory_sources": retrieved,
@@ -476,9 +484,12 @@ class MainMemoryAgent:
         for source, memories in retrieved.items():
             if source == "user":
                 user_mem = memories
-                score = self._SCORE_USER_BASE
+                f = self._freshness(user_mem)
+                score = self._SCORE_USER_BASE * f
                 if user_mem.get("preferences", {}).get("response_style") == "concise":
                     score += self._SCORE_USER_PREF_BOOST * weights["explicit_feedback"]
+                if f < self._FRESHNESS_ARCHIVE_THRESHOLD:
+                    continue
                 scored.append(MemoryRecord(
                     source=source,
                     content=f"User preferences: {json.dumps(user_mem.get('preferences', {}), ensure_ascii=False)}",
@@ -500,16 +511,9 @@ class MainMemoryAgent:
                         age = (datetime.now(timezone.utc) - datetime.fromisoformat(mem["metadata"]["last_updated"])).days
                         recency = max(0, 1 - age / self._SCORE_RECENCY_DECAY_DAYS)
                     trust = mem["metadata"].get("trust_score", 0.5)
-                    # Freshness decay: older knowledge entries fade
-                    created = mem.get("created_at") or mem["metadata"].get("created_at", "")
-                    freshness = 1.0
-                    if created:
-                        try:
-                            age_days = (datetime.now(timezone.utc) - datetime.fromisoformat(created)).days
-                            half_life = mem["metadata"].get("half_life_days", 90)
-                            freshness = 0.5 ** (age_days / max(half_life, 1))
-                        except Exception:
-                            logger.debug("Failed to calculate freshness score")
+                    freshness = self._freshness(mem)
+                    if freshness < self._FRESHNESS_ARCHIVE_THRESHOLD:
+                        continue
                     # Domain boost: same-domain memories get +0.1
                     mem_domain = mem["metadata"].get("domain") or mem["metadata"].get("category", "")
                     domain_boost = self._SCORE_DOMAIN_BOOST if (research_domain != "general" and mem_domain == research_domain) else 0
@@ -518,9 +522,11 @@ class MainMemoryAgent:
 
             elif source == "experience":
                 for mem in memories:
+                    freshness = self._freshness(mem)
+                    if freshness < self._FRESHNESS_ARCHIVE_THRESHOLD:
+                        continue
                     recency_mult = self.cfg.get("retrieval", "recency_multiplier", 0.5)
-                    score = self._SCORE_EXPERIENCE_BASE * weights["relevance"] + mem["frequency"] * weights["frequency"] + recency_mult * weights["recency"]
-                    # task status weighting
+                    score = (self._SCORE_EXPERIENCE_BASE * weights["relevance"] + mem["frequency"] * weights["frequency"] + recency_mult * weights["recency"]) * freshness
                     task_status = mem.get("metadata", {}).get("task_status", "")
                     if task_status == "failed": score *= self._SCORE_FAILED_MULT
                     elif task_status == "completed": score *= self._SCORE_COMPLETED_MULT
@@ -535,17 +541,23 @@ class MainMemoryAgent:
 
             elif source == "task_history":
                 for mem in memories:
+                    freshness = self._freshness(mem)
+                    if freshness < self._FRESHNESS_ARCHIVE_THRESHOLD:
+                        continue
                     scored.append(MemoryRecord(
                         source=source,
                         content=f"Previous task: {mem['title']} ({mem['status']})",
-                        importance=self._SCORE_TASK_HISTORY, metadata=mem,
+                        importance=self._SCORE_TASK_HISTORY * (0.5 + 0.5 * freshness), metadata=mem,
                     ))
 
             elif source == "research":
                 for mem in memories:
+                    freshness = self._freshness(mem)
+                    if freshness < self._FRESHNESS_ARCHIVE_THRESHOLD:
+                        continue
                     mem_paper_domain = mem.get("domain", "")
                     research_domain_boost = self._SCORE_RESEARCH_DOMAIN_BOOST if (research_domain != "general" and mem_paper_domain == research_domain) else 0
-                    score = mem["relevance"] * weights["relevance"] + mem["importance_score"] * self._SCORE_RESEARCH_IMPORTANCE_WEIGHT + research_domain_boost
+                    score = (mem["relevance"] * weights["relevance"] + mem["importance_score"] * self._SCORE_RESEARCH_IMPORTANCE_WEIGHT + research_domain_boost) * freshness
                     key_points_str = "; ".join(mem.get("key_points", [])[:3])
                     scored.append(MemoryRecord(
                         source=source,
@@ -555,16 +567,18 @@ class MainMemoryAgent:
 
             elif source == "context":
                 for ctx in memories:
+                    freshness = self._freshness(ctx)
+                    if freshness < self._FRESHNESS_ARCHIVE_THRESHOLD:
+                        continue
                     messages = ctx.get("messages", [])
                     if not messages:
                         continue
-                    # Preserve full message structure — content is JSON array
                     ctx_platform = ctx.get("platform", "")
                     platform_mult = 1.0 if (not platform or ctx_platform == platform) else self._SCORE_CROSS_PLATFORM_MULT
                     scored.append(MemoryRecord(
                         source="context",
                         content=json.dumps(messages, ensure_ascii=False),
-                        importance=round(self._SCORE_CONTEXT_BASE * platform_mult, 3),
+                        importance=round(self._SCORE_CONTEXT_BASE * platform_mult * (0.5 + 0.5 * freshness), 3),
                         metadata={
                             "session_id": ctx.get("session_id", ""),
                             "platform": ctx_platform,
@@ -574,6 +588,71 @@ class MainMemoryAgent:
                     ))
 
         return scored
+
+    def _freshness(self, record: Dict[str, Any]) -> float:
+        """Compute Ebbinghaus forgetting curve freshness.
+
+        freshness = 2^(-days_since_last_access / half_life)
+        Tries: last_access_at → created_at → last_updated.
+        Returns 1.0 if no date available.
+        """
+        date_str = (
+            record.get("last_access_at") or
+            record.get("metadata", {}).get("last_access_at", "") or
+            record.get("created_at") or
+            record.get("metadata", {}).get("created_at", "") or
+            record.get("last_updated") or
+            record.get("metadata", {}).get("last_updated", "")
+        )
+        if not date_str or date_str == "":
+            return 1.0
+        try:
+            days = (datetime.now(timezone.utc) - datetime.fromisoformat(date_str)).days
+            if days < 0:
+                return 1.0
+            half_life = self.cfg.get("retrieval", "decay_half_life", default=self._DECAY_HALF_LIFE)
+            return 2.0 ** (-days / max(half_life, 1))
+        except (ValueError, TypeError):
+            return 1.0
+
+    def _update_last_access_for_retrieved(self, retrieved: Dict[str, Any], user_id: str):
+        """Update last_access_at timestamps for records that were just retrieved."""
+        if not self._persistence_enabled or not self.db._conn:
+            return
+        now = datetime.now(timezone.utc).isoformat()
+        for source, records in retrieved.items():
+            if source == "user":
+                continue  # user memory has no row-level last_access_at
+            if not isinstance(records, list):
+                continue
+            for rec in records:
+                rec_id = rec.get("id") or rec.get("session_id") or ""
+                if not rec_id:
+                    continue
+                table_map = {
+                    "knowledge": "knowledge_memory",
+                    "experience": "experience_memory",
+                    "task_history": "task_memory",
+                    "context": "context_memory",
+                    "research": "research_papers",
+                }
+                table = table_map.get(source)
+                if not table:
+                    continue
+                id_col = "id"
+                if source == "context":
+                    id_col = "session_id"
+                try:
+                    self.db._conn.execute(
+                        f"UPDATE {table} SET last_access_at=? WHERE {id_col}=?",
+                        (now, rec_id),
+                    )
+                except Exception:
+                    pass
+        try:
+            self.db._conn.commit()
+        except Exception:
+            pass
 
     def search_transcripts(self, query: str, user_id: str = None,
                            project: str = None, limit: int = 5):
@@ -586,7 +665,7 @@ class MainMemoryAgent:
               task_status: str, success: bool = False, experience_summary: str = None,
               platform: str = None, title: str = None,
               project: str = "default", session_id: str = "",
-              profile: str = "default") -> bool:
+              profile: str = "default", correction: bool = False) -> bool:
         """
         Store a task interaction and update all memory layers.
         """
@@ -597,61 +676,77 @@ class MainMemoryAgent:
                 if msg.get("role") == "user" and not session_title:
                     content = msg.get("content", "")
                     session_title = f"{datetime.now(timezone.utc).strftime('%m%d-%H%M')}_{content[:120]}"
-                self.context_agent.add_message(msg)
+                self.context_agent.add_message(msg, session_id=session_id)
+            # Note: add_message above is intentionally outside the DB transaction below.
+            # In-memory context is the primary state; DB persistence is secondary.
             self.task_agent.create_task(user_id=user_id, task_id=task_id,
                                         title=title or session_title or "auto-task",
                                         steps=[{"step": "Initialize", "status": task_status}],
                                         profile=profile)
             task_tags = self._extract_task_tags(context) if hasattr(self, '_extract_task_tags') else []
             self._infer_user_preferences(context, user_id, platform=platform, profile=profile)
+            self._infer_habits(user_id, context, profile=profile)
 
             # Extract task features（Shared by persistence and experience store）
             features = self._extract_task_features(
                 " ".join(m.get("content","") for m in context if m.get("role")=="user"))
+            self._update_user_history(user_id, project, platform, profile=profile)
 
             if self._persistence_enabled:
                 lang = features.get("language", "en")
                 user_data = self.user_agent.get(user_id, platform=platform, profile=profile)
-                self.db.save_user(user_id,
-                    preferences=user_data.get("preferences", {}),
-                    habits=user_data.get("habits", {}),
-                    history=user_data.get("history", []),
-                    platform=platform,
-                    profile=profile)
-                self.db.save_task(user_id, task_id, title or "auto-task", task_status,
-                                  steps=[{"step": "Initialize", "status": task_status}],
-                                  project=project, session_id=session_id or "",
-                                  session_title=session_title, tags=task_tags,
-                                  profile=profile, language=lang)
-                # Save context memory (with platform tags)
-                all_text = "".join(m.get("content", "") for m in context)
-                chinese_chars = len(re.findall(r'[\u4e00-\u9fff]', all_text))
-                token_est = int(chinese_chars * 1.5 + (len(all_text) - chinese_chars) / 4)
-                self.db.save_context(
-                    session_id=f"{user_id}:{task_id}",
-                    user_id=user_id,
-                    messages=context,
-                    token_count=token_est,
-                    platform=platform or "default",
-                    project=project,
-                    profile=profile)
-                # Save knowledge entry when there's substantive assistant content
-                research_domain = features.get("research_domain", "general")
-                best_content = ""
-                for msg in context:
-                    if msg.get("role") == "assistant":
-                        c = msg.get("content", "")
-                        if len(c) > len(best_content):
-                            best_content = c
-                knowledge_content = best_content[:2000] if best_content else (experience_summary or "Auto-extracted knowledge")
-                if knowledge_content and knowledge_content != "Auto-extracted knowledge":
-                    # Dedup check BEFORE DB write
-                    existing_kb = None
-                    if self._persistence_enabled:
+                # Prepare experience data for the transaction
+                exp_data = None
+                if success or experience_summary:
+                    steps_from_context = [m["content"] for m in context if m["role"] != "system"]
+                    best_reply = ""
+                    for msg in context:
+                        if msg.get("role") == "assistant":
+                            c = msg.get("content", "")
+                            if len(c) > len(best_reply):
+                                best_reply = c
+                    exp_summary = experience_summary or best_reply[:200] or "System-generated experience summary"
+                    exp_type = features.get("task_type", "general")
+                    exp_data = {
+                        "steps": steps_from_context,
+                        "summary": exp_summary,
+                        "task_type": exp_type,
+                    }
+
+                with self.db.transaction():
+                    self.db.save_user(user_id,
+                        preferences=user_data.get("preferences", {}),
+                        habits=user_data.get("habits", {}),
+                        history=user_data.get("history", []),
+                        platform=platform,
+                        profile=profile)
+                    self.db.save_task(user_id, task_id, title or "auto-task", task_status,
+                                      steps=[{"step": "Initialize", "status": task_status}],
+                                      project=project, session_id=session_id or "",
+                                      session_title=session_title, tags=task_tags,
+                                      profile=profile, language=lang)
+                    all_text = "".join(m.get("content", "") for m in context)
+                    chinese_chars = len(re.findall(r'[\u4e00-\u9fff]', all_text))
+                    token_est = int(chinese_chars * 1.5 + (len(all_text) - chinese_chars) / 4)
+                    self.db.save_context(
+                        session_id=f"{user_id}:{task_id}",
+                        user_id=user_id,
+                        messages=context,
+                        token_count=token_est,
+                        platform=platform or "default",
+                        project=project,
+                        profile=profile)
+                    research_domain = features.get("research_domain", "general")
+                    best_content = ""
+                    for msg in context:
+                        if msg.get("role") == "assistant":
+                            c = msg.get("content", "")
+                            if len(c) > len(best_content):
+                                best_content = c
+                    knowledge_content = best_content[:2000] if best_content else (experience_summary or "Auto-extracted knowledge")
+                    if knowledge_content and knowledge_content != "Auto-extracted knowledge":
                         existing_kb = self.db.search_knowledge_by_content(knowledge_content)
-                    if not existing_kb:
-                        # Write to DB first, then add to memory
-                        if self._persistence_enabled:
+                        if not existing_kb:
                             self.db.save_knowledge(
                                 knowledge_id=f"{user_id}:{task_id}",
                                 domain=research_domain,
@@ -663,17 +758,35 @@ class MainMemoryAgent:
                                 profile=profile,
                                 user_id=user_id,
                                 language=lang)
-                        self.knowledge_agent.add_document(knowledge_content, {
-                            "source": "task", "task_id": task_id,
-                            "user_id": user_id, "domain": research_domain,
-                            "project": project, "session_id": session_id or "",
-                            "session_title": session_title, "tags": task_tags,
-                            "category": research_domain,
-                        })
+                            self.knowledge_agent.add_document(knowledge_content, {
+                                "source": "task", "task_id": task_id,
+                                "user_id": user_id, "domain": research_domain,
+                                "project": project, "session_id": session_id or "",
+                                "session_title": session_title, "tags": task_tags,
+                                "category": research_domain,
+                            })
+                    if exp_data:
+                        self.db.save_experience(user_id, exp_data["task_type"], success,
+                                     exp_data["steps"],
+                                     exp_data["summary"],
+                                     project=project,
+                                     session_id=session_id or "",
+                                     session_title=session_title, tags=task_tags,
+                                     profile=profile, language=lang)
 
-            if success or experience_summary:
+            # Store experience to in-memory agent (both persistence and non-persistence paths)
+            if self._persistence_enabled:
+                if exp_data:
+                    self.experience_agent.store_experience(
+                        task_id=task_id, success=success, steps=exp_data["steps"],
+                        summary=exp_data["summary"],
+                        user_id=user_id, task_type=exp_data["task_type"],
+                        project=project, session_id=session_id or "",
+                        session_title=session_title, tags=task_tags,
+                        profile=profile,
+                    )
+            elif success or experience_summary:
                 steps_from_context = [m["content"] for m in context if m["role"] != "system"]
-                # Extract best assistant reply as fallback summary
                 best_reply = ""
                 for msg in context:
                     if msg.get("role") == "assistant":
@@ -682,15 +795,6 @@ class MainMemoryAgent:
                             best_reply = c
                 exp_summary = experience_summary or best_reply[:200] or "System-generated experience summary"
                 exp_type = features.get("task_type", "general")
-                # DB first: if save fails, memory stays clean
-                if self._persistence_enabled:
-                    self.db.save_experience(user_id, exp_type, success,
-                                 steps_from_context,
-                                 exp_summary,
-                                 project=project,
-                                 session_id=session_id or "",
-                                 session_title=session_title, tags=task_tags,
-                                 profile=profile, language=lang)
                 self.experience_agent.store_experience(
                     task_id=task_id, success=success, steps=steps_from_context,
                     summary=exp_summary,
@@ -700,7 +804,15 @@ class MainMemoryAgent:
                     profile=profile,
                 )
 
-            self._store_handle_reflection_trigger(user_id, platform)
+            # O-3/O-4: Correction triggers immediate reflection; use adaptive batch otherwise
+            if correction:
+                logger.info("Correction detected — triggering immediate reflection")
+                self._pending_reflection = True
+                self._store_count.pop(user_id, None)
+                if platform != "hermes":
+                    self._trigger_auto_reflection(user_id)
+            else:
+                self._store_handle_reflection_trigger(user_id, platform)
             return True
 
         except Exception as e:
@@ -714,20 +826,47 @@ class MainMemoryAgent:
         return []
 
     def _store_handle_reflection_trigger(self, user_id: str, platform: str):
-        """Extracted from store(): handle reflection scheduling."""
+        """Extracted from store(): handle reflection scheduling with adaptive batch."""
         if not self._persistence_enabled:
             return
         with self._store_lock:
             self._store_count[user_id] = self._store_count.get(user_id, 0) + 1
-            batch_size = self.reflective.config.get("batch_size", 8)
-            if isinstance(batch_size, (list, tuple)):
-                batch_size = int(random.uniform(batch_size[0], batch_size[1]))
+            batch_size = self._get_adaptive_batch(user_id)
             if self._store_count[user_id] >= batch_size:
                 del self._store_count[user_id]
                 if platform == "hermes":
                     self._pending_reflection = True
                 else:
                     self._trigger_auto_reflection(user_id)
+
+    def _get_adaptive_batch(self, user_id: str) -> int:
+        """Compute adaptive reflection batch size based on user activity.
+
+        Low-frequency users (<10 sessions/week) → smaller batch (6) so they
+        still trigger reflection. High-frequency users (50+) → larger batch
+        (up to 20) to avoid excessive reflection calls.
+
+        Formula: adaptive = clamp(7 * ln(sessions_last_7d + 1), 6, 20)
+        """
+        try:
+            config_batch = self.reflective.config.get("batch_size", 8)
+            # If config gives a single integer, use it directly (non-adaptive mode)
+            if isinstance(config_batch, (int, float)) and not isinstance(config_batch, bool):
+                return int(config_batch)
+            if isinstance(config_batch, (list, tuple)):
+                return int(random.uniform(config_batch[0], config_batch[1]))
+        except Exception:
+            pass
+        # Adaptive calculation
+        import math
+        sessions = 0
+        if self._persistence_enabled:
+            try:
+                sessions = self.db._get_recent_session_count(user_id, days=7)
+            except (AttributeError, Exception):
+                pass
+        adaptive = int(max(6, min(20, 7 * math.log(max(sessions, 0) + 1))))
+        return adaptive
 
     def add_research_paper(self, title: str, authors: List[str] = None, year: int = None,
                            journal: str = None, abstract: str = "", keywords: List[str] = None,
@@ -768,7 +907,11 @@ class MainMemoryAgent:
         return note_id
 
     def _infer_user_preferences(self, context, user_id, platform=None, profile="default"):
-        """Infer user preferences from conversation, adaptive to language."""
+        """Infer user preferences from conversation, adaptive to language.
+
+        Supports 6 preference categories loaded from config:
+        code_style, response_style, platform, language, depth, tone.
+        """
         prefs = self.user_agent.get(user_id, profile=profile).get("preferences", {})
         infer_cfg = self.cfg.get_section("inference")
         min_occ = infer_cfg.get("min_occurrence", 2)
@@ -776,25 +919,98 @@ class MainMemoryAgent:
         all_content = " ".join(m.get("content", "") for m in context)
         lang = detect_language(all_content)
         inf_kw = get_inference_keywords(lang)
-
         default_infer = infer_cfg.get("keywords", {})
-        concise_kw = inf_kw.get("concise_response",
-                                default_infer.get("concise_response", ["brief", "concise"]))
-        detailed_kw = inf_kw.get("detailed_type",
-                                 default_infer.get("detailed_type", ["type hint", "Optional[str]"]))
-        concise_code_kw = inf_kw.get("concise_code",
-                                     default_infer.get("concise_code", ["concise", "no comments"]))
+
+        # Define all 6 preference types with keyword sources
+        pref_defs = {
+            "response_style": {
+                "concise": inf_kw.get("concise_response",
+                    default_infer.get("concise_response", ["brief", "concise", "简短", "简洁"])),
+                "detailed": inf_kw.get("detailed_type",
+                    default_infer.get("detailed_type", ["type hint", "detailed", "Optional[str]"])),
+            },
+            "code_style": {
+                "detailed": inf_kw.get("detailed_type",
+                    default_infer.get("detailed_type", ["type hint", "Optional[str]"])),
+                "concise": inf_kw.get("concise_code",
+                    default_infer.get("concise_code", ["concise", "no comments", "简洁", "不要注释"])),
+                "functional": inf_kw.get("functional_code",
+                    default_infer.get("functional_code", ["lambda", "map", "filter", "comprehension"])),
+            },
+            "platform": {
+                "python": inf_kw.get("platform_python",
+                    default_infer.get("platform_python", ["python", "pip", "pandas", "numpy"])),
+                "node": inf_kw.get("platform_node",
+                    default_infer.get("platform_node", ["node", "npm", "yarn", "javascript", "typescript"])),
+                "docker": inf_kw.get("platform_docker",
+                    default_infer.get("platform_docker", ["docker", "dockerfile", "container"])),
+            },
+            "language": {
+                "zh": inf_kw.get("lang_zh",
+                    default_infer.get("lang_zh", ["python", "中文", "汉语"])),
+                "en": inf_kw.get("lang_en",
+                    default_infer.get("lang_en", ["python", "english"])),
+            },
+            "depth": {
+                "beginner": inf_kw.get("depth_beginner",
+                    default_infer.get("depth_beginner", ["beginner", "new to", "入门", "新手"])),
+                "advanced": inf_kw.get("depth_advanced",
+                    default_infer.get("depth_advanced", ["advanced", "expert", "深入", "高级", "profiling"])),
+            },
+            "tone": {
+                "formal": inf_kw.get("tone_formal",
+                    default_infer.get("tone_formal", ["formal", "official", "严谨", "规范"])),
+                "casual": inf_kw.get("tone_casual",
+                    default_infer.get("tone_casual", ["casual", "friendly", "随意", "简单"])),
+            },
+        }
 
         new_prefs = {}
-        concise_count = sum(all_content.count(kw) for kw in concise_kw)
-        if concise_count >= min_occ:
-            new_prefs["response_style"] = "concise"
-        if any(kw in all_content for kw in detailed_kw):
-            new_prefs["code_style"] = "detailed"
-        elif any(kw in all_content for kw in concise_code_kw):
-            new_prefs["code_style"] = "concise"
+        for pref_name, options in pref_defs.items():
+            for value, keywords in options.items():
+                if any(kw in all_content for kw in keywords):
+                    count = sum(all_content.count(kw) for kw in keywords)
+                    if count >= min_occ:
+                        new_prefs[pref_name] = value
+                        break
+
         if new_prefs:
             self.user_agent.update(user_id, "preferences", new_prefs, source="implicit", platform=platform, profile=profile)
+
+    def _infer_habits(self, user_id, context, profile="default"):
+        """Analyze conversation to build user habits."""
+        all_content = " ".join(m.get("content", "") for m in context)
+        habits = {}
+        # Detect session time patterns
+        hour = datetime.now(timezone.utc).hour
+        if hour < 6:
+            habits["active_time"] = "early_morning"
+        elif hour < 12:
+            habits["active_time"] = "morning"
+        elif hour < 18:
+            habits["active_time"] = "afternoon"
+        else:
+            habits["active_time"] = "evening"
+        # Detect code language usage
+        for kw, lang_name in [("python", "python"), ("javascript", "javascript"),
+                              ("typescript", "typescript"), ("rust", "rust"),
+                              ("golang", "go"), ("java", "java")]:
+            if kw in all_content.lower():
+                habits["frequent_language"] = lang_name
+                break
+        self.user_agent.update(user_id, "habits", habits, source="implicit", profile=profile)
+
+    def _update_user_history(self, user_id, project, platform, profile="default"):
+        """Record last project and platform in user history."""
+        user = self.user_agent.get(user_id, profile=profile)
+        history = user.get("history", [])
+        entry = {"project": project, "platform": platform or "default",
+                 "timestamp": datetime.now(timezone.utc).isoformat()}
+        history.append(entry)
+        max_history = self.cfg.get("user", "max_history_size", default=20)
+        if len(history) > max_history:
+            history = history[-max_history:]
+        self.user_agent.update(user_id, "history", history, source="implicit", profile=profile)
 
     def record_feedback(self, user_id: str, task_id: str, feedback: str,
                         retrieved_memories: List[Dict], profile: str = "default"):

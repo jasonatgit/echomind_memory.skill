@@ -30,11 +30,11 @@ def _startup_check():
         try:
             db.ensure_tables()
             row_count = db._conn.execute("SELECT count(*) FROM user_memory").fetchone()[0]
-            print(f"🧠 EchoMind v{__version__} — 记忆存储正常 ({row_count} 条用户记忆)")
+            print(f"🧠 EchoMind Memory 记忆存储正常")
         finally:
             if hasattr(db, '_conn') and db._conn:
                 db.close()
     except Exception as e:
-        print(f"⚠️  EchoMind v{__version__} — 记忆存储异常: {e}")
+        print(f"⚠️  EchoMind Memory 记忆存储异常: {e}")
 
 _startup_check()
