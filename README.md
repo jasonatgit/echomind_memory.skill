@@ -27,7 +27,7 @@
 
 ---
 
-## EchoMind's 11 Core Capabilities
+## EchoMind's Core Capabilities
 
 | Capability | Description |
 |------|------|
@@ -88,16 +88,16 @@ When a query involves the following *domain keywords* or related *semantics*, th
 | Feature | Description |
 |------|------|
 | **MCP stdio Gateway** | 7 native Claude Code tools (retrieve/store/search/feedback/reflect/delete/health) via stdio JSON-RPC |
-| **Ebbinghaus Forgetting Curve** | Freshness-based memory scoring — `freshness = 2^(-days/half_life)` across all 6 memory types, auto-excludes stale records |
+| **Ebbinghaus Forgetting Curve** | Freshness-based memory scoring across all 6 memory types, auto-excludes stale records |
 | **Memory Delete API** | DELETE endpoints for individual records, full user data, and TTL-based cleanup |
 | **Session-Isolated Context** | Each session_id gets an independent context window with LRU eviction (up to 5 active sessions) |
-| **Session Message Archive** | Evicted session messages preserved in `context_archive` table |
+| **Session Message Archive** | Evicted session messages preserved in data table |
 | **User Correction Detection** | zh/en keyword matching for correction signals triggers immediate reflection |
 | **6-Category Preference Inference** | code_style, response_style, platform, language, depth, tone — keyword-driven from config |
-| **Adaptive Reflection Batch** | `clamp(7*ln(sessions+1), 6, 20)` based on weekly user activity |
+| **Adaptive Reflection Batch** |  based on weekly user activity |
 | **RL Cosine Decay + Epsilon-Greedy** | Cosine learning rate decay prevents late-stage weight oscillations; epsilon-greedy exploration escapes local optima |
-| **SQLite Schema Migrations** | Structured `MIGRATIONS` list with transactional rollback — replaces ad-hoc ALTER TABLE |
-| **Atomic Batch Writes** | `store()` wraps 5 save calls in a single `BEGIN IMMEDIATE` transaction |
+| **SQLite Schema Migrations** | Structured  list with transactional rollback — replaces ad-hoc ALTER TABLE |
+| **Atomic Batch Writes** |  wraps 5 save calls in a single  transaction |
 | **Hermes Agent v0.17.0** | Full MemoryProvider compatibility including `get_config_schema()`, `backup_paths()`, and `save_config()` |
 
 
