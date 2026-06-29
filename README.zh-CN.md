@@ -306,6 +306,21 @@ hermes config set memory.provider echomind
 
 ---
 
+### Claude Code MCP 网关 (v1.2.0+)
+
+启动 HTTP 服务后（`python main.py`），注册为 Claude Code MCP 服务器：
+
+```bash
+# 注册 MCP 网关（替换路径为你的安装位置）
+claude mcp add echomind -- python ~/.hermes/skills/echomind-memory/adapters/mcp_gateway.py
+```
+
+**可用工具：** `echomind_retrieve`、`echomind_store`、`echomind_search`、`echomind_feedback`、`echomind_reflect`、`echomind_delete`、`echomind_health`
+
+**效果：** Claude Code 可直接通过原生 MCP 工具读写 EchoMind 记忆——无需 HTTP API 调用。
+
+---
+
 ### OpenClaw / OpenCode / Claude Code
 
 将 EchoMind 安装到对应框架的 skills 目录，然后启动 HTTP 服务：

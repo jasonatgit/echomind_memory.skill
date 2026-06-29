@@ -33,7 +33,7 @@
 |------|------|
 | **Self-Evolving Engine Agent** | Automatically reflects on raw memories to distill semantic knowledge and procedural rules, with zero-config LLM injection |
 | **Seven Types of Memory** | User / Task / Experience / Context / Knowledge / Research / Reflection |
-| **Ebbinghaus Forgetting Curve** | Freshness-based memory decay — `freshness = 2^(-days/half_life)`, auto-downranks stale memories |
+| **Ebbinghaus Forgetting Curve** | Freshness-based memory decay, auto-downranks stale memories |
 | **RL-Enhanced Auto-Optimization** | Automatically adjusts memory weights based on positive/negative user feedback and persists them — gets smarter with use. Cosine learning rate decay + epsilon-greedy exploration to avoid local optima |
 | **Few-Shot Anchoring** | Rapidly builds memory norms from small samples, improving memory quality |
 | **Experience Distillation & Reuse** | Previously fixed bugs / used models → auto-recommended next time |
@@ -307,6 +307,21 @@ hermes config set memory.provider echomind
 ```
 
 **Result:** Every turn auto-saved, auto-retrieved. Self-reflection auto-triggered after conversations — no additional configuration required.
+
+---
+
+### Claude Code MCP Gateway (v1.2.0+)
+
+After starting the HTTP service (`python main.py`), register EchoMind as a Claude Code MCP server:
+
+```bash
+# Register the MCP gateway (replace path with your install location)
+claude mcp add echomind -- python ~/.hermes/skills/echomind-memory/adapters/mcp_gateway.py
+```
+
+**Available tools:** `echomind_retrieve`, `echomind_store`, `echomind_search`, `echomind_feedback`, `echomind_reflect`, `echomind_delete`, `echomind_health`
+
+**Result:** Claude Code can read/write your EchoMind memories as native MCP tools — no HTTP API calls needed.
 
 ---
 

@@ -1,4 +1,4 @@
-# install.ps1 — EchoMind v1.1.6 Windows one-click install (with auto-start)
+# install.ps1 — EchoMind v1.2.0 Windows one-click install (with auto-start)
 $ErrorActionPreference = "Stop"
 $SKILL_DIR = $PSScriptRoot
 
@@ -19,7 +19,7 @@ if ($env:ECHOMIND_HOME) {
     $CONFIG_DIR = "$env:USERPROFILE\.echomind"
 }
 
-Write-Host "=== EchoMind v1.1.6 Windows Install ==="
+Write-Host "=== EchoMind v1.2.0 Windows Install ==="
 Write-Host "  Hermes home: $HERMES_DIR"
 
 # 1. Install to Hermes
@@ -87,5 +87,10 @@ if ($env:ECHOMIND_HTTP_SERVICE -eq "1") {
     Write-Host "  Restart to verify auto-start, or run now: python $PLUGIN_DIR\main.py"
 } else {
     Write-Host "  Hermes plugin runs in-process — ready to use"
+    Write-Host "  Hermes compatible: v0.13.0 ~ v0.17.0"
     Write-Host "  To enable HTTP service: `$env:ECHOMIND_HTTP_SERVICE=1; .\install.ps1"
 }
+Write-Host ""
+Write-Host "  MCP gateway for Claude Code:"
+Write-Host "    python $PLUGIN_DIR\adapters\mcp_gateway.py"
+Write-Host "  Register: claude mcp add echomind -- python $PLUGIN_DIR\adapters\mcp_gateway.py"

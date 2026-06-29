@@ -1,5 +1,5 @@
 #!/bin/bash
-# install.sh — EchoMind v1.1.6 one-click install (with auto-start)
+# install.sh — EchoMind v1.2.0 one-click install (with auto-start)
 set -e
 
 # Hermes install path detection (priority: env var > XDG > default)
@@ -17,7 +17,7 @@ INSTALL_DIR="${HERMES_HOME_DIR}/skills/echomind-memory"
 PLUGIN_DIR="${HERMES_HOME_DIR}/plugins/echomind"
 CONFIG_DIR="${HOME}/.echomind"
 
-echo "=== EchoMind v1.1.6 Install ==="
+echo "=== EchoMind v1.2.0 Install ==="
 echo "  Hermes home: ${HERMES_HOME_DIR}"
 
 # 1. Install to Hermes skill
@@ -125,8 +125,13 @@ if [ "${_AUTO_HTTP}" = "1" ]; then
     echo "  Service: systemctl --user status echomind"
 else
     echo "  Hermes plugin runs in-process — ready to use"
+    echo "  Hermes compatible: v0.13.0 ~ v0.17.0"
     echo "  To enable HTTP service: ECHOMIND_HTTP_SERVICE=1 ./install.sh"
 fi
+echo ""
+echo "  MCP gateway for Claude Code:"
+echo "    python ${INSTALL_DIR}/adapters/mcp_gateway.py"
+echo "  Register: claude mcp add echomind -- python ${INSTALL_DIR}/adapters/mcp_gateway.py"
 
 # ── Profile isolation info (v1.1.6+) ──────────────────────
 echo ""
