@@ -136,11 +136,11 @@ def _reflect_records(
     # P1-4: typed output — separate insights, preferences, rules, knowledge
     output = {
         "key_insights": keywords[:10],
-        "preferences": {},
-        "rules": [],
-        "knowledge": [],
-        "experience": [],
+        "user_preferences": [],
         "procedural_rules": [],
+        "new_knowledge": [],
+        "importance_scores": {},
+        "forget_suggestions": [],
         "confidence": 0.3,
         "source": "keyword",
     }
@@ -150,17 +150,15 @@ def _reflect_records(
                "preference", "style", "format", "language",
                "habit", "usually", "always", "never", "avoid", "不"}
     rule_kw = {"rule", "must", "should", "always", "never", "require"}
-    
+
     for kw in keywords:
         kw_lower = kw.lower()
         if any(p in kw_lower or p in kw for p in pref_kw):
-            output["preferences"][kw] = "keyword"
+            output["user_preferences"].append(kw)
         elif any(r in kw_lower or r in kw for r in rule_kw):
-            output["rules"].append(kw)
+            output["procedural_rules"].append(kw)
         else:
-            output["knowledge"].append({
-                "content": kw, "domain": "general", "source": "keyword"
-            })
+            output["new_knowledge"].append(kw)
 
     return output
 
@@ -177,11 +175,11 @@ def _process_reflection(
         # No LLM response → return empty valid result, not None
         return {
             "key_insights": [],
-            "preferences": {},
-            "rules": [],
-            "knowledge": [],
-            "experience": [],
+            "user_preferences": [],
             "procedural_rules": [],
+            "new_knowledge": [],
+            "importance_scores": {},
+            "forget_suggestions": [],
             "confidence": 0.3,
             "source": "empty",
         }

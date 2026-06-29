@@ -607,6 +607,12 @@ class MainMemoryAgent:
         if not date_str or date_str == "":
             return 1.0
         try:
+            # Normalize naive datetime string (e.g. from SQLite) to aware UTC
+            date_str = date_str.replace(" ", "T")
+            if date_str.endswith("T"):
+                date_str = date_str[:-1]
+            if "+" not in date_str and not date_str.endswith("Z") and not date_str.endswith("+00:00"):
+                date_str += "+00:00"
             days = (datetime.now(timezone.utc) - datetime.fromisoformat(date_str)).days
             if days < 0:
                 return 1.0

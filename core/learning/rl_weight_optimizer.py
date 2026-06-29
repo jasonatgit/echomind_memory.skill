@@ -28,8 +28,8 @@ class RLWeightOptimizer:
     }
     # Define weight key order constants, eliminate hardcoded magic numbers
     _WEIGHT_KEYS = ["relevance", "recency", "frequency", "explicit_feedback", "trust_score"]
-    # state = [5 task features + 5 source ratios] = 10 维
-    _TASK_FEATURE_COUNT = 5
+    # state = [5 task features + 7 source ratios] = 12 维
+    _TASK_FEATURE_COUNT = 7
 
     def __init__(
         self,

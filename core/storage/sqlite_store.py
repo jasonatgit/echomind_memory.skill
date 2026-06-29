@@ -158,7 +158,7 @@ class SqliteStore:
         self.db_path = db_path or str(DB_PATH)
         Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
         self._conn: Optional[sqlite3.Connection] = None
-        self._lock: Optional[threading.Lock] = None
+        self._lock: Optional[threading.RLock] = None
 
     def connect(self):
         self._conn = sqlite3.connect(self.db_path, check_same_thread=False)
@@ -172,7 +172,7 @@ class SqliteStore:
         self._conn.execute("PRAGMA busy_timeout=10000")
         self._conn.execute("PRAGMA synchronous=NORMAL")
         self._conn.execute("PRAGMA foreign_keys=ON")
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         logger.info(f"Connected to SQLite: {self.db_path} (WAL + busy_timeout=10000)")
 
     def ensure_tables(self):
@@ -189,6 +189,7 @@ class SqliteStore:
                         habits TEXT DEFAULT '{}',
                         history TEXT DEFAULT '[]',
                         last_updated TEXT DEFAULT (datetime('now')),
+                        last_access_at TEXT DEFAULT '',
                         version INTEGER DEFAULT 1,
                         PRIMARY KEY (user_id, profile)
                     );
@@ -208,7 +209,8 @@ class SqliteStore:
                     tags TEXT DEFAULT '[]',
                     created_at TEXT DEFAULT (datetime('now')),
                     updated_at TEXT DEFAULT (datetime('now')),
-                    language TEXT DEFAULT ''
+                    language TEXT DEFAULT '',
+                    last_access_at TEXT DEFAULT ''
                 );
 
                 -- 3. Experience memory: success/failure experience, step sequences
@@ -226,7 +228,8 @@ class SqliteStore:
                     tags TEXT DEFAULT '[]',
                     created_at TEXT DEFAULT (datetime('now')),
                     frequency INTEGER DEFAULT 1,
-                    language TEXT DEFAULT ''
+                    language TEXT DEFAULT '',
+                    last_access_at TEXT DEFAULT ''
                 );
 
                 -- 4. Context memory: conversation context, token count, session ID、Platform source
@@ -239,7 +242,8 @@ class SqliteStore:
                     project TEXT DEFAULT 'default',
                     profile TEXT DEFAULT 'default',
                     created_at TEXT DEFAULT (datetime('now')),
-                    updated_at TEXT DEFAULT (datetime('now'))
+                    updated_at TEXT DEFAULT (datetime('now')),
+                    last_access_at TEXT DEFAULT ''
                 );
 
                 -- 5. Knowledge memory: domain knowledge, structured entries
@@ -263,7 +267,8 @@ class SqliteStore:
                     user_id TEXT DEFAULT 'default',
                     created_at TEXT DEFAULT (datetime('now')),
                     updated_at TEXT DEFAULT (datetime('now')),
-                    language TEXT DEFAULT ''
+                    language TEXT DEFAULT '',
+                    last_access_at TEXT DEFAULT ''
                 );
 
                 -- 6. Research papers: academic paper metadata
@@ -283,7 +288,8 @@ class SqliteStore:
                     project TEXT DEFAULT 'default',
                     profile TEXT DEFAULT 'default',
                     user_id TEXT DEFAULT 'default',
-                    created_at TEXT DEFAULT (datetime('now'))
+                    created_at TEXT DEFAULT (datetime('now')),
+                    last_access_at TEXT DEFAULT ''
                 );
 
                 -- 7. Research notes: paper reading notes, research leads

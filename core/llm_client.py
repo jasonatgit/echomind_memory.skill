@@ -47,8 +47,8 @@ class LLMClient:
         endpoint = config.get("endpoint", "")
         if endpoint:
             return endpoint.rstrip("/")
-        host = config.get("host", "localhost")
-        port = config.get("port", 9119)
+        host = config.get("host") or "localhost"
+        port = config.get("port") or 9119
         return f"http://{host}:{port}/v1"
 
     @staticmethod

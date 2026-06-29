@@ -306,7 +306,7 @@ async def api_get_config(auth=Depends(verify_api_key)):
             "retrieval": cfg.get_section("retrieval"),
             "inference": cfg.get_section("inference"),
             "llm": {k: v for k, v in cfg.get_section("llm").items() if k != "api_key"},
-            "server": cfg.get_section("server"),
+            "server": {k: v for k, v in cfg.get_section("server").items() if k != "api_key"},
         }
     }
 
