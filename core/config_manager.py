@@ -207,6 +207,14 @@ class ConfigManager:
         ext_sec = self._ext_params.get(section, {})
         if isinstance(ext_sec, dict):
             _deep_update(base, ext_sec)
+        # Apply runtime overrides (set via set_runtime)
+        runtime = {}
+        for kp, kv in self._runtime_overrides.items():
+            parts = kp.split(".", 1)
+            if len(parts) == 2 and parts[0] == section:
+                runtime[parts[1]] = kv
+        if runtime:
+            _deep_update(base, runtime)
         return base
 
     def set_runtime(self, key_path: str, value: Any):

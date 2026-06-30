@@ -1,4 +1,4 @@
-# EchoMind Memory — SQLite Storage Layer (9 memory types)
+﻿# EchoMind Memory — SQLite Storage Layer (9 memory types)
 # Fix: WAL Enable + write lock + threading import + datetime import
 
 import functools
@@ -429,26 +429,6 @@ class SqliteStore:
         return _TransactionContext(self._conn, self._lock)
 
 
-class _TransactionContext:
-    """Internal transaction context manager."""
-
-    def __init__(self, conn, lock):
-        self.conn = conn
-        self.lock = lock
-
-    def __enter__(self):
-        self.lock.acquire()
-        self.conn.execute("BEGIN IMMEDIATE TRANSACTION")
-        return self
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        try:
-            if exc_type is None:
-                self.conn.commit()
-            else:
-                self.conn.rollback()
-        finally:
-            self.lock.release()
 
     def _migrate_existing_tables(self):
         """Backward-compatible: add missing columns, transactional + schema_version flag
@@ -1188,8 +1168,11 @@ class _TransactionContext:
             except Exception:
                 pass
             finally:
-                if self._lock and self._lock.locked():
-                    self._lock.release()
+                if self._lock:
+                    try:
+                        self._lock.release()
+                    except RuntimeError:
+                        pass  # lock was not held (Python 3.13 RLock compat)
                 self._conn.close()
                 self._conn = None
                 self._lock = None
@@ -1229,3 +1212,25 @@ class _TransactionContext:
             else:
                 result["tables"][table] = {"has_profile": False}
         return result
+
+class _TransactionContext:
+    """Internal transaction context manager."""
+
+    def __init__(self, conn, lock):
+        self.conn = conn
+        self.lock = lock
+
+    def __enter__(self):
+        self.lock.acquire()
+        self.conn.execute("BEGIN IMMEDIATE TRANSACTION")
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        try:
+            if exc_type is None:
+                self.conn.commit()
+            else:
+                self.conn.rollback()
+        finally:
+            self.lock.release()
+

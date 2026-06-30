@@ -171,6 +171,10 @@ class EchomindMemoryProvider:
         self._agent = MainMemoryAgent()
         self._agent.enable_persistence()
 
+        # Auto-sync LLM config from Hermes config.yaml
+        # Inject as runtime overrides so user's explicit config takes priority
+        self._sync_hermes_llm_config(**kwargs)
+
         logger.info(
             f"EchoMind Memory initialized: session={session_id}, "
             f"user={self._user_id}, profile={self._profile}, "
@@ -185,6 +189,63 @@ class EchomindMemoryProvider:
                 self._agent._trigger_auto_reflection(self._user_id)
             self._agent.disable_persistence()
         logger.info("EchoMind Memory shutdown")
+
+    def _sync_hermes_llm_config(self, **kwargs):
+        """Read Hermes config.yaml and inject LLM settings as runtime overrides.
+
+        Only syncs when EchoMind's own LLM endpoint is not explicitly configured
+        (empty or set to the __HERMES_SYNCED__ marker).
+        User's explicit config always takes priority.
+        """
+        try:
+            from .config_manager import get_config_manager
+            cfg = get_config_manager()
+
+            # Skip sync if user has explicitly configured an endpoint
+            current_endpoint = cfg.get("llm", "endpoint", default="")
+            if current_endpoint and current_endpoint != "__HERMES_SYNCED__":
+                logger.debug("LLM auto-sync skipped: user-configured endpoint exists")
+                return
+
+            hermes_home = kwargs.get("hermes_home", "")
+            if not hermes_home:
+                import os
+                hermes_home = os.environ.get("HERMES_HOME", os.path.expanduser("~/.hermes"))
+            config_path = Path(hermes_home) / "config.yaml"
+            if not config_path.exists():
+                logger.debug("LLM auto-sync skipped: %s not found", config_path)
+                return
+
+            import yaml
+            with open(config_path, encoding="utf-8") as f:
+                hermes_conf = yaml.safe_load(f) or {}
+
+            model_cfg = hermes_conf.get("model", {})
+            if not isinstance(model_cfg, dict) or not model_cfg:
+                logger.debug("LLM auto-sync skipped: no model section in Hermes config")
+                return
+
+            endpoint = model_cfg.get("endpoint") or model_cfg.get("base_url", "")
+            api_key = model_cfg.get("api_key", "")
+            model_name = model_cfg.get("model") or model_cfg.get("default_model", "")
+            provider = model_cfg.get("provider", "openai_compatible")
+
+            overrides = {"llm.provider": provider}
+            if endpoint:
+                overrides["llm.endpoint"] = endpoint
+            if api_key:
+                overrides["llm.api_key"] = api_key
+            if model_name:
+                overrides["llm.default_model"] = model_name
+
+            for k, v in overrides.items():
+                cfg.set_runtime(k, v)
+
+            from .llm_client import reload_llm_client
+            reload_llm_client()
+            logger.info("LLM config synced from Hermes: provider=%s", provider)
+        except Exception as e:
+            logger.debug("LLM config auto-sync skipped: %s", e)
 
     # ═══════════════════════════════════════════════════
     # Core methods called automatically (agent_loop driven, 100% reliable)
