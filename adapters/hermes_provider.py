@@ -186,14 +186,6 @@ class EchomindMemoryProvider:
             self._agent.disable_persistence()
         logger.info("EchoMind Memory shutdown")
 
-    def get_config_schema(self):
-        """Hermes v0.13.0+ config wizard schema"""
-        return []
-
-    def save_config(self, values, hermes_home: str) -> None:
-        """Hermes v0.13.0+ save config from setup wizard"""
-        pass
-
     # ═══════════════════════════════════════════════════
     # Core methods called automatically (agent_loop driven, 100% reliable)
     # ═══════════════════════════════════════════════════
@@ -273,12 +265,12 @@ class EchomindMemoryProvider:
 
             self._detected_lang = detect_language(user_content)
 
-        # Build context message list
-        messages = []
+        # Build context message list (use local var, don't shadow function parameter)
+        ctx_messages = []
         if self._context_buffer:
-            messages.extend(self._context_buffer)
+            ctx_messages.extend(self._context_buffer)
             self._context_buffer = []
-        messages.extend(
+        ctx_messages.extend(
             [
                 {"role": "user", "content": user_content},
                 {"role": "assistant", "content": assistant_content},
@@ -292,7 +284,7 @@ class EchomindMemoryProvider:
             ok = self._agent.store(
                 user_id=self._user_id,
                 task_id=f"{session_id}:turn{self._turn_count}",
-                context=messages,
+                context=ctx_messages,
                 task_status="completed",
                 success=True,
                 platform=PLATFORM,

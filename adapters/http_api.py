@@ -20,6 +20,8 @@ from core._reflective_version import get_echomind_version
 from core.config_manager import get_config_manager
 from core.models.context import ContextMessage
 
+logger = logging.getLogger("EchoMind.API")
+
 # ── Init ──
 memory_agent = MainMemoryAgent()
 
@@ -125,7 +127,6 @@ class ReflectRequest(BaseModel):
 
 
 # ── Error handler (v1.2.0: avoid leaking internal details) ──
-logger = logging.getLogger("EchoMind.API")
 
 EXCEPTION_RESPONSE = {"status": "error", "detail": "Internal server error"}
 
@@ -165,12 +166,7 @@ async def api_retrieve(req: RetrieveRequest, auth=Depends(verify_api_key)):
             "task_features": result.get("task_features", {}),
         }
     except Exception as e:
-        return {
-            "working_memory": [], "raw_memory_sources": {},
-            "experience_memory": [], "knowledge_memory": [],
-            "confidence_score": 0.0,
-            "used_weights": {}, "feedback_requested": False, "error": str(e),
-        }
+            return _error_response(e, "api_retrieve")
 
 @app.post("/api/memory/store")
 async def api_store(req: StoreRequest, auth=Depends(verify_api_key)):

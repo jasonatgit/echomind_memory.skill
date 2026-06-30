@@ -159,7 +159,7 @@ class MainMemoryAgent:
 
         # 5. Knowledge memory
         for k in all_data.get("knowledge", []):
-            metadata = k.get("metadata", {})
+            metadata = dict(k.get("metadata", {}))
             metadata.setdefault("project", k.get("project", "default"))
             metadata.setdefault("session_id", k.get("session_id", ""))
             metadata.setdefault("session_title", k.get("session_title", ""))
@@ -688,7 +688,7 @@ class MainMemoryAgent:
             self.task_agent.create_task(user_id=user_id, task_id=task_id,
                                         title=title or session_title or "auto-task",
                                         steps=[{"step": "Initialize", "status": task_status}],
-                                        profile=profile)
+                                        profile=profile, project=project)
             task_tags = self._extract_task_tags(context) if hasattr(self, '_extract_task_tags') else []
             self._infer_user_preferences(context, user_id, platform=platform, profile=profile)
             self._infer_habits(user_id, context, profile=profile)
@@ -822,7 +822,7 @@ class MainMemoryAgent:
             return True
 
         except Exception as e:
-            logger.warning(f"store() failed: {e}")
+            logger.error("store() failed", exc_info=True)
             return False
 
     def get_recent_episodic(self, user_id: str, count: int = 8) -> List[Dict]:

@@ -57,7 +57,7 @@ class ExperienceMemoryAgent:
                 entry.frequency += 1
                 return eid
         entry = ExperienceEntry(
-            user_id=user_id, task_type=task_type,
+            user_id=user_id, task_id=task_id, task_type=task_type,
             success=success, steps_sequence=steps, summary=summary,
             project=project, session_id=session_id,
             session_title=session_title, tags=tags or [],
@@ -96,8 +96,9 @@ class ExperienceMemoryAgent:
                 entry_tags = entry.tags if isinstance(entry.tags, list) else []
                 if not any(t in entry_tags for t in tags):
                     continue
-            # Include all experiences (success + failure) for retrieval;
-            # min_success_rate used for aggregate filtering when caller provides it
+            # Filter by min_success_rate: skip failed entries when threshold > 0.5
+            if min_success_rate > 0.5 and not entry.success:
+                continue
             from ..lang_utils import tokenize as adaptive_tokenize, detect_language
             q_tokens = adaptive_tokenize(task_context)
             n_take = 10 if detect_language(task_context) == "zh" else 5

@@ -19,6 +19,8 @@ class KnowledgeMemoryAgent:
             return
         excess = len(self.store) - int(self.MAX_ITEMS * 0.9)
         for k in list(self.store.keys())[:excess]:
+            self._remove_from_index(k)
+            self._content_index.pop(k, None)
             del self.store[k]
 
     def __init__(self):
@@ -59,11 +61,9 @@ class KnowledgeMemoryAgent:
             q_words = [w for w in query.lower().split() if len(w) > 1][:3]
 
         for entry in candidates:
-            # Filter conditions
-            # Entries owned by user_id OR globally shared (user_id="default") pass through
+            # Filter conditions: only show entries owned by user or globally shared
             if user_id and entry.user_id not in (user_id, "default"):
-                if entry.metadata.get("user_id") not in (user_id, None):
-                    continue
+                continue
             if project and entry.metadata.get("project") not in (project, None, ""):
                 continue
             if profile and entry.metadata.get("profile") not in (profile, None, ""):

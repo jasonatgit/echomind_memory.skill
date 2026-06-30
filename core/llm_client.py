@@ -162,8 +162,12 @@ class LLMClient:
     def _batch_score_inner(self, query: str, items: List[Dict[str, Any]],
                            text_key: str = "content", lang: str = "en") -> List[float]:
         """Score a single batch of items (max 5)."""
+        def _get_text(item, idx):
+            if isinstance(item, dict):
+                return str(item.get(text_key, ""))[:200]
+            return str(item)[:200]
         items_text = "\n\n".join(
-            f"[{i}] {item.get(text_key, str(item))[:200]}"
+            f"[{i}] {_get_text(item, i)}"
             for i, item in enumerate(items)
         )
         from .lang_utils import get_prompt
@@ -191,7 +195,7 @@ class LLMClient:
             return scores[:len(items)]
         except Exception as e:
             logger.debug("Batch semantic score failed, falling back: %s", e)
-            return [self.score(query, item.get(text_key, str(item)), lang) for item in items]
+            return [self.score(query, _get_text(item, i), lang) for i, item in enumerate(items)]
 
 
 # ── module-level singleton ──────────────────────────────────────

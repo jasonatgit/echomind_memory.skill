@@ -7,6 +7,7 @@ from typing import List
 class ExperienceEntry(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     user_id: str
+    task_id: str = ""
     project: str = "default"
     profile: str = "default"
     session_id: str = ""

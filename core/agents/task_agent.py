@@ -26,10 +26,11 @@ class TaskMemoryAgent:
         self.store: Dict[str, TaskMemory] = {}
 
     def create_task(self, user_id: str, task_id: str, title: str,
-                     steps: List[Dict], profile: str = "default") -> str:
+                     steps: List[Dict], profile: str = "default",
+                     project: str = "default") -> str:
         task = TaskMemory(
             user_id=user_id, task_id=task_id, title=title, status="pending",
-            steps=steps, profile=profile,
+            steps=steps, profile=profile, project=project,
         )
         store_key = f"{user_id}:{task_id}"
         self.store[store_key] = task

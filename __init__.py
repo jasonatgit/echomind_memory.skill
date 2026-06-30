@@ -4,7 +4,11 @@ AI Persistent memory system: 6 memory types + RL self-optimization + Self-Reflec
 as MemoryProvider: set memory.provider: echomind in config.yaml
 as Plugin: run hermes plugins enable echomind
 """
-import os, sys
+import logging
+import os
+import sys
+
+logger = logging.getLogger("EchoMindPlugin")
 # Hermes plugin loader creates this module as _hermes_user_memory.echomind
 # with spec_from_file_location — Python has no package context, so relative
 # imports fail.  Add plugin dir to sys.path so absolute imports work.
@@ -30,11 +34,11 @@ def _startup_check():
         try:
             db.ensure_tables()
             row_count = db._conn.execute("SELECT count(*) FROM user_memory").fetchone()[0]
-            print(f"🧠 EchoMind Memory 记忆存储正常")
+            logger.info("EchoMind Memory storage healthy (%d users)", row_count)
         finally:
             if hasattr(db, '_conn') and db._conn:
                 db.close()
     except Exception as e:
-        print(f"⚠️  EchoMind Memory 记忆存储异常: {e}")
+        logger.warning("EchoMind Memory storage error: %s", e)
 
 _startup_check()

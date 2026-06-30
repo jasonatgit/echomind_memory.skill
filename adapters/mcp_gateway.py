@@ -18,12 +18,21 @@ Register:
   claude mcp add echomind -- python3 ~/.local/bin/echomind-mcp
 """
 import json
+import os
 import sys
 import urllib.request
 import urllib.error
 from urllib.parse import quote
 
 ECHOMIND_URL = "http://127.0.0.1:8005"
+_API_KEY = os.environ.get("ECHOMIND_API_TOKEN", "")
+
+
+def _headers():
+    h = {"Content-Type": "application/json"}
+    if _API_KEY:
+        h["X-API-Key"] = _API_KEY
+    return h
 
 
 def api_post(path, body):
@@ -32,7 +41,7 @@ def api_post(path, body):
     req = urllib.request.Request(
         f"{ECHOMIND_URL}{path}",
         data=data,
-        headers={"Content-Type": "application/json"},
+        headers=_headers(),
         method="POST",
     )
     try:
@@ -331,6 +340,9 @@ def handle_tool_call(name, arguments):
 
 def main():
     """MCP stdio server loop — reads JSON-RPC from stdin, writes to stdout."""
+    # Windows: ensure stdout emits UTF-8 to avoid UnicodeEncodeError
+    if hasattr(sys.stdout, 'reconfigure'):
+        sys.stdout.reconfigure(encoding='utf-8')
     sys.stderr.write("[echomind-mcp] started, waiting for requests...\n")
     sys.stderr.flush()
 

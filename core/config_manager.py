@@ -1,3 +1,4 @@
+import copy
 import os
 import threading
 import yaml
@@ -190,7 +191,7 @@ class ConfigManager:
         return default
 
     def get_section(self, section: str) -> dict:
-        base = dict(FALLBACK_CONFIG.get(section, {}))
+        base = copy.deepcopy(FALLBACK_CONFIG.get(section, {}))
 
         def _deep_update(target, source):
             for k, v in source.items():

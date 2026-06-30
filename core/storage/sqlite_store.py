@@ -1116,9 +1116,11 @@ class _TransactionContext:
     def delete_user_memories(self, user_id: str, profile: str = None) -> Dict[str, int]:
         """Delete all memory records for a user. Returns counts per table."""
         results = {}
+        # Tables that lack a profile column (reflections, session_transcripts)
+        _NO_PROFILE_TABLES = {"reflections", "session_transcripts"}
         with self._lock:
             for key, table in self.MEMORY_TABLES.items():
-                if profile:
+                if profile and table not in _NO_PROFILE_TABLES:
                     cursor = self._conn.execute(
                         f"DELETE FROM {table} WHERE user_id=? AND profile=?",
                         (user_id, profile),
