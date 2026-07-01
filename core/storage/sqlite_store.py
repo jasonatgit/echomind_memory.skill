@@ -934,7 +934,8 @@ class SqliteStore:
         if row:
             try:
                 prefs = json.loads(row["preferences"])
-                return prefs.get("rl_weights")
+                rlw = prefs.get("rl_weights")
+                return rlw if isinstance(rlw, dict) else None
             except (json.JSONDecodeError, TypeError):
                 pass
         return None
