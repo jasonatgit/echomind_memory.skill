@@ -704,7 +704,7 @@ class SqliteStore:
                 VALUES (?, ?, ?, ?, ?, datetime('now'), datetime('now'), ?)
                 ON CONFLICT(user_id, profile) DO UPDATE SET
                     preferences=json_set(excluded.preferences, '$.rl_weights',
-                        COALESCE(json_extract(user_memory.preferences, '$.rl_weights'), '{}')),
+                        COALESCE(json_extract(user_memory.preferences, '$.rl_weights'), json('{}'))),
                     habits=excluded.habits,
                     history=excluded.history, last_updated=datetime('now'),
                     last_access_at=datetime('now'),

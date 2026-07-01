@@ -222,7 +222,12 @@ class MainMemoryAgent:
             for store_key, u in list(self.user_agent.store.items()):
                 prefs = u.preferences if hasattr(u, 'preferences') else {}
                 if isinstance(prefs, dict) and 'rl_weights' in prefs:
-                    saved_weights = prefs['rl_weights']
+                    raw = prefs['rl_weights']
+                    if isinstance(raw, str):
+                        import json
+                        saved_weights = json.loads(raw)
+                    else:
+                        saved_weights = raw
                     logger.info("RL weights restored from preferences JSON for %s", u.user_id)
                     break
         if saved_weights:
