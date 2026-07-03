@@ -30,19 +30,48 @@
 
 ## EchoMind 核心能力
 
+### 基础架构
 | 功能 | 说明 |
 |------|------|
-| **自我进化引擎 Agent** | 自动从原始记忆中反思后提炼语义知识和程序化规则，零配置 LLM 注入 |
-| **七类记忆系统** | User/ Task/ Experience/ Context/ Knowledge/ Research/ Reflection |
-| **Ebbinghaus遗忘曲线** | 基于新鲜度的记忆衰减 ，自动降低冷数据权重 |
-| **RL强化学习自动优化** | 根据用户正/负反馈，AI 自动调整记忆权重并且持久化，越用越聪明。包含余弦学习率衰减 + epsilon-greedy 探索 |
-| **Few-Shot锚定** | 小样本快速构建记忆规范，提升记忆质量 |
+| **七类记忆系统** | User / Task / Experience / Context / Knowledge / Research / Reflection |
+| **零依赖本地存储** | SQLite 单文件数据库，无需 Docker / PostgreSQL / Redis |
+| **结构化迁移 + 事务写入** | 结构化迁移列表 + 事务回滚；store() 一次性包裹 5 次保存 |
+
+### 记忆智能（反思推理）
+| 功能 | 说明 |
+|------|------|
+| **自我进化引擎 Agent** | 自动从原始记忆中提炼语义知识和程序化规则，零配置 LLM 注入；低置信度反思自动丢弃防止幻觉污染 |
+| **Ebbinghaus遗忘曲线** | 覆盖全部 6 种记忆类型，自动降权或排除冷数据 |
+| **记忆生命周期状态机** | Active → Stale → Archived → Superseded 全状态追踪，基于新鲜度自动转换 |
+| **知识演化追踪** | 取代/丰富/确认/挑战四种关系 — Jaccard + LLM 混合检测 |
+| **Flags 标记系统** | 自动检测 needs_verification 和 contradiction 的知识条目 |
+| **记忆健康报告** | 按类型+状态聚合统计 + 7天增长 + Flags 摘要 |
+| **实体抽取** | LLM 优先 + 关键词兜底（技术/概念实体） |
 | **经验沉淀与复用** | 上次修复的问题 / 用过的算法模型 → 下次自动推荐 |
-| **多重检索触发** | 关键词 + RL 权重 + LLM 语义，真正的"语义记忆系统" |
-| **防幻觉污染** | 长期记忆安全机制，置信度门控低的反思结果自动丢弃，防止幻觉污染记忆 |
-| **平台感知记忆隔离** | 跨平台权重衰减，用户、项目、会话、主题、研究领域统统隔离，记忆再也不会混乱 |
-| **零依赖本地存储** | SQLite 持久化，无需 Docker / PostgreSQL / Redis |
-| **跨框架兼容** | 独立于任何 LLM，适配 Hermes / OpenClaw / OpenCode / Claude Code |
+
+### 检索与优化（RL强化自学习）
+| 功能 | 说明 |
+|------|------|
+| **RL强化学习自动优化** | 根据用户正/负反馈自动调整权重并持久化；余弦学习率衰减 + epsilon-greedy 探索 |
+| **多重检索触发** | 关键词 + RL 权重 + LLM 语义 — 真正的"语义记忆系统" |
+| **自适应反思批处理** | 基于周活跃度动态调整反思触发阈值 |
+| **Few-Shot 锚定** | 小样本快速构建记忆规范，提升记忆质量 |
+
+### 用户理解
+| 功能 | 说明 |
+|------|------|
+| **6 类偏好推理** | code_style / response_style / platform / language / depth / tone |
+| **用户纠正信号检测** | 中英文关键词匹配纠正信号，触发即时反思 |
+| **会话隔离上下文管理** | 每 session_id 独立上下文窗口，LRU 淘汰 + 消息归档 |
+
+### 平台与集成
+| 功能 | 说明 |
+|------|------|
+| **跨框架兼容** | 独立于 LLM，适配 Hermes / OpenClaw / OpenCode / Claude Code |
+| **平台感知记忆隔离** | 同平台 ×1.0，跨平台 ×0.5；按用户/项目/会话/主题/领域隔离 |
+| **双传输 MCP 网关** | stdio + Streamable HTTP；7 个原生 Claude Code 工具 |
+| **记忆 CRUD API** | DELETE 单条/全用户 + TTL 自动清理 |
+| **Hermes Agent 深度集成** | MemoryProvider 各版本兼容，每轮自动存取，零 LLM 决策 |
 
 ---
 
@@ -81,6 +110,23 @@ EchoMind 记忆系统专门针对*科研方向*的记忆进行了优化，对查
 ---
 
 
+## v1.2.2  新增功能
+
+**核心要点：**
+*记忆生命周期管理、知识演化追踪、实体抽取、Streamable HTTP MCP。*
+
+| 功能 | 说明 |
+|------|------|
+| **记忆状态机** | Active → Stale → Archived → Superseded 生命周期追踪，基于 Ebbinghaus 新鲜度自动状态转换 |
+| **知识演化追踪** | Jaccard + LLM 混合检测（取代/丰富/确认/挑战四种关系） |
+| **记忆健康报告** | 输出中增加记忆健康提示节 |
+| **Flags 标记系统** | 自动检测 needs_verification 和 contradiction 的知识条目 |
+| **实体抽取** | LLM 优先 + 关键词兜底（技术/概念实体） |
+| **Streamable HTTP MCP** | `POST /mcp` + `GET /mcp` — EchoMind MCP 支持通过 JSON-RPC over HTTP 远程访问 |
+| **共享 MCP 工具层** | stdio 和 HTTP 双传输共享单一工具定义 |
+
+
+---
 ## v1.2.0  新增功能
 
 **核心要点：**
@@ -89,7 +135,7 @@ EchoMind 记忆系统专门针对*科研方向*的记忆进行了优化，对查
 | 功能 | 说明 |
 |------|------|
 | **MCP stdio 网关** | 7 个原生 Claude Code 工具（retrieve/store/search/feedback/reflect/delete/health），通过 stdio JSON-RPC 协议 |
-| **艾宾浩斯遗忘曲线** | 基于新鲜度的记忆评分 ，覆盖全部6种记忆类型，自动排除冷数据 |
+| **Ebbinghaus遗忘曲线** | 基于新鲜度的记忆评分 ，覆盖全部6种记忆类型，自动排除冷数据 |
 | **记忆删除 API** | 支持单条删除、用户数据全清、TTL 过期清理的 REST 端点 |
 | **会话隔离上下文管理** | 每个 session_id 独立上下文窗口，LRU 淘汰 |
 | **会话消息归档** | 淘汰的会话消息自动保存到数据表 |
@@ -260,7 +306,7 @@ pip install -r requirements.txt
 
 ```bash
 curl http://localhost:8005/health
-# 预期返回: {"status": "ok", "version": "1.2.0"}
+# 预期返回: {"status": "ok", "version": "1.2.2"}
 ```
 
 ---
@@ -375,14 +421,24 @@ call("record_feedback",
 
 | 方法 | 端点 | 说明 |
 |------|------|------|
-| `POST` | `/api/memory/retrieve` | 检索任务记忆（支持 `platform` 参数） |
-| `POST` | `/api/memory/store` | 存储对话上下文（支持 `platform` 参数） |
+| `POST` | `/api/memory/retrieve` | 检索任务记忆 |
+| `POST` | `/api/memory/store` | 存储对话上下文 |
 | `POST` | `/api/memory/feedback` | 记录反馈用于 RL 优化 |
 | `POST` | `/api/memory/sync-code` | 同步项目代码风格记忆 |
+| `GET` | `/api/memory/search-sessions` | 搜索会话转录 |
+| `GET` | `/api/memory/health` | 记忆健康报告（简报 + 状态 + flags） |
+| `POST` | `/api/memory/{type}/{id}/state` | 设置记忆生命周期状态 |
+| `POST` | `/api/memory/cleanup` | 基于 TTL 的记忆清理 |
+| `DELETE` | `/api/memory/{type}/{id}` | 删除单条记忆 |
+| `POST` | `/api/memory/delete-user` | 删除用户全部记忆 |
 | `POST` | `/api/research/paper` | 添加研究论文 |
 | `POST` | `/api/research/note` | 添加研究笔记 |
-| `GET` | `/api/research/papers` | 列出研究论文 |
-| `POST` | `/api/reflect` 🆕 | 自我反思 |
+| `GET` | `/api/knowledge/{id}/evolution` | 查询知识演化链 |
+| `GET` | `/api/config` | 读取当前配置 |
+| `POST` | `/api/config/parameter` | 设置运行时配置参数 |
+| `POST` | `/api/config/reload` | 从磁盘重载配置 |
+| `POST` | `/api/reflect` | 自我反思 |
+| `POST` | `/mcp` | MCP JSON-RPC 端点（远程） |
 | `GET` | `/health` | 健康检查 |
 
 ---
@@ -506,5 +562,55 @@ cp ~/.echomind/memory.db ~/.echomind/memory.db.backup-$(date +%Y%m%d)
 
 是。EchoMind v1.2.0+ 完整支持 Hermes v0.17.0 的 MemoryProvider 接口，包括 `get_config_schema()`、`backup_paths()`、`save_config()` 方法。
 兼容范围：Hermes v0.13.0 – v0.17.0。
+
+</details>
+
+<details>
+<summary><b>MCP 网关设置与常见问题</b></summary>
+
+### Q: 如何将 EchoMind 通过 MCP 连接到 Claude Code？
+
+**本地 stdio 模式**（无需 HTTP 服务）：
+```bash
+claude mcp add echomind -- python ~/.hermes/skills/echomind-memory/adapters/mcp_gateway.py
+```
+
+**远程 HTTP 模式**（需要 `python main.py` 在 8005 端口运行）：
+```json
+{
+  "mcpServers": {
+    "echomind": {
+      "url": "http://<你的服务器>:8005/mcp",
+      "type": "streamableHttp"
+    }
+  }
+}
+```
+
+> ⚠️ HTTP MCP 模式需要 EchoMind HTTP 服务保持运行（`python main.py`）。如果服务停止，远程 MCP 连接将不可用。stdio 模式不受影响。
+
+### Q: MCP 有哪些可用工具？
+
+EchoMind 提供 7 个 MCP 工具：
+
+| 工具 | 说明 |
+|------|------|
+| `echomind_retrieve` | 按查询搜索长期记忆 |
+| `echomind_store` | 将交互结果持久化到记忆 |
+| `echomind_search` | 搜索会话转录 |
+| `echomind_feedback` | 对检索结果提供反馈 |
+| `echomind_reflect` | 触发最近记忆的反思 |
+| `echomind_delete` | 删除特定记忆条目 |
+| `echomind_health` | 检查服务健康状态 |
+
+### Q: MCP 连接失败怎么办？
+
+1. **stdio 模式**: 检查网关路径是否正确 — `python -c "from adapters.mcp_common import handle_mcp_request"` 应正常运行
+2. **HTTP 模式**: 确认 `python main.py` 正在运行，`curl http://127.0.0.1:8005/health` 返回 `"status":"ok"`
+3. **认证**: 如果 `echomind_config.yaml` 中配置了 `api_key`，需要设置 `ECHOMIND_API_KEY` 环境变量
+
+### Q: MCP 是否支持 Claude Code 以外的工具？
+
+是。MCP stdio 兼容任何 MCP 客户端（Claude Desktop、Cursor、Cline 等）。远程 HTTP MCP 使用 Streamable HTTP 传输协议，这是 MCP 社区标准协议。
 
 </details>

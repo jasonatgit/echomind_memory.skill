@@ -1,6 +1,6 @@
 ---
 name: echomind-memory
-version: "1.2.0"
+version: "1.2.2"
 description: EchoMind Memory — AI 持久记忆系统。支持 Hermes、OpenCode、OpenClaw、Claude Code 等多平台。9 张 SQLite 表覆盖 6 种记忆类型 + Self-Reflective Agent。
 category: software-development
 platforms:
@@ -16,7 +16,7 @@ tags:
   - self-reflection
 ---
 
-# EchoMind Memory v1.1.6
+# EchoMind Memory v1.2.2
 
 ## 概述
 
@@ -94,10 +94,15 @@ POST /api/memory/sync-code {"project_root": "/path/to/project", "user_id": "alic
 | POST | `/api/memory/store` | 存储交互结果 |
 | POST | `/api/memory/feedback` | 记录用户反馈 |
 | POST | `/api/memory/sync-code` | 同步到项目 .echomind/ |
+| GET | `/api/memory/search-sessions` | 搜索会话转录 |
+| GET | `/api/memory/health` | 记忆健康报告 |
+| POST | `/api/memory/{type}/{id}/state` | 设置记忆状态 |
+| DELETE | `/api/memory/{type}/{id}` | 删除单条记忆 |
 | POST | `/api/research/paper` | 添加研究论文 |
 | POST | `/api/research/note` | 添加研究笔记 |
-| GET | `/api/research/papers` | 列出研究论文 |
-| POST | `/api/reflect` 🆕 | 反思：build prompt / process result |
+| POST | `/api/reflect` | 反思：build prompt / process result |
+| GET | `/api/knowledge/{id}/evolution` | 查询知识演化链 |
+| POST | `/mcp` | MCP JSON-RPC 端点 |
 
 ### 检索请求
 

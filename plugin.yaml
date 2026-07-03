@@ -1,5 +1,5 @@
 name: echomind
-version: "1.2.0"
+version: "1.2.2"
 description: EchoMind Memory — AI persistent memory system (6 memory types + RL optimization + reflection)
 author: jasonatgit
 license: MIT

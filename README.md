@@ -29,19 +29,48 @@
 
 ## EchoMind's Core Capabilities
 
+### Core Architecture
 | Capability | Description |
 |------|------|
-| **Self-Evolving Engine Agent** | Automatically reflects on raw memories to distill semantic knowledge and procedural rules, with zero-config LLM injection |
 | **Seven Types of Memory** | User / Task / Experience / Context / Knowledge / Research / Reflection |
-| **Ebbinghaus Forgetting Curve** | Freshness-based memory decay, auto-downranks stale memories |
-| **RL-Enhanced Auto-Optimization** | Automatically adjusts memory weights based on positive/negative user feedback and persists them — gets smarter with use. Cosine learning rate decay + epsilon-greedy exploration to avoid local optima |
-| **Few-Shot Anchoring** | Rapidly builds memory norms from small samples, improving memory quality |
+| **Zero-Dependency Local Storage** | SQLite single-file database, no Docker / PostgreSQL / Redis required |
+| **SQLite Schema Migration + Transactional Writes** | Structured migration list with transactional rollback; store() wraps 5 save calls in one transaction |
+
+### Memory Intelligence (Reflective Reasoning)
+| Capability | Description |
+|------|------|
+| **Self-Evolving Engine Agent** | Auto-distills semantic knowledge and procedural rules from raw memories with zero-config LLM injection; low-confidence reflections discarded to prevent hallucination pollution |
+| **Ebbinghaus Forgetting Curve** | Covers all 6 memory types, auto-downranks or excludes stale records |
+| **Memory Lifecycle State Machine** | Active → Stale → Archived → Superseded lifecycle tracking, automatic state transitions via freshness |
+| **Knowledge Evolution Tracking** | Replaces/Enriches/Confirms/Challenges relations — Jaccard + LLM hybrid detection |
+| **Flags System** | Automatic detection of needs_verification and contradiction in knowledge entries |
+| **Memory Health Report** | Aggregated stats by type and state + 7-day growth + flags summary |
+| **Entity Extraction** | LLM-first keyword-fallback extraction (technologies / concepts) |
 | **Experience Distillation & Reuse** | Previously fixed bugs / used models → auto-recommended next time |
-| **Multi-Trigger Retrieval** | Keywords + RL weights + LLM semantics, a true "semantic memory system" |
-| **Hallucination-Prevention** | Long-term memory safety mechanism — low-confidence reflection results are automatically discarded to prevent hallucination pollution |
-| **Platform-Aware Memory Isolation** | Cross-platform weight decay; isolation by user, project, session, topic, and research domain — no more memory chaos |
-| **Zero-Dependency Local Storage** | SQLite persistence, no Docker / PostgreSQL / Redis required |
+
+### Retrieval & Optimization (RL-Enhanced Self-Learning)
+| Capability | Description |
+|------|------|
+| **RL-Enhanced Auto-Optimization** | Adjusts memory weights via user feedback with persistence; cosine learning rate decay + epsilon-greedy exploration |
+| **Multi-Trigger Retrieval** | Keywords + RL weights + LLM semantics — a true semantic memory system |
+| **Adaptive Reflection Batch** | Dynamically adjusts reflection trigger threshold based on weekly user activity |
+| **Few-Shot Anchoring** | Rapidly builds memory norms from small samples, improving memory quality |
+
+### User Understanding
+| Capability | Description |
+|------|------|
+| **6-Category Preference Inference** | code_style / response_style / platform / language / depth / tone |
+| **User Correction Detection** | zh/en keyword matching for correction signals triggers immediate reflection |
+| **Session-Isolated Context** | Per-session independent context window with LRU eviction + message archive |
+
+### Platform & Integration
+| Capability | Description |
+|------|------|
 | **Cross-Framework Compatibility** | LLM-independent, adapters for Hermes / OpenClaw / OpenCode / Claude Code |
+| **Platform-Aware Memory Isolation** | Same-platform ×1.0, cross-platform ×0.5; isolation by user/project/session/topic/domain |
+| **Dual-Transport MCP Gateway** | stdio + Streamable HTTP; 7 native Claude Code tools |
+| **Memory CRUD API** | DELETE individual / full user + TTL-based automatic cleanup |
+| **Hermes Agent Deep Integration** | Compatible across MemoryProvider versions, auto-save and auto-retrieve every turn, zero LLM decisions |
 
 ---
 
@@ -80,6 +109,23 @@ When a query involves the following *domain keywords* or related *semantics*, th
 ---
 
 
+## v1.2.2 New Features
+
+**Core Highlights:**
+*Memory lifecycle management, knowledge evolution tracking, entity extraction, Streamable HTTP MCP.*
+
+| Feature | Description |
+|------|------|
+| **Memory State Machine** | Active → Stale → Archived → Superseded lifecycle tracking, automatic state transitions via Ebbinghaus freshness |
+| **Knowledge Evolution** | Jaccard + LLM hybrid detection (Replaces/Enriches/Confirms/Challenges) |
+| **Memory Health Report** | Health summary section in output |
+| **Flags System** | Automatic needs_verification and contradiction detection for knowledge entries |
+| **Entity Extraction** | LLM-first keyword-fallback (technologies/concepts) |
+| **Streamable HTTP MCP** | `POST /mcp` + `GET /mcp` — EchoMind MCP now accessible remotely via JSON-RPC over HTTP |
+| **Shared MCP Tool Layer** | Single source of truth for MCP tools shared across stdio and HTTP transports |
+
+
+---
 ## v1.2.0 New Features
 
 **Core Highlights:**
@@ -265,7 +311,7 @@ pip install -r requirements.txt
 
 ```bash
 curl http://localhost:8005/health
-# Expected: {"status": "ok", "version": "1.2.0"}
+# Expected: {"status": "ok", "version": "1.2.2"}
 ```
 
 ---
@@ -379,14 +425,24 @@ call("record_feedback",
 
 | Method | Endpoint | Description |
 |------|------|------|
-| `POST` | `/api/memory/retrieve` | Retrieve task memory (with `platform` parameter support) |
-| `POST` | `/api/memory/store` | Store conversation context (with `platform` parameter support) |
+| `POST` | `/api/memory/retrieve` | Retrieve task memory |
+| `POST` | `/api/memory/store` | Store conversation context |
 | `POST` | `/api/memory/feedback` | Record feedback for RL optimization |
 | `POST` | `/api/memory/sync-code` | Sync project code style memory |
+| `GET` | `/api/memory/search-sessions` | Search session transcripts |
+| `GET` | `/api/memory/health` | Memory health report (briefing + states + flags) |
+| `POST` | `/api/memory/{type}/{id}/state` | Set memory lifecycle state |
+| `POST` | `/api/memory/cleanup` | TTL-based memory cleanup |
+| `DELETE` | `/api/memory/{type}/{id}` | Delete single memory record |
+| `POST` | `/api/memory/delete-user` | Delete all user memories |
 | `POST` | `/api/research/paper` | Add research paper |
 | `POST` | `/api/research/note` | Add research note |
-| `GET` | `/api/research/papers` | List research papers |
-| `POST` | `/api/reflect` 🆕 | Self-reflection |
+| `GET` | `/api/knowledge/{id}/evolution` | Query knowledge evolution chain |
+| `GET` | `/api/config` | Read current configuration |
+| `POST` | `/api/config/parameter` | Set runtime config parameter |
+| `POST` | `/api/config/reload` | Reload configuration from disk |
+| `POST` | `/api/reflect` | Self-reflection |
+| `POST` | `/mcp` | MCP JSON-RPC endpoint (Streamable HTTP) |
 | `GET` | `/health` | Health check |
 
 ---
@@ -509,6 +565,56 @@ When the user executes `/undo N` to truncate conversation history, EchoMind auto
 ### Q: Is EchoMind compatible with Hermes v0.17.0?
 
 Yes. EchoMind v1.2.0+ fully supports Hermes v0.17.0's MemoryProvider interface, including `get_config_schema()`, `backup_paths()`, and `save_config()` methods. Compatibility range: Hermes v0.13.0 – v0.17.0.
+
+</details>
+
+<details>
+<summary><b>MCP Gateway Setup & FAQ</b></summary>
+
+### Q: How do I connect EchoMind to Claude Code via MCP?
+
+**Local stdio mode** (no HTTP service required):
+```bash
+claude mcp add echomind -- python ~/.hermes/skills/echomind-memory/adapters/mcp_gateway.py
+```
+
+**Remote HTTP mode** (requires `python main.py` running on port 8005):
+```json
+{
+  "mcpServers": {
+    "echomind": {
+      "url": "http://<your-server>:8005/mcp",
+      "type": "streamableHttp"
+    }
+  }
+}
+```
+
+> ⚠️ HTTP MCP mode requires the EchoMind HTTP service to be running (`python main.py`). If the service stops, remote MCP connections become unavailable. stdio mode is unaffected.
+
+### Q: What MCP tools are available?
+
+EchoMind exposes 7 MCP tools:
+
+| Tool | Description |
+|------|-------------|
+| `echomind_retrieve` | Search long-term memory by query |
+| `echomind_store` | Persist an interaction into memory |
+| `echomind_search` | Search session transcripts |
+| `echomind_feedback` | Provide feedback on retrieval results |
+| `echomind_reflect` | Trigger reflection on recent memories |
+| `echomind_delete` | Delete a specific memory entry |
+| `echomind_health` | Check service health and version |
+
+### Q: MCP connection fails — what should I check?
+
+1. **stdio mode**: Verify the gateway path is correct — `python -c "from adapters.mcp_common import handle_mcp_request"` should succeed
+2. **HTTP mode**: Confirm `python main.py` is running and `curl http://127.0.0.1:8005/health` returns `"status":"ok"`
+3. **Authentication**: If `api_key` is configured in `echomind_config.yaml`, set `ECHOMIND_API_KEY` environment variable for the MCP gateway
+
+### Q: Does MCP work with tools other than Claude Code?
+
+Yes. MCP stdio is compatible with any MCP host (Claude Desktop, Cursor, Cline, etc.). Remote HTTP MCP uses the Streamable HTTP transport, which is an MCP community standard.
 
 </details>
 

@@ -1,4 +1,4 @@
-# install.ps1 — EchoMind v1.2.0 Windows one-click install (with auto-start)
+# install.ps1 — EchoMind v1.2.2 Windows one-click install (with auto-start)
 $ErrorActionPreference = "Stop"
 $SKILL_DIR = $PSScriptRoot
 
@@ -19,7 +19,7 @@ if ($env:ECHOMIND_HOME) {
     $CONFIG_DIR = "$env:USERPROFILE\.echomind"
 }
 
-Write-Host "=== EchoMind v1.2.0 Windows Install ==="
+Write-Host "=== EchoMind v1.2.2 Windows Install ==="
 Write-Host "  Hermes home: $HERMES_DIR"
 
 # 1. Install to Hermes
@@ -27,7 +27,29 @@ Write-Host "  [1/4] Installing to $PLUGIN_DIR"
 New-Item -ItemType Directory -Force -Path $PLUGIN_DIR | Out-Null
 Copy-Item -Path "$SKILL_DIR\*" -Destination $PLUGIN_DIR -Recurse -Force
 
-# 2. Generate config
+# Clean dev artifacts from plugin directory (mirroring install.sh behavior)
+@(".git", ".github", "__pycache__", "test", "doc", "build", "dist", ".vscode",
+  ".claude", "setup.py", "*.pyc", ".gitignore") | ForEach-Object {
+    Remove-Item -Path "$PLUGIN_DIR\$_" -Recurse -Force -ErrorAction SilentlyContinue
+}
+Get-ChildItem "$PLUGIN_DIR" -Recurse -Directory -Name "__pycache__" -ErrorAction SilentlyContinue | ForEach-Object {
+    Remove-Item -Path "$PLUGIN_DIR\$_" -Recurse -Force -ErrorAction SilentlyContinue
+}
+Get-ChildItem "$PLUGIN_DIR" -Recurse -Name "*.pyc" -ErrorAction SilentlyContinue | ForEach-Object {
+    Remove-Item -Path "$PLUGIN_DIR\$_" -Force -ErrorAction SilentlyContinue
+}
+
+# 2. Install to Hermes skill directory (backward compat with Hermes <0.16)
+$INSTALL_DIR = "$HERMES_DIR\skills\echomind-memory"
+Write-Host "  [1.5/4] Installing to $INSTALL_DIR..."
+New-Item -ItemType Directory -Force -Path $INSTALL_DIR | Out-Null
+Copy-Item -Path "$SKILL_DIR\*" -Destination $INSTALL_DIR -Recurse -Force
+@(".git", ".github", "__pycache__", "test", "doc", "build", "dist", ".vscode",
+  ".claude", "setup.py", "*.pyc", ".gitignore") | ForEach-Object {
+    Remove-Item -Path "$INSTALL_DIR\$_" -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+# 3. Generate config
 New-Item -ItemType Directory -Force -Path $CONFIG_DIR | Out-Null
 if (-not (Test-Path "$CONFIG_DIR\echomind_config.yaml")) {
     Write-Host "  [2/4] Creating default config..."

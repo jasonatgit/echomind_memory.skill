@@ -1,5 +1,5 @@
 # echomind_config.yaml — EchoMind full configuration parameters
-# Version: v1.2.0
+# Version: v1.2.2
 #
 # Distributed via GitHub as default config. Use directly or copy to ~/.echomind/ then modify.
 # Priority: runtime ext_params > YAML overrides > built-in FALLBACK_CONFIG
@@ -160,3 +160,20 @@ topic_keywords:
 #         記録:
 #         {records}
 #         JSON形式で返信: key_insights, user_preferences, procedural_rules, new_knowledge
+# --- v1.2.2 Entity extraction ---
+entities:
+  technologies:
+    - python
+    - docker
+    - postgresql
+    - react
+    - node.js
+  concepts:
+    - microservices
+    - distributed-systems
+    - machine-learning
+  sources:
+    - name: llm
+      confidence: 0.85
+    - name: keyword
+      confidence: 0.6

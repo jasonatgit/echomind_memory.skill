@@ -96,6 +96,50 @@ _MIGRATIONS = [
          "CREATE INDEX IF NOT EXISTS idx_experience_language ON experience_memory(language)",
          "CREATE INDEX IF NOT EXISTS idx_knowledge_language ON knowledge_memory(language)",
      ]),
+    (7, "Add memory_states table for lifecycle tracking",
+     [
+         "CREATE TABLE IF NOT EXISTS memory_states ("
+         " id INTEGER PRIMARY KEY AUTOINCREMENT,"
+         " memory_type TEXT NOT NULL,"
+         " memory_id TEXT NOT NULL,"
+         " state TEXT NOT NULL DEFAULT 'active',"
+         " state_changed_at TEXT DEFAULT (datetime('now')),"
+         " reason TEXT DEFAULT '',"
+         " previous_state TEXT DEFAULT '',"
+         " source TEXT DEFAULT 'system',"
+         " UNIQUE(memory_type, memory_id)"
+         ")",
+         "CREATE INDEX IF NOT EXISTS idx_memory_states_lookup ON memory_states(memory_type, memory_id)",
+         "CREATE INDEX IF NOT EXISTS idx_memory_states_current ON memory_states(memory_type, state)",
+         # Backfill: all existing memories start as 'active'
+         "INSERT OR IGNORE INTO memory_states (memory_type, memory_id, state, reason, source) "
+         "SELECT 'user', user_id, 'active', 'backfill', 'system' FROM user_memory",
+         "INSERT OR IGNORE INTO memory_states (memory_type, memory_id, state, reason, source) "
+         "SELECT 'task', id, 'active', 'backfill', 'system' FROM task_memory",
+         "INSERT OR IGNORE INTO memory_states (memory_type, memory_id, state, reason, source) "
+         "SELECT 'experience', id, 'active', 'backfill', 'system' FROM experience_memory",
+         "INSERT OR IGNORE INTO memory_states (memory_type, memory_id, state, reason, source) "
+         "SELECT 'context', session_id, 'active', 'backfill', 'system' FROM context_memory",
+         "INSERT OR IGNORE INTO memory_states (memory_type, memory_id, state, reason, source) "
+         "SELECT 'knowledge', id, 'active', 'backfill', 'system' FROM knowledge_memory",
+         "INSERT OR IGNORE INTO memory_states (memory_type, memory_id, state, reason, source) "
+         "SELECT 'paper', id, 'active', 'backfill', 'system' FROM research_papers",
+     ]),
+    (8, "Add knowledge_evolution table for tracking knowledge relationships",
+     [
+         "CREATE TABLE IF NOT EXISTS knowledge_evolution ("
+         " id INTEGER PRIMARY KEY AUTOINCREMENT,"
+         " source_id TEXT NOT NULL,"
+         " target_id TEXT NOT NULL,"
+         " relation_type TEXT NOT NULL,"
+         " confidence REAL DEFAULT 0.5,"
+         " reason TEXT DEFAULT '',"
+         " detection_method TEXT DEFAULT 'jaccard',"
+         " created_at TEXT DEFAULT (datetime('now'))"
+         ")",
+         "CREATE INDEX IF NOT EXISTS idx_evolution_source ON knowledge_evolution(source_id)",
+         "CREATE INDEX IF NOT EXISTS idx_evolution_target ON knowledge_evolution(target_id)",
+     ]),
 ]
 # Tables that need a profile column
 _PROFILE_TABLES = [
@@ -190,6 +234,7 @@ class SqliteStore:
                         history TEXT DEFAULT '[]',
                         last_updated TEXT DEFAULT (datetime('now')),
                         last_access_at TEXT DEFAULT '',
+                        created_at TEXT DEFAULT (datetime('now')),
                         version INTEGER DEFAULT 1,
                         PRIMARY KEY (user_id, profile)
                     );
@@ -489,6 +534,8 @@ class SqliteStore:
                         habits TEXT DEFAULT '{}',
                         history TEXT DEFAULT '[]',
                         last_updated TEXT DEFAULT (datetime('now')),
+                        last_access_at TEXT DEFAULT '',
+                        created_at TEXT DEFAULT (datetime('now')),
                         version INTEGER DEFAULT 1,
                         PRIMARY KEY (user_id, profile)
                     )
@@ -1043,7 +1090,7 @@ class SqliteStore:
     @_require_conn
     def get_recent_episodic(self, user_id: str, count: int = 8) -> List[Dict]:
         rows = self._conn.execute(
-            "SELECT id, user_id, title, status, steps, created_at, project, tags "
+            "SELECT id, user_id, title, status, steps, created_at, project, tags, session_id "
             "FROM task_memory WHERE user_id=? ORDER BY created_at DESC LIMIT ?",
             (user_id, count),
         ).fetchall()
@@ -1165,21 +1212,25 @@ class SqliteStore:
 
     def close(self):
         if self._conn:
+            lock_held = False
             try:
                 if self._lock:
                     acquired = self._lock.acquire(timeout=10)
                     if not acquired:
-                        logger.warning("close: lock acquire timed out, forcing close")
-                self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-                self._conn.execute("PRAGMA optimize")
+                        logger.warning("close: lock acquire timed out, forcing close without checkpoint")
+                    else:
+                        lock_held = True
+                if lock_held:
+                    self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                    self._conn.execute("PRAGMA optimize")
             except Exception:
                 pass
             finally:
-                if self._lock:
+                if lock_held:
                     try:
                         self._lock.release()
                     except RuntimeError:
-                        pass  # lock was not held (Python 3.13 RLock compat)
+                        pass
                 self._conn.close()
                 self._conn = None
                 self._lock = None
@@ -1219,6 +1270,95 @@ class SqliteStore:
             else:
                 result["tables"][table] = {"has_profile": False}
         return result
+
+    # ── Memory state lifecycle ───────────────────────────
+
+    @with_retry_on_busy()
+    @_require_conn
+    def save_memory_state(self, memory_type: str, memory_id: str, state: str,
+                          reason: str = "", source: str = "system"):
+        """Record a memory state transition (upsert on duplicate key)."""
+        with self._lock:
+            prev = self._conn.execute(
+                "SELECT state FROM memory_states WHERE memory_type=? AND memory_id=? "
+                "ORDER BY state_changed_at DESC LIMIT 1",
+                (memory_type, memory_id)
+            ).fetchone()
+            previous = prev["state"] if prev else ""
+            self._conn.execute(
+                "INSERT INTO memory_states (memory_type, memory_id, state, reason, previous_state, source) "
+                "VALUES (?,?,?,?,?,?) "
+                "ON CONFLICT(memory_type, memory_id) DO UPDATE SET "
+                "state=excluded.state, reason=excluded.reason, "
+                "previous_state=memory_states.state, state_changed_at=datetime('now')",
+                (memory_type, memory_id, state, reason, previous, source)
+            )
+            self._conn.commit()
+
+    @_require_conn
+    def get_memory_state(self, memory_type: str, memory_id: str) -> str:
+        """Return the current state of a memory record, defaulting to 'active'.
+
+        UNIQUE(memory_type, memory_id) guarantees at most one row,
+        so no ORDER BY/LIMIT is needed.
+        """
+        row = self._conn.execute(
+            "SELECT state FROM memory_states WHERE memory_type=? AND memory_id=?",
+            (memory_type, memory_id)
+        ).fetchone()
+        return row["state"] if row else "active"
+
+    @_require_conn
+    def get_memory_stats(self) -> Dict[str, Any]:
+        """Aggregate memory counts by type and state for the health report."""
+        stats = {}
+        for mem_type in ("knowledge", "experience", "task", "context", "user", "paper"):
+            row = self._conn.execute(
+                "SELECT state, COUNT(*) as cnt FROM memory_states "
+                "WHERE memory_type=? "
+                "GROUP BY state ORDER BY cnt DESC",
+                (mem_type,)
+            ).fetchall()
+            stats[mem_type] = {r["state"]: r["cnt"] for r in row}
+            stats[mem_type].setdefault("active", 0)
+            stats[mem_type].setdefault("stale", 0)
+            stats[mem_type].setdefault("archived", 0)
+        # 7-day growth: count records created in the last 7 days (from original tables, not state changes)
+        growth_queries = {
+            "knowledge": "SELECT COUNT(*) FROM knowledge_memory WHERE created_at >= datetime('now', '-7 days')",
+            "experience": "SELECT COUNT(*) FROM experience_memory WHERE created_at >= datetime('now', '-7 days')",
+            "task": "SELECT COUNT(*) FROM task_memory WHERE created_at >= datetime('now', '-7 days')",
+        }
+        for mem_type, sql in growth_queries.items():
+            row = self._conn.execute(sql).fetchone()
+            stats[f"{mem_type}_7d_growth"] = row["cnt"] if row else 0
+        return stats
+
+    # ── Knowledge evolution (P2-1) ──────────────────────────
+
+    @with_retry_on_busy()
+    @_require_conn
+    def save_evolution(self, source_id: str, target_id: str, relation_type: str,
+                       confidence: float = 0.5, reason: str = "",
+                       detection_method: str = "jaccard"):
+        """Record a knowledge evolution relationship."""
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO knowledge_evolution (source_id, target_id, relation_type, "
+                "confidence, reason, detection_method) VALUES (?,?,?,?,?,?)",
+                (source_id, target_id, relation_type, confidence, reason, detection_method)
+            )
+            self._conn.commit()
+
+    @_require_conn
+    def get_evolution_chain(self, knowledge_id: str, limit: int = 10) -> List[Dict]:
+        """Return evolution chain for a knowledge entry (both as source and target)."""
+        rows = self._conn.execute(
+            "SELECT * FROM knowledge_evolution WHERE source_id=? OR target_id=? "
+            "ORDER BY created_at DESC LIMIT ?",
+            (knowledge_id, knowledge_id, limit)
+        ).fetchall()
+        return [dict(r) for r in rows]
 
 class _TransactionContext:
     """Internal transaction context manager."""

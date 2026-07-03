@@ -366,6 +366,70 @@ async def api_cleanup(auth=Depends(verify_api_key)):
         return {"status": "error", "detail": "Cleanup failed"}
 
 
+# ── Memory Health ──
+@app.get("/api/memory/health")
+async def api_memory_health(auth=Depends(verify_api_key)):
+    try:
+        stats = memory_agent.db.get_memory_stats()
+        return {"status": "ok", "stats": stats}
+    except Exception as e:
+        logger.error(f"api_memory_health: {e}", exc_info=True)
+        return {"status": "error", "detail": "Health check failed"}
+
+class StateRequest(BaseModel):
+    state: str
+    reason: str = ""
+
+@app.post("/api/memory/{memory_type}/{memory_id}/state")
+async def api_set_memory_state(memory_type: str, memory_id: str,
+                                req: StateRequest, auth=Depends(verify_api_key)):
+    try:
+        memory_agent.db.save_memory_state(
+            memory_type, memory_id, req.state, reason=req.reason, source="user")
+        return {"status": "ok", "memory_type": memory_type, "memory_id": memory_id, "state": req.state}
+    except Exception as e:
+        logger.error(f"api_set_memory_state: {e}", exc_info=True)
+        return {"status": "error", "detail": "State update failed"}
+
+
+# ── Knowledge Evolution ──
+@app.get("/api/knowledge/{knowledge_id}/evolution")
+async def api_knowledge_evolution(knowledge_id: str, auth=Depends(verify_api_key)):
+    try:
+        rows = memory_agent.db._conn.execute(
+            "SELECT * FROM knowledge_evolution WHERE source_id=? OR target_id=? ORDER BY created_at DESC",
+            (knowledge_id, knowledge_id)
+        ).fetchall()
+        return {"knowledge_id": knowledge_id, "evolution": [dict(r) for r in rows]}
+    except Exception as e:
+        logger.error(f"api_knowledge_evolution: {e}", exc_info=True)
+        return {"status": "error", "detail": "Evolution lookup failed"}
+
+
+# ── MCP over HTTP (P3-1: Streamable HTTP MCP — JSON-RPC minimal viable) ──
+
+try:
+    from adapters.mcp_common import handle_mcp_request
+    _MCP_AVAILABLE = True
+except ImportError:
+    _MCP_AVAILABLE = False
+
+@app.post("/mcp")
+async def mcp_endpoint(request: dict):
+    import asyncio
+    if not _MCP_AVAILABLE:
+        return {"jsonrpc": "2.0", "error": {"code": -32603, "message": "MCP not available"}}
+    try:
+        return await asyncio.to_thread(handle_mcp_request, request)
+    except Exception as e:
+        logger.error(f"mcp_endpoint: {e}", exc_info=True)
+        return {"jsonrpc": "2.0", "error": {"code": -32603, "message": str(e)}}
+
+@app.get("/mcp")
+async def mcp_handshake():
+    return {"jsonrpc": "2.0", "result": {"protocolVersion": "2024-11-05"}}
+
+
 # ── Entry ──
 if __name__ == "__main__":
     port = int(sys.argv[1]) if len(sys.argv) > 1 else cfg.get("port", 8005)

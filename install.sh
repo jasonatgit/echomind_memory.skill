@@ -1,5 +1,5 @@
 #!/bin/bash
-# install.sh — EchoMind v1.2.0 one-click install (with auto-start)
+# install.sh — EchoMind v1.2.2 one-click install (with auto-start)
 set -e
 
 # Hermes install path detection (priority: env var > XDG > default)
@@ -17,7 +17,7 @@ INSTALL_DIR="${HERMES_HOME_DIR}/skills/echomind-memory"
 PLUGIN_DIR="${HERMES_HOME_DIR}/plugins/echomind"
 CONFIG_DIR="${HOME}/.echomind"
 
-echo "=== EchoMind v1.2.0 Install ==="
+echo "=== EchoMind v1.2.2 Install ==="
 echo "  Hermes home: ${HERMES_HOME_DIR}"
 
 # 1. Install to Hermes skill

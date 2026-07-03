@@ -121,8 +121,9 @@ FALLBACK_CONFIG = {
         "semantic_max_tokens": 4,
     },
     "server": {
-        "host": "0.0.0.0",
+        "host": "127.0.0.1",
         "port": 8005,
+        "api_key": "",
         "cors_origins": ["http://localhost:8005"],
     },
     "domain": {

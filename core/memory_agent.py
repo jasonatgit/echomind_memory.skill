@@ -32,6 +32,8 @@ class MemoryRecord(BaseModel):
     content: str
     importance: float
     metadata: Dict[str, Any]
+    relevance: float = 0.5      # 检索时的相关性得分，供 RL 优化器使用
+    trust_score: float = 0.5    # 记忆的可信度得分，供 RL 优化器使用
 
 
 from .learning.rl_weight_optimizer import RLWeightOptimizer
@@ -56,7 +58,8 @@ class MainMemoryAgent:
     _SCORE_RECENCY_DECAY_DAYS = 30
     _SCORE_RESEARCH_IMPORTANCE_WEIGHT = 0.3
     _DECAY_HALF_LIFE = 69  # days — freshness = 2^(-days / half_life)
-    _FRESHNESS_ARCHIVE_THRESHOLD = 0.1  # auto-exclude below this
+    _FRESHNESS_STALE_THRESHOLD = 0.3  # below this → stale state
+    _FRESHNESS_ARCHIVE_THRESHOLD = 0.1  # below this → archived
 
     def __init__(self, db_path: str = None, config_manager=None):
         self.context_agent = ContextMemoryAgent(max_sessions=5)
@@ -78,6 +81,8 @@ class MainMemoryAgent:
             learning_rate=rl_config.get("learning_rate", 0.07),
             decay_factor=rl_config.get("decay_factor", 0.97),
             max_buffer_size=rl_config.get("max_buffer_size", 50),
+            kpop_threshold=rl_config.get("kpop", {}).get("threshold", 2.0),
+            kpop_max_extra=rl_config.get("kpop", {}).get("max_extra", 0.3),
         )
         self._persistence_enabled = False
         self._store_count: dict = {}
@@ -144,6 +149,7 @@ class MainMemoryAgent:
                 summary=e.get("summary",""), tags=e.get("tags",[]))
             exp.frequency = e.get("frequency", 1)  # restore persisted frequency
             self.experience_agent.store[e.get("id","")] = exp
+            exp.id = e.get("id", exp.id)  # align model id with DB key before indexing
             self.experience_agent._index_entry(exp)
             self.experience_agent._summary_index[int(hashlib.md5(f"{exp.user_id}:{exp.summary}".encode()).hexdigest(), 16) % (2**63 - 1)] = e.get("id","")
             loaded["experiences"] += 1
@@ -234,6 +240,9 @@ class MainMemoryAgent:
             self.rl_optimizer.weights = saved_weights
             self.rl_optimizer.ema_weights = saved_weights.copy()
             logger.info(f"RL weights restored: {saved_weights}")
+
+        # P1-1: Initialize memory states for loaded records
+        self._update_memory_states()
 
     def disable_persistence(self):
         self._persistence_enabled = False
@@ -467,8 +476,32 @@ class MainMemoryAgent:
         if self._persistence_enabled:
             self._update_last_access_for_retrieved(retrieved, user_id)
 
+        # P1-4: behavior_hints — expose RL state and user preferences as structured hints
+        user_prefs = retrieved.get("user", {})
+        prefs = user_prefs.get("preferences", {}) if isinstance(user_prefs, dict) else {}
+        cw = self.rl_optimizer.get_current_weights()
+        behavior_hints = {
+            "preferred_response_style": prefs.get("response_style", ""),
+            "preferred_code_style": prefs.get("code_style", ""),
+            "content_language": prefs.get("language", ""),
+            "preferred_depth": prefs.get("depth", ""),
+            "preferred_tone": prefs.get("tone", ""),
+            "success_rate_estimate": round(self._estimate_success_rate(), 3),
+            "rl_state": {
+                "relevance_weight": round(cw.get("relevance", 0.5), 3),
+                "recency_weight": round(cw.get("recency", 0.5), 3),
+                "frequency_weight": round(cw.get("frequency", 0.5), 3),
+                "explicit_feedback_weight": round(cw.get("explicit_feedback", 0.5), 3),
+                "trust_weight": round(cw.get("trust_score", 0.5), 3),
+            },
+            "rl_weights": {k: round(v, 3) for k, v in cw.items()},
+        }
+
+        self._update_memory_states(user_id)
+
         return {
             "working_memory": top_memories,
+            "behavior_hints": behavior_hints,
             "raw_memory_sources": retrieved,
             "task_features": features,
             "feedback_request": True,
@@ -499,6 +532,7 @@ class MainMemoryAgent:
                     source=source,
                     content=f"User preferences: {json.dumps(user_mem.get('preferences', {}), ensure_ascii=False)}",
                     importance=round(score, 3), metadata=user_mem,
+                    trust_score=0.6,
                 ))
                 habits = user_mem.get("habits", {})
                 if habits:
@@ -506,6 +540,7 @@ class MainMemoryAgent:
                         source=source,
                         content=f"User habits: {json.dumps(habits, ensure_ascii=False)}",
                         importance=round(score * self._SCORE_USER_HABITS_MULT, 3), metadata=habits,
+                        trust_score=0.5,
                     ))
 
             elif source == "knowledge":
@@ -523,7 +558,7 @@ class MainMemoryAgent:
                     mem_domain = mem["metadata"].get("domain") or mem["metadata"].get("category", "")
                     domain_boost = self._SCORE_DOMAIN_BOOST if (research_domain != "general" and mem_domain == research_domain) else 0
                     score = (relevance * weights["relevance"] + recency * weights["recency"] + trust * weights["trust_score"] + domain_boost) * freshness
-                    scored.append(MemoryRecord(source=source, content=mem["content"], importance=round(score, 3), metadata=mem))
+                    scored.append(MemoryRecord(source=source, content=mem["content"], importance=round(score, 3), metadata=mem, relevance=relevance, trust_score=trust))
 
             elif source == "experience":
                 for mem in memories:
@@ -535,13 +570,16 @@ class MainMemoryAgent:
                     task_status = mem.get("metadata", {}).get("task_status", "")
                     if task_status == "failed": score *= self._SCORE_FAILED_MULT
                     elif task_status == "completed": score *= self._SCORE_COMPLETED_MULT
-                    scored.append(MemoryRecord(source=source, content=mem["summary"], importance=round(score, 3), metadata=mem))
+                    trust = mem.get("metadata", {}).get("trust_score", 0.5) if isinstance(mem.get("metadata"), dict) else 0.5
+                    scored.append(MemoryRecord(source=source, content=mem["summary"], importance=round(score, 3), metadata=mem,
+                                               relevance=mem.get("relevance", 0.5), trust_score=trust))
 
             elif source == "task_progress":
                 scored.append(MemoryRecord(
                     source=source,
                     content=f"Task progress: {json.dumps(memories, ensure_ascii=False)}",
                     importance=self._SCORE_TASK_PROGRESS, metadata=memories,
+                    relevance=0.7, trust_score=0.6,
                 ))
 
             elif source == "task_history":
@@ -553,6 +591,7 @@ class MainMemoryAgent:
                         source=source,
                         content=f"Previous task: {mem['title']} ({mem['status']})",
                         importance=self._SCORE_TASK_HISTORY * (0.5 + 0.5 * freshness), metadata=mem,
+                        relevance=0.4, trust_score=0.5,
                     ))
 
             elif source == "research":
@@ -568,6 +607,7 @@ class MainMemoryAgent:
                         source=source,
                         content=f"[{mem.get('domain','general')}] {mem['title']}: {key_points_str}",
                         importance=round(score, 3), metadata=mem,
+                        relevance=mem.get("relevance", 0.5), trust_score=0.6,
                     ))
 
             elif source == "context":
@@ -590,8 +630,42 @@ class MainMemoryAgent:
                             "messages": messages,
                             "token_count": ctx.get("token_count", 0),
                         },
+                        relevance=0.3, trust_score=0.4,
                     ))
 
+        if self.cfg.get_section("rl").get("gspo", {}).get("enabled", True):
+            scored = self._gspo_cluster(scored)
+        return scored
+
+    def _gspo_cluster(self, scored: List[MemoryRecord]) -> List[MemoryRecord]:
+        """GSPO-style cluster aggregation: same-source same-session memories
+        share a geometric-mean importance score.
+
+        Geometric mean = exp(mean(log(importance))) — more robust to outliers
+        than arithmetic mean. Only active for clusters of size >= 2 where
+        within-cluster variance exceeds threshold.
+        """
+        import math
+        clusters = {}
+        for mem in scored:
+            sid = ""
+            if isinstance(mem.metadata, dict):
+                sid = mem.metadata.get("session_id", "") or mem.metadata.get("metadata", {}).get("session_id", "")
+            key = f"{mem.source}:{sid}"
+            clusters.setdefault(key, []).append(mem)
+        for key, members in clusters.items():
+            if len(members) < 2:
+                continue
+            imps = [max(m.importance, 1e-8) for m in members]
+            mean_imp = sum(imps) / len(imps)
+            variance = sum((x - mean_imp) ** 2 for x in imps) / len(imps)
+            cv = math.sqrt(variance) / max(mean_imp, 1e-8)
+            if cv < 0.15:
+                continue
+            log_mean = sum(math.log(x) for x in imps) / len(imps)
+            geo = math.exp(log_mean)
+            for m in members:
+                m.importance = geo
         return scored
 
     def _freshness(self, record: Dict[str, Any]) -> float:
@@ -626,6 +700,41 @@ class MainMemoryAgent:
         except (ValueError, TypeError):
             return 1.0
 
+    def _update_memory_states(self, user_id: str = ""):
+        """Scan recent memories and update states based on Ebbinghaus freshness.
+
+        Maps freshness scores to states:
+          freshness 0.1-0.3 → stale
+          freshness < 0.1  → archived
+        Transitions: active→stale, active/stale→archived.
+        """
+        if not self._persistence_enabled or not self.db._conn:
+            return
+        try:
+            for mem_type, table, id_col in [
+                ("knowledge", "knowledge_memory", "id"),
+                ("experience", "experience_memory", "id"),
+                ("task", "task_memory", "id"),
+            ]:
+                rows = self.db._conn.execute(
+                    f"SELECT {id_col} as rid, created_at, last_access_at, last_updated "
+                    f"FROM {table} ORDER BY created_at DESC LIMIT 200"
+                ).fetchall()
+                for r in rows:
+                    current = self.db.get_memory_state(mem_type, r["rid"])
+                    if current in ("archived", "superseded"):
+                        continue
+                    freshness = self._freshness(dict(r))
+                    if freshness < self._FRESHNESS_ARCHIVE_THRESHOLD:
+                        if current in ("active", "stale"):
+                            self.db.save_memory_state(mem_type, r["rid"], "archived",
+                                                      "freshness_decay", source="system")
+                    elif freshness < self._FRESHNESS_STALE_THRESHOLD and current == "active":
+                        self.db.save_memory_state(mem_type, r["rid"], "stale",
+                                                  "freshness_decay", source="system")
+        except Exception as e:
+            logger.debug("Memory state update skipped: %s", e)
+
     def _update_last_access_for_retrieved(self, retrieved: Dict[str, Any], user_id: str):
         """Update last_access_at timestamps for records that were just retrieved."""
         if not self._persistence_enabled or not self.db._conn:
@@ -643,6 +752,7 @@ class MainMemoryAgent:
                 table_map = {
                     "knowledge": "knowledge_memory",
                     "experience": "experience_memory",
+                    "task_progress": "task_memory",
                     "task_history": "task_memory",
                     "context": "context_memory",
                     "research": "research_papers",
@@ -690,17 +800,19 @@ class MainMemoryAgent:
                 self.context_agent.add_message(msg, session_id=session_id)
             # Note: add_message above is intentionally outside the DB transaction below.
             # In-memory context is the primary state; DB persistence is secondary.
+            # Extract task features before create_task to get task_type
+            features = self._extract_task_features(
+                " ".join(m.get("content","") for m in context if m.get("role")=="user"))
             self.task_agent.create_task(user_id=user_id, task_id=task_id,
                                         title=title or session_title or "auto-task",
                                         steps=[{"step": "Initialize", "status": task_status}],
-                                        profile=profile, project=project)
+                                        profile=profile, project=project,
+                                        task_type=features.get("task_type"))
             task_tags = self._extract_task_tags(context) if hasattr(self, '_extract_task_tags') else []
             self._infer_user_preferences(context, user_id, platform=platform, profile=profile)
             self._infer_habits(user_id, context, profile=profile)
 
-            # Extract task features（Shared by persistence and experience store）
-            features = self._extract_task_features(
-                " ".join(m.get("content","") for m in context if m.get("role")=="user"))
+            # Extract task features (Shared by persistence and experience store)
             self._update_user_history(user_id, project, platform, profile=profile)
 
             if self._persistence_enabled:
@@ -735,7 +847,7 @@ class MainMemoryAgent:
                                       steps=[{"step": "Initialize", "status": task_status}],
                                       project=project, session_id=session_id or "",
                                       session_title=session_title, tags=task_tags,
-                                      profile=profile, language=lang)
+profile=profile, language=lang)
                     all_text = "".join(m.get("content", "") for m in context)
                     chinese_chars = len(re.findall(r'[\u4e00-\u9fff]', all_text))
                     token_est = int(chinese_chars * 1.5 + (len(all_text) - chinese_chars) / 4)
@@ -757,12 +869,17 @@ class MainMemoryAgent:
                     knowledge_content = best_content[:2000] if best_content else (experience_summary or "Auto-extracted knowledge")
                     if knowledge_content and knowledge_content != "Auto-extracted knowledge":
                         existing_kb = self.db.search_knowledge_by_content(knowledge_content)
+                        # P3-2: Extract entities from content before persisting
+                        kb_metadata = {"source": "task", "task_id": task_id, "user_id": user_id}
+                        entities = self._extract_entities(best_content or experience_summary or "")
+                        if entities:
+                            kb_metadata["entities"] = entities
                         if not existing_kb:
                             self.db.save_knowledge(
                                 knowledge_id=f"{user_id}:{task_id}",
                                 domain=research_domain,
                                 content=knowledge_content,
-                                metadata={"source": "task", "task_id": task_id, "user_id": user_id},
+                                metadata=kb_metadata,
                                 project=project,
                                 session_id=session_id or "",
                                 session_title=session_title, tags=task_tags,
@@ -777,13 +894,32 @@ class MainMemoryAgent:
                                 "category": research_domain,
                             })
                     if exp_data:
+                        exp_id = f"{user_id}:{exp_data['summary'][:20]}:{int(datetime.now(timezone.utc).timestamp())}"
                         self.db.save_experience(user_id, exp_data["task_type"], success,
                                      exp_data["steps"],
                                      exp_data["summary"],
                                      project=project,
                                      session_id=session_id or "",
                                      session_title=session_title, tags=task_tags,
-                                     profile=profile, language=lang)
+profile=profile, language=lang, experience_id=exp_id)
+
+                # P1-1: Initialize memory states for newly created records
+                if self._persistence_enabled:
+                    current_w = self.rl_optimizer.get_current_weights()
+                    weight_reason = json.dumps({"weights": current_w})
+                    task_pk = f"{user_id}:{task_id}"
+                    self.db.save_memory_state("user", user_id, "active", reason=weight_reason, source="store")
+                    self.db.save_memory_state("task", task_pk, "active", reason=weight_reason, source="store")
+                    self.db.save_memory_state("context", task_pk, "active", reason=weight_reason, source="store")
+                    if exp_data:
+                        self.db.save_memory_state("experience", exp_id, "active", reason=weight_reason, source="store")
+                    if knowledge_content and knowledge_content != "Auto-extracted knowledge":
+                        self.db.save_memory_state("knowledge", task_pk, "active", reason=weight_reason, source="store")
+
+                # P2-1: Evolution detection — scan existing knowledge via Jaccard, classify relations
+                if knowledge_content and knowledge_content != "Auto-extracted knowledge":
+                    self._detect_knowledge_evolution(knowledge_content, user_id, research_domain,
+                                                     knowledge_id=task_pk)
 
             # Store experience to in-memory agent (both persistence and non-persistence paths)
             if self._persistence_enabled:
@@ -824,6 +960,7 @@ class MainMemoryAgent:
                     self._trigger_auto_reflection(user_id)
             else:
                 self._store_handle_reflection_trigger(user_id, platform)
+            self._update_memory_states(user_id)
             return True
 
         except Exception as e:
@@ -1023,14 +1160,27 @@ class MainMemoryAgent:
             history = history[-max_history:]
         self.user_agent.update(user_id, "history", history, source="implicit", profile=profile)
 
+    def _estimate_success_rate(self, window: int = 50) -> float:
+        """Estimate recent success rate from RL history.
+
+        Maps avg_reward (range -1..+1) to 0..1 success rate.
+        Returns 0.5 neutral when no history available.
+        """
+        history = self.rl_optimizer.history[-window:]
+        if not history:
+            return 0.5
+        return sum(0.5 + h["avg_reward"] / 2 for h in history) / len(history)
+
     def record_feedback(self, user_id: str, task_id: str, feedback: str,
                         retrieved_memories: List[Dict], profile: str = "default"):
         if feedback not in ["positive", "negative"]:
             raise ValueError("feedback must be 'positive' or 'negative'")
         from .learning.rl_weight_optimizer import FeedbackRecord
+        cw = self.rl_optimizer.get_current_weights()
         feedback_record = FeedbackRecord(
             user_id=user_id, task_id=task_id,
             retrieved_memories=retrieved_memories, user_feedback=feedback,
+            metadata={"weights_snapshot": cw, "feedback": feedback},
         )
         self.rl_optimizer.add_feedback(feedback_record)
         # Persist RL weights
@@ -1088,7 +1238,30 @@ class MainMemoryAgent:
         (echomind_dir / "context.json").write_text(
             json.dumps(config, indent=2, ensure_ascii=False), encoding="utf-8")
 
-        summary = "=== EchoMind Memory summary ===\n"
+        summary = "=== EchoMind Memory Health ===\n\n"
+
+        # P1-2: Briefing section — active topics, health stats
+        try:
+            stats = self.db.get_memory_stats()
+            summary += "## Memory Health\n\n"
+            summary += "| Type | Active | Stale | Archived | Growth 7d |\n"
+            summary += "|------|--------|-------|----------|----------|\n"
+            for mem_type in ("knowledge", "experience", "task", "context"):
+                s = stats.get(mem_type, {})
+                growth = stats.get(f"{mem_type}_7d_growth", 0)
+                summary += f"| {mem_type} | {s.get('active',0)} | {s.get('stale',0)} | {s.get('archived',0)} | +{growth} |\n"
+            summary += f"\nDecay: half_life={self._DECAY_HALF_LIFE}d, stale<0.3, archive<0.1\n"
+            summary += "\n### Flags\n"
+            flags = self._get_flags(user_id)
+            if flags:
+                for f in flags[:5]:
+                    summary += f"- [{f['type']}] {f.get('memory_id','')}: {f.get('content','')[:100]}\n"
+            else:
+                summary += "No issues found.\n"
+        except Exception:
+            summary += "(Health report unavailable)\n"
+
+        summary += "\n=== EchoMind Memory summary ===\n"
         style = user_mem.get("preferences", {}).get("code_style")
         if style == "concise":
             summary += "▸ Your code style preferences: concise, no comments, short functions\n"
@@ -1106,3 +1279,155 @@ class MainMemoryAgent:
 
     def clear_context(self):
         self.context_agent.clear()
+
+    # ── P2-1: Knowledge evolution ──────────────────────
+
+    @staticmethod
+    def _jaccard_similarity(text1: str, text2: str) -> float:
+        """Jaccard similarity on word tokens — fast, zero-LLM approx."""
+        if not text1 or not text2:
+            return 0.0
+        set1 = set(text1.lower().split())
+        set2 = set(text2.lower().split())
+        inter = len(set1 & set2)
+        union = len(set1 | set2)
+        return inter / union if union > 0 else 0.0
+
+    def _classify_relation(self, sim: float) -> Optional[str]:
+        """Classify relation type from Jaccard similarity alone."""
+        if sim >= 0.9:
+            return "replaces"
+        if sim >= 0.7:
+            return "enriches"
+        return None
+
+    def _llm_classify_relation(self, source_text: str, target_text: str, sim: float) -> Optional[str]:
+        """Use LLM to precisely classify relation (replaces/enriches/confirms/challenges)."""
+        try:
+            llm = self._get_llm_client() if hasattr(self, '_get_llm_client') else None
+            if not llm or not llm.available:
+                return self._classify_relation(sim)
+            prompt = (
+                "Compare these two knowledge statements. Reply with ONE word:\n"
+                "- 'replaces' if statement B makes statement A obsolete\n"
+                "- 'enriches' if B adds useful detail to A\n"
+                "- 'confirms' if B independently validates A\n"
+                "- 'challenges' if B contradicts A\n"
+                "- 'none' if unrelated\n\n"
+                f"A: {source_text[:300]}\n\nB: {target_text[:300]}\n\n"
+                "Relation:"
+            )
+            result = llm.chat(prompt, temperature=0, max_tokens=10).strip().lower()
+            valid = {"replaces", "enriches", "confirms", "challenges"}
+            return result if result in valid else self._classify_relation(sim)
+        except Exception:
+            return self._classify_relation(sim)
+
+    # ── P2-2: Flags ────────────────────────────────────
+
+    def _get_flags(self, user_id: str) -> List[Dict]:
+        """Scan for needs_verify and contradiction flags (stale handled by P1-1 state machine)."""
+        flags = []
+        all_kb = self.knowledge_agent.search_all(user_id=user_id)
+        # needs_verify: single-source knowledge without evolution links
+        for kb in all_kb[:50]:
+            if not self.db or not self.db._conn:
+                break
+            row = self.db._conn.execute(
+                "SELECT COUNT(*) as cnt FROM knowledge_evolution WHERE source_id=? OR target_id=?",
+                (kb["id"], kb["id"])
+            ).fetchone()
+            if row and row["cnt"] == 0:
+                age = self._freshness(kb)
+                if age > 0.3:  # still fresh but unverified
+                    flags.append({"type": "needs_verify", "memory_type": "knowledge",
+                                  "memory_id": kb["id"], "content": kb["content"][:120]})
+        # contradiction: pairwise Jaccard scan
+        ids = list(self.knowledge_agent.store.keys())[:30]
+        for i in range(len(ids)):
+            for j in range(i + 1, min(i + 10, len(ids))):
+                a = self.knowledge_agent.store.get(ids[i])
+                b = self.knowledge_agent.store.get(ids[j])
+                if not a or not b:
+                    continue
+                sim = self._jaccard_similarity(a.content, b.content)
+                if sim > 0.7 and self._detect_contradiction(a.content, b.content):
+                    flags.append({"type": "contradiction", "memory_type": "knowledge",
+                                  "memory_id": f"{ids[i]} vs {ids[j]}",
+                                  "content": f"{a.content[:50]} ... {b.content[:50]}"})
+        return flags
+
+    _CONTRADICT_POS = ["use", "choose", "select", "recommend", "best", "optimal", "采用", "使用", "推荐"]
+    _CONTRADICT_NEG = ["avoid", "not", "never", "wrong", "deprecated", "不要", "不应", "避免"]
+
+    def _detect_contradiction(self, text_a: str, text_b: str) -> bool:
+        """Heuristic polarity check: one text suggests using X, other suggests avoiding X."""
+        a_l, b_l = text_a.lower(), text_b.lower()
+        a_pos = any(w in a_l for w in self._CONTRADICT_POS)
+        b_pos = any(w in b_l for w in self._CONTRADICT_POS)
+        a_neg = any(w in a_l for w in self._CONTRADICT_NEG)
+        b_neg = any(w in b_l for w in self._CONTRADICT_NEG)
+        return (a_pos and b_neg) or (a_neg and b_pos)
+
+    def _detect_knowledge_evolution(self, content: str, user_id: str, domain: str = "general",
+                                    knowledge_id: str = ""):
+        """Scan existing knowledge via Jaccard, classify relations, write evolution records."""
+        if not self._persistence_enabled or not content or len(content) < 20 or not knowledge_id:
+            return
+        try:
+            candidates = self.knowledge_agent.search(query=content, user_id=user_id,
+                                                      domain=domain, top_k=50)
+            best_sim, best_id, best_content = 0.0, None, ""
+            for c in candidates:
+                sim = self._jaccard_similarity(content[:500], (c.get("content", "") or "")[:500])
+                if sim > best_sim:
+                    best_sim, best_id, best_content = sim, c.get("id"), c.get("content", "")
+            if best_id == knowledge_id:
+                return  # self-reference — skip evolution detection
+            if best_sim > 0.7 and best_id:
+                relation = self._llm_classify_relation(best_content or "", content, best_sim)
+                if relation:
+                    self.db.save_evolution(best_id, knowledge_id, relation,
+                        confidence=best_sim, reason="jaccard_match",
+                        detection_method="llm" if best_sim < 0.9 else "jaccard")
+                    if relation == "replaces" and best_sim >= 0.9:
+                        self.db.save_memory_state("knowledge", best_id, "superseded",
+                            reason=f"replaced_by:{knowledge_id}", source="evolution")
+        except Exception as e:
+            logger.debug("Knowledge evolution detection skipped: %s", e)
+
+    # ── P3-2: Entity extraction ────────────────────────
+
+    def _extract_entities(self, content: str) -> List[Dict]:
+        """Extract entities using LLM if available, keyword fallback otherwise."""
+        llm = self._get_llm_client() if hasattr(self, '_get_llm_client') else None
+        if llm:
+            try:
+                return self._llm_extract_entities(llm, content)
+            except Exception:
+                pass
+        return self._keyword_extract_entities(content)
+
+    def _llm_extract_entities(self, llm, content: str) -> List[Dict]:
+        prompt = "Extract named entities (technologies, concepts, people, projects) from this text. Return JSON: [{\"type\":\"technology\",\"name\":\"...\"}]"
+        result = llm.chat(f"{prompt}\n\n{content[:600]}", temperature=0, max_tokens=200)
+        try:
+            parsed = __import__('json').loads(result)
+            if isinstance(parsed, list):
+                for e in parsed:
+                    e.setdefault("source", "llm")
+                    e.setdefault("confidence", 0.85)
+                return parsed
+        except Exception:
+            pass
+        return self._keyword_extract_entities(content)
+
+    def _keyword_extract_entities(self, content: str) -> List[Dict]:
+        entities = []
+        kw_cfg = self.cfg.get("entities", "technologies", default=[])
+        if isinstance(kw_cfg, str):
+            kw_cfg = [kw_cfg]
+        for kw in kw_cfg:
+            if isinstance(kw, str) and kw.lower() in content.lower():
+                entities.append({"type": "technology", "name": kw, "confidence": 0.6, "source": "keyword"})
+        return entities[:10]

@@ -166,10 +166,16 @@ if "--mcp" in sys.argv:
     print("MCP stdio mode not yet implemented. Use HTTP mode instead.")
     sys.exit(1)
 elif __name__ == "__main__":
-    from adapters.http_api import app, memory_agent
     from core._reflective_version import get_echomind_version
     from core.config_manager import get_config_manager
-    import uvicorn
+    try:
+        from adapters.http_api import app, memory_agent
+        import uvicorn
+    except ImportError as e:
+        print(f"Error: Missing HTTP dependency — {e}")
+        print("Install with: pip install 'echomind-memory[http]'")
+        print("Or: pip install fastapi uvicorn")
+        sys.exit(1)
 
     server_cfg = get_config_manager().get_section("server")
     port = int(sys.argv[1]) if len(sys.argv) > 1 else server_cfg.get("port", 8005)
@@ -178,7 +184,9 @@ elif __name__ == "__main__":
     print("=" * 60)
     print(f"  EchoMind Memory v{get_echomind_version()} — HTTP API Mode")
     print(f"  Endpoint: http://{host}:{port}")
-    print(f"  Docs:     http://{host}:{port}/docs")
+    print(f"  MCP (stdio): python adapters/mcp_gateway.py")
+    print(f"  MCP (HTTP):  http://{host}:{port}/mcp   <-- requires HTTP service running")
+    print(f"  Docs:       http://{host}:{port}/docs")
     print("=" * 60)
     uvicorn.run(app, host=host, port=port, log_level="info")
 else:

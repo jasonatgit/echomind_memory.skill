@@ -107,6 +107,8 @@ class ExperienceMemoryAgent:
                     "id": entry.id, "summary": entry.summary,
                     "steps": entry.steps_sequence, "success": entry.success,
                     "frequency": entry.frequency,
+                    "relevance": min(0.9, 0.3 + 0.1 * entry.frequency),
+                    "metadata": {"trust_score": 0.5 if not entry.success else min(0.95, 0.7 + 0.05 * entry.frequency)},
                 })
         similar.sort(key=lambda x: x["frequency"], reverse=True)
         return similar[:limit]

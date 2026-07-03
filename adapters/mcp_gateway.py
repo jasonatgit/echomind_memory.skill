@@ -24,6 +24,12 @@ import urllib.request
 import urllib.error
 from urllib.parse import quote
 
+# Ensure adapters package is importable when running as standalone script
+_pkg_dir = os.path.dirname(os.path.abspath(__file__))
+if _pkg_dir not in sys.path:
+    sys.path.insert(0, os.path.dirname(_pkg_dir))
+from adapters.mcp_common import handle_mcp_request
+
 ECHOMIND_URL = "http://127.0.0.1:8005"
 _API_KEY = os.environ.get("ECHOMIND_API_TOKEN", "")
 
@@ -355,43 +361,9 @@ def main():
         except json.JSONDecodeError:
             continue
 
-        msg_id = msg.get("id")
-        method = msg.get("method")
-        params = msg.get("params", {})
-
-        if method == "initialize":
-            response = {
-                "jsonrpc": "2.0",
-                "id": msg_id,
-                "result": {
-                    "protocolVersion": "2024-11-05",
-                    "capabilities": {"tools": {}, "resources": {}},
-                    "serverInfo": {"name": "echomind-mcp", "version": "1.2.0"},
-                },
-            }
-
-        elif method == "tools/list":
-            response = {"jsonrpc": "2.0", "id": msg_id, "result": handle_tools_list()}
-
-        elif method == "resources/list":
-            response = {"jsonrpc": "2.0", "id": msg_id, "result": handle_resources_list()}
-
-        elif method == "resources/read":
-            uri = params.get("uri", "")
-            response = {"jsonrpc": "2.0", "id": msg_id, "result": handle_resource_read(uri)}
-
-        elif method == "tools/call":
-            tool_name = params.get("name", "")
-            tool_args = params.get("arguments", {})
-            result = handle_tool_call(tool_name, tool_args)
-            response = {"jsonrpc": "2.0", "id": msg_id, "result": result}
-
-        elif method in ("notifications/initialized",):
+        response = handle_mcp_request(msg)
+        if response is None:
             continue
-
-        else:
-            response = {"jsonrpc": "2.0", "id": msg_id, "result": {}}
-
         sys.stdout.write(json.dumps(response) + "\n")
         sys.stdout.flush()
 

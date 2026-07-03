@@ -27,10 +27,11 @@ class TaskMemoryAgent:
 
     def create_task(self, user_id: str, task_id: str, title: str,
                      steps: List[Dict], profile: str = "default",
-                     project: str = "default") -> str:
+                     project: str = "default", task_type: str = None) -> str:
         task = TaskMemory(
             user_id=user_id, task_id=task_id, title=title, status="pending",
             steps=steps, profile=profile, project=project,
+            metadata={"task_type": task_type} if task_type else {},
         )
         store_key = f"{user_id}:{task_id}"
         self.store[store_key] = task
@@ -58,11 +59,12 @@ class TaskMemoryAgent:
             "title": task.title, "updated_at": task.updated_at.isoformat(),
         }
 
-    def get_recent_tasks(self, user_id: str, task_type: str, project: str = None,
-                        limit: int = 5, profile: str = None) -> List[Dict]:
+    def get_recent_tasks(self, user_id: str, task_type: str = None, project: str = None,
+                          limit: int = 5, profile: str = None) -> List[Dict]:
         tasks = [t for t in self.store.values()
                  if t.user_id == user_id
                  and (not project or t.project == project)
-                 and (not profile or t.profile == profile)]
+                 and (not profile or t.profile == profile)
+                 and (not task_type or t.metadata.get("task_type") == task_type)]
         tasks.sort(key=lambda x: x.updated_at, reverse=True)
         return [{"task_id": t.task_id, "title": t.title, "status": t.status} for t in tasks[:limit]]
