@@ -411,7 +411,13 @@ class SqliteStore:
                     if version <= current:
                         continue
                     for stmt in stmts:
-                        self._conn.execute(stmt)
+                        try:
+                            self._conn.execute(stmt)
+                        except sqlite3.OperationalError as e:
+                            err = str(e).lower()
+                            if "duplicate column" in err or "already exists" in err:
+                                continue
+                            raise
                     self._conn.execute(f"PRAGMA user_version = {version}")
                     logger.info("Migration v%d: %s", version, desc)
                 self._conn.commit()
