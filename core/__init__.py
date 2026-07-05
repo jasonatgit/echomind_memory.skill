@@ -13,6 +13,8 @@ from .memory_agent import (
     MemoryRecord,
 )
 
+from .learning.rl_weight_optimizer import RLWeightOptimizer, FeedbackRecord
+
 __all__ = [
     "MainMemoryAgent",
     "ContextMemoryAgent",
@@ -22,4 +24,6 @@ __all__ = [
     "ExperienceMemoryAgent",
     "ResearchMemoryAgent",
     "MemoryRecord",
+    "RLWeightOptimizer",
+    "FeedbackRecord",
 ]
