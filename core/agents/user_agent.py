@@ -44,6 +44,19 @@ class UserMemoryAgent:
         # else: pre-v3.0 Legacy format, return directly
         return raw
 
+    def replace_history(self, user_id: str, history: list,
+                         profile: str = "default") -> bool:
+        """Replace entire history list — avoids O(2^n) nesting bug from update()."""
+        store_key = self._key(user_id, profile)
+        if store_key not in self.store:
+            self.store[store_key] = UserMemory(user_id=user_id, profile=profile)
+        mem = self.store[store_key]
+        mem.history = history
+        mem.version += 1
+        mem.last_updated = datetime.now(timezone.utc)
+        self.cache[store_key] = mem
+        return True
+
     def update(self, user_id: str, key: str, value: Any,
                source: str = "implicit", platform: str = None,
                profile: str = "default") -> bool:

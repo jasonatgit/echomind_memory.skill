@@ -1158,7 +1158,7 @@ profile=profile, language=lang, experience_id=exp_id)
         max_history = self.cfg.get("user", "max_history_size", default=20)
         if len(history) > max_history:
             history = history[-max_history:]
-        self.user_agent.update(user_id, "history", history, source="implicit", profile=profile)
+        self.user_agent.replace_history(user_id, history, profile=profile)
 
     def _estimate_success_rate(self, window: int = 50) -> float:
         """Estimate recent success rate from RL history.
