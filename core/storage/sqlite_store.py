@@ -447,7 +447,7 @@ class SqliteStore:
             return
         cursor = self._conn.execute("PRAGMA user_version")
         current = cursor.fetchone()[0]
-        if current >= _MIGRATIONS[-1][0] if _MIGRATIONS else current:
+        if not _MIGRATIONS or current >= _MIGRATIONS[-1][0]:
             return
         try:
             with self._lock:
@@ -1325,9 +1325,9 @@ class SqliteStore:
             stats[mem_type].setdefault("archived", 0)
         # 7-day growth: count records created in the last 7 days (from original tables, not state changes)
         growth_queries = {
-            "knowledge": "SELECT COUNT(*) FROM knowledge_memory WHERE created_at >= datetime('now', '-7 days')",
-            "experience": "SELECT COUNT(*) FROM experience_memory WHERE created_at >= datetime('now', '-7 days')",
-            "task": "SELECT COUNT(*) FROM task_memory WHERE created_at >= datetime('now', '-7 days')",
+            "knowledge": "SELECT COUNT(*) AS cnt FROM knowledge_memory WHERE created_at >= datetime('now', '-7 days')",
+            "experience": "SELECT COUNT(*) AS cnt FROM experience_memory WHERE created_at >= datetime('now', '-7 days')",
+            "task": "SELECT COUNT(*) AS cnt FROM task_memory WHERE created_at >= datetime('now', '-7 days')",
         }
         for mem_type, sql in growth_queries.items():
             row = self._conn.execute(sql).fetchone()

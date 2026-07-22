@@ -18,10 +18,14 @@ class KnowledgeMemoryAgent:
         if len(self.store) <= self.MAX_ITEMS:
             return
         excess = len(self.store) - int(self.MAX_ITEMS * 0.9)
-        for k in list(self.store.keys())[:excess]:
-            self._remove_from_index(k)
-            self._content_index.pop(k, None)
-            del self.store[k]
+        for entry_id in list(self.store.keys())[:excess]:
+            self._remove_from_index(entry_id)
+            entry = self.store.get(entry_id)
+            if entry:
+                # _content_index uses content hash (int) as key, not entry_id
+                ch = int(hashlib.md5(entry.content.encode()).hexdigest(), 16) % (2**63 - 1)
+                self._content_index.pop(ch, None)
+            del self.store[entry_id]
 
     def __init__(self):
         self.store: Dict[str, KnowledgeEntry] = {}

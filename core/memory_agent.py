@@ -468,7 +468,9 @@ class MainMemoryAgent:
                 retrieved["context"] = recent_contexts
 
         scored = self._compute_importance(retrieved, task_context, user_id, platform, features)
-        top_memories = sorted(scored, key=lambda x: x.importance, reverse=True)[:8]
+        # P0-2: Group-by-domain sampling — ensure knowledge diversity in top-8
+        ranked = sorted(scored, key=lambda x: x.importance, reverse=True)
+        top_memories = self._diversify_top_k(ranked, top_k=8)
         confidence = (sum(m.importance for m in top_memories)
                       / max(len(top_memories), 1))
 
@@ -495,6 +497,7 @@ class MainMemoryAgent:
                 "trust_weight": round(cw.get("trust_score", 0.5), 3),
             },
             "rl_weights": {k: round(v, 3) for k, v in cw.items()},
+            "hot_domains": self._get_hot_domains(threshold=3),
         }
 
         self._update_memory_states(user_id)
@@ -667,6 +670,44 @@ class MainMemoryAgent:
             for m in members:
                 m.importance = geo
         return scored
+
+    def _diversify_top_k(self, ranked: List[MemoryRecord], top_k: int = 8) -> List[MemoryRecord]:
+        """Diversify top-K by domain grouping.
+
+        Ensures at least one item from each domain that appears in the
+        top (top_k × 2) candidates makes it into the final top_k.
+        Falls back to straight ranking when grouping is not beneficial.
+        """
+        if not ranked:
+            return []
+        # Extract domain from metadata for knowledge/experience sources
+        def _item_domain(mem: MemoryRecord) -> str:
+            if isinstance(mem.metadata, dict):
+                return mem.metadata.get("domain", "") or mem.metadata.get("category", "") or ""
+            return ""
+        # Items with empty domain keep their rank position
+        domains_seen: set[str] = set()
+        result: List[MemoryRecord] = []
+        for mem in ranked:
+            if len(result) >= top_k:
+                break
+            domain = _item_domain(mem)
+            if not domain or domain == "general":
+                # items without domain always pass through
+                result.append(mem)
+            elif domain not in domains_seen:
+                # First item of this domain — guaranteed spot
+                domains_seen.add(domain)
+                result.append(mem)
+            else:
+                # Already have a representative from this domain in result
+                # only include if we have room AND this item's importance
+                # is within 80% of the last included
+                if len(result) < top_k:
+                    last_imp = result[-1].importance
+                    if mem.importance >= last_imp * 0.8:
+                        result.append(mem)
+        return result[:top_k]
 
     def _freshness(self, record: Dict[str, Any]) -> float:
         """Compute Ebbinghaus forgetting curve freshness.
@@ -1095,9 +1136,9 @@ profile=profile, language=lang, experience_id=exp_id)
             },
             "language": {
                 "zh": inf_kw.get("lang_zh",
-                    default_infer.get("lang_zh", ["python", "中文", "汉语"])),
+                    default_infer.get("lang_zh", ["中文", "汉语"])),
                 "en": inf_kw.get("lang_en",
-                    default_infer.get("lang_en", ["python", "english"])),
+                    default_infer.get("lang_en", ["english", "english please"])),
             },
             "depth": {
                 "beginner": inf_kw.get("depth_beginner",
@@ -1272,6 +1313,51 @@ profile=profile, language=lang, experience_id=exp_id)
         for rp in list(self.research_agent.papers.values())[:3]:
             summary += f"\n▸ Research papers:{rp.title}（{rp.domain}）\n"
         (echomind_dir / "README.md").write_text(summary, encoding="utf-8")
+
+        # P0-3: Export human-readable profile.md — inspired by Raven's user.md format
+        try:
+            profile_lines = ["# EchoMind Memory Profile\n"]
+            # User preferences section
+            prefs = user_mem.get("preferences", {})
+            if prefs:
+                profile_lines.append("## Preferences\n")
+                for k, v in sorted(prefs.items()):
+                    if isinstance(v, (str, int, float, bool)):
+                        profile_lines.append(f"- **{k}**: {v}\n")
+                profile_lines.append("\n")
+            # Knowledge summary
+            all_kb = self.knowledge_agent.search_all(user_id=user_id, profile=profile)
+            if all_kb:
+                profile_lines.append(f"## Knowledge ({len(all_kb)} entries)\n")
+                for kb in all_kb[:15]:
+                    profile_lines.append(f"- {kb.get('content', '')[:120]}\n")
+                profile_lines.append("\n")
+            # Experience summary
+            if exp_mem:
+                profile_lines.append(f"## Recent Experience ({len(exp_mem)} entries)\n")
+                for exp in exp_mem[:5]:
+                    status = "✅" if exp.get("success") else "❌"
+                    profile_lines.append(f"- {status} {exp.get('summary', '')[:100]}\n")
+                profile_lines.append("\n")
+            # Research papers
+            papers = list(self.research_agent.papers.values())
+            if papers:
+                profile_lines.append(f"## Research Papers ({len(papers)} entries)\n")
+                for p in papers[:5]:
+                    profile_lines.append(f"- **{p.title}** ({p.domain})\n")
+                profile_lines.append("\n")
+            # Hot domains
+            hot = self._get_hot_domains(threshold=3)
+            if hot:
+                profile_lines.append("## Active Topics\n")
+                for d in hot:
+                    profile_lines.append(f"- {d}\n")
+                profile_lines.append("\n")
+            profile_lines.append(f"---\n*Generated: {datetime.now(timezone.utc).isoformat()}*\n")
+            (echomind_dir / "profile.md").write_text(
+                "".join(profile_lines), encoding="utf-8")
+        except Exception:
+            logger.warning("Failed to export profile.md")
         logger.info(f"Synced EchoMind memories to {echomind_dir}")
 
     def get_context(self) -> List[Dict]:
@@ -1322,6 +1408,31 @@ profile=profile, language=lang, experience_id=exp_id)
             return result if result in valid else self._classify_relation(sim)
         except Exception:
             return self._classify_relation(sim)
+
+    # ── P0-1: Hot tag statistics — domain-level knowledge count for tag-driven reflection ──
+
+    def _get_hot_domains(self, threshold: int = 3) -> List[str]:
+        """Return knowledge domains whose entry count >= threshold.
+
+        Used to trigger domain-specific lightweight reflection
+        (inspired by Raven's hot_tags -> refresh_section pattern).
+        """
+        if not self._persistence_enabled or not self.knowledge_agent:
+            return []
+        counts: Dict[str, int] = {}
+        for entry in self.knowledge_agent.store.values():
+            domain = entry.metadata.get("domain", "") or entry.metadata.get("category", "")
+            if domain and domain != "general":
+                counts[domain] = counts.get(domain, 0) + 1
+            tags = entry.metadata.get("tags", [])
+            if isinstance(tags, list):
+                for tag in tags:
+                  if isinstance(tag, str):
+                    key = f"_tag:{tag}"
+                    counts[key] = counts.get(key, 0) + 1
+        hot = [d for d, c in counts.items() if c >= threshold]
+        hot.sort(key=lambda d: counts.get(d, 0), reverse=True)
+        return hot[:10]
 
     # ── P2-2: Flags ────────────────────────────────────
 

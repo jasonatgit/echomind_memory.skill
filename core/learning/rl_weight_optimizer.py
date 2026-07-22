@@ -27,12 +27,9 @@ class RLWeightOptimizer:
         "explicit_feedback": {"range": [0.10, 0.20], "default": [0.10, 0.20]},
         "trust_score":       {"range": [0.05, 0.15], "default": [0.05, 0.15]},
     }
-    # Define weight key order constants, eliminate hardcoded magic numbers
     _WEIGHT_KEYS = ["relevance", "recency", "frequency", "explicit_feedback", "trust_score"]
-    # state = [5 task features + 7 source ratios] = 12 维
     _TASK_FEATURE_COUNT = 5
     # RCW mapping: which source types influence each weight dimension.
-    # Each weight updates based on contributions from its relevant sources.
     _WEIGHT_SOURCE_MAP = {
         "relevance":         ["user", "knowledge", "research"],
         "recency":           ["context", "task_history"],
@@ -40,8 +37,6 @@ class RLWeightOptimizer:
         "explicit_feedback": ["user"],
         "trust_score":       ["knowledge", "experience", "research"],
     }
-    # Total source ratio count (must match extract_state output length - TASK_FEATURE_COUNT)
-    _SOURCE_RATIO_COUNT = 7
 
     def __init__(
         self,
@@ -62,7 +57,6 @@ class RLWeightOptimizer:
                 self.weights[key] = random.uniform(float(cfg_val[0]), float(cfg_val[1]))
             else:
                 self.weights[key] = float(cfg_val)
-        # Initial weight Softmax normalization
         init_vals = np.array([self.weights.get(k, 0.0) for k in self._WEIGHT_KEYS])
         exp_vals = np.exp(init_vals - np.max(init_vals))
         softmax_vals = exp_vals / np.sum(exp_vals)
@@ -78,22 +72,19 @@ class RLWeightOptimizer:
         self.update_counter = 0
         self.max_buffer_size = max_buffer_size
         self.history: List[Dict] = []
-        # Cumulative feedback counter (not affected by history pop)
         self._cumulative_feedback_count = 0
-        # Epsilon-greedy exploration
         self.epsilon_start = 0.1
         self.epsilon_end = 0.01
         self.epsilon_step = 0
         self._source_order = ["user", "knowledge", "experience", "task_progress",
                                "task_history", "research", "context"]
-        # Policy snapshots for convergence analysis
         self.policy_snapshots: List[Dict] = []
-        self.policy_snapshot_every = 100  # feedbacks between snapshots
-        # KPop divergence threshold — overridable via config
+        self.policy_snapshot_every = 100
         self.kpop_threshold = kpop_threshold
         self.kpop_max_extra = kpop_max_extra
 
     def snapshot_policy(self):
+        """Record pre-update policy snapshot for KPop divergence tracking."""
         if self.policy_snapshots and self._cumulative_feedback_count - self.policy_snapshots[-1].get("total_fb", 0) < self.policy_snapshot_every:
             return
         self.policy_snapshots.append({
@@ -106,7 +97,6 @@ class RLWeightOptimizer:
             self.policy_snapshots.pop(0)
 
     def _get_lr(self) -> float:
-        """Cosine decay learning rate from base_lr to lr_min over lr_max_steps."""
         if self.update_counter >= self.lr_max_steps:
             return self.lr_min
         frac = self.update_counter / self.lr_max_steps
@@ -114,7 +104,6 @@ class RLWeightOptimizer:
         return self.lr_min + cosine * (self.base_lr - self.lr_min)
 
     def _maybe_explore(self):
-        """Epsilon-greedy weight perturbation."""
         eps = max(self.epsilon_end, self.epsilon_start - (self.epsilon_start - self.epsilon_end) * self.epsilon_step / 500)
         self.epsilon_step += 1
         if random.random() < eps:
@@ -123,12 +112,6 @@ class RLWeightOptimizer:
             logger.debug("[RL] Exploration: perturbed %s (eps=%.3f)", k, eps)
 
     def _compute_baseline(self) -> float:
-        """Weighted average of recent rewards as advantage baseline.
-
-        Uses last 20 history entries with linear recency weighting
-        (newer entries have higher weight). Returns 0.0 when insufficient
-        history — falls back to raw reward.
-        """
         recent = self.history[-20:]
         if not recent or len(recent) < 3:
             return 0.0
@@ -139,34 +122,25 @@ class RLWeightOptimizer:
             return 0.0
 
     def _compute_rcw_advantages(self, fb: FeedbackRecord) -> Dict[str, float]:
-        """Reward Contribution Weighting — returns {weight_key: advantage_multiplier}.
+        """Reward Contribution Weighting — returns {weight_key: multiplier} (non-negative).
 
-        How it works:
-          1. For each memory in the retrieved list, extract its source type and
-             compute rel × trust as the source-level contribution score.
-          2. Average per-source scores across multiple memories of the same source.
-          3. Normalize all source scores to sum to 1.0, then multiply by
-             feedback direction (±1) to get the source-level advantage.
-          4. For each weight dimension (relevance/recency/...), aggregate the
-             source-level advantages of its mapped sources via _WEIGHT_SOURCE_MAP.
-             If a weight maps to multiple sources, the average of those sources'
-             advantages is used.
-          5. Returns {weight_key: multiplier} where multiplier > 0 means
-             feedback says "increase this weight dimension" and < 0 means "decrease".
-             Default 1.0 for unmapped weights.
+        For each source type, aggregate rel × trust scores, normalize to sum 1.0,
+        then map to weight dimensions via _WEIGHT_SOURCE_MAP.
+        Returns non-negative weights so caller can apply feedback direction
+        independently without double-counting sign.
         """
-        # Step 1-2: per-source contribution scores (rel × trust, averaged)
         source_scores = {}
         source_counts = {}
         for mem in fb.retrieved_memories[:8]:
             source = mem.get("source", "context")
-            # MemoryRecord now carries relevance/trust_score as first-class fields
             rel = mem.get("relevance", 0.5)
             meta = mem.get("metadata", {})
-            trust = meta.get("trust_score", 0.5) if isinstance(meta, dict) else 0.5
-            # fallback to MemoryRecord-level trust_score field if metadata doesn't have one
-            if trust == 0.5 and "trust_score" in mem:
+            if isinstance(meta, dict) and "trust_score" in meta:
+                trust = meta["trust_score"]
+            elif "trust_score" in mem:
                 trust = mem["trust_score"]
+            else:
+                trust = 0.5
             source_scores.setdefault(source, 0.0)
             source_scores[source] += rel * trust
             source_counts.setdefault(source, 0)
@@ -174,37 +148,31 @@ class RLWeightOptimizer:
         if not source_scores:
             return {k: 1.0 for k in self._WEIGHT_KEYS}
 
-        # Step 3: average per source, then normalize.
-        # Returns non-negative weights (no fb_sign) so caller can apply direction
-        # independently without double-counting sign.
         for s in source_scores:
             source_scores[s] /= max(1, source_counts[s])
         total = sum(source_scores.values()) + 1e-8
         normalized = {s: v / total for s, v in source_scores.items()}
 
-        # Step 4: map sources to weight dimensions
         result = {}
         for wk in self._WEIGHT_KEYS:
-            mapped_sources = self._WEIGHT_SOURCE_MAP.get(wk, [])
-            if not mapped_sources:
+            mapped = self._WEIGHT_SOURCE_MAP.get(wk, [])
+            if not mapped:
                 result[wk] = 1.0
                 continue
-            values = [normalized.get(s, 0.0) for s in mapped_sources]
-            # Average the contributions of all mapped sources
+            values = [normalized.get(s, 0.0) for s in mapped]
             result[wk] = sum(values) / len(values)
         return result
 
     @staticmethod
     def _build_feedback_features(fb: FeedbackRecord) -> dict:
-        """Build task_features dict from feedback record when original context is lost."""
         mem_sources = [m.get("source", "") for m in fb.retrieved_memories[:8]]
-        # Derive domain from retrieved memories
         domains = [
             (m.get("metadata", {}).get("domain", "") or
              m.get("metadata", {}).get("category", ""))
             for m in fb.retrieved_memories[:5]
         ]
-        domain = max(set(domains), key=domains.count) if any(domains) else "general"
+        domains = [d for d in domains if d]  # filter empty strings
+        domain = max(set(domains), key=domains.count) if domains else "general"
         return {
             "task_type": "general",
             "domain": domain,
@@ -248,24 +216,16 @@ class RLWeightOptimizer:
         return np.array(state, dtype=np.float32)
 
     def predict_score(self, state: np.ndarray) -> float:
-        """Predict expected reward from the state vector.
-
-        Combines two signal paths:
-          1. Task features (indices 0..TASK_FEATURE_COUNT-1) — binary flags
-             like task_type, domain, complexity. Weighted by avg EMA weight.
-          2. Source ratios (indices TASK_FEATURE_COUNT..) — continuous
-             proportions of each memory source type. Weighted by EMA weights.
-        """
+        """Predict expected reward from both task features and source ratios."""
         w = [self.ema_weights.get(k, 0.2) for k in self._WEIGHT_KEYS]
         source_ratios = state[self._TASK_FEATURE_COUNT:]
         n_ratios = len(source_ratios)
-        # Extend weights if there are more source types than weight dimensions
         if n_ratios > len(w):
             median_w = float(np.median(w)) if w else 0.2
             w_ext = w + [median_w] * (n_ratios - len(w))
         else:
             w_ext = w[:n_ratios]
-        # Task feature contribution: binary flags × scaled avg weight
+        # Task features contribute as binary flag sum × avg weight × 0.3 scale
         task_features = state[:self._TASK_FEATURE_COUNT]
         avg_w = float(np.mean(list(self.ema_weights.values()))) if self.ema_weights else 0.2
         task_part = float(np.sum(task_features)) * avg_w * 0.3 / max(len(task_features), 1)
@@ -273,7 +233,6 @@ class RLWeightOptimizer:
         return task_part + source_part
 
     def add_feedback(self, feedback: FeedbackRecord):
-        # IcePop soft gate: check weight drift from snapshot metadata
         snap = feedback.metadata.get("weights_snapshot")
         if snap and isinstance(snap, dict):
             current = np.array([self.weights.get(k, 0.2) for k in self._WEIGHT_KEYS])
@@ -288,16 +247,17 @@ class RLWeightOptimizer:
         self.feedback_buffer.append(feedback)
         if len(self.feedback_buffer) >= 10:
             self._update_weights()
-            self.snapshot_policy()
             self.feedback_buffer = []
         if len(self.feedback_buffer) > self.max_buffer_size:
             self.feedback_buffer.pop(0)
 
     def _update_weights(self):
+        # Snapshot pre-update weights for divergence tracking
+        self.snapshot_policy()
+
         total_reward = 0
         n = len(self.feedback_buffer)
 
-        # Cosine-decayed learning rate
         current_lr = self._get_lr()
         self.update_counter += 1
 
@@ -306,7 +266,6 @@ class RLWeightOptimizer:
         for fb in self.feedback_buffer:
             raw_reward = 1 if fb.user_feedback == "positive" else -1
             advantage = raw_reward - baseline
-            # IcePop: per-feedback lr multiplier from weight drift check
             lr_mult = fb.metadata.get("lr_multiplier", 1.0)
             effective_lr = current_lr * lr_mult
             total_reward += raw_reward
@@ -317,49 +276,22 @@ class RLWeightOptimizer:
             )
 
             pred_score = self.predict_score(state)
-            # RCW: per-weight-dimension delta multiplier (non-negative).
-            # Applied as a scaling factor on the delta: weight dimensions with
-            # higher RCW contribution get larger updates. Direction is always
-            # determined by the TD error (advantage - pred_score), not RCW.
             rcw_map = self._compute_rcw_advantages(fb)
-            for i, weight_key in enumerate(weight_keys):
+            for weight_key in weight_keys:
                 if weight_key not in self.weights:
                     continue
-                source_idx = self._TASK_FEATURE_COUNT + i
-                if source_idx < len(state):
-                    rcw = rcw_map.get(weight_key, 1.0)
-                    # RCW scales delta amplitude; sign comes from TD error alone
-                    delta = effective_lr * (advantage - pred_score) * state[source_idx] * rcw
-                    self.weights[weight_key] += delta
-            # Extend delta coverage to research_ratio (state[10]) and context_ratio (state[11])
-            # These 2 source types have no 1-to-1 weight pairing in the 5-weight loop above,
-            # so we apply them as additional gradient signals on their RCW-mapped weights.
-            if self._TASK_FEATURE_COUNT + len(weight_keys) < len(state):
-                extra_ratios = state[self._TASK_FEATURE_COUNT + len(weight_keys):]
-                extra_sources = ["research", "context"]
-                for extra_idx, extra_source in enumerate(extra_sources):
-                    if extra_idx >= len(extra_ratios):
-                        break
-                    if extra_ratios[extra_idx] <= 0:
-                        continue
-                    for weight_key in weight_keys:
-                        mapped = self._WEIGHT_SOURCE_MAP.get(weight_key, [])
-                        if extra_source in mapped:
-                            rcw = rcw_map.get(weight_key, 1.0)
-                            delta = effective_lr * (advantage - pred_score) * extra_ratios[extra_idx] * rcw * 0.5
-                            self.weights[weight_key] += delta
+                rcw = rcw_map.get(weight_key, 1.0)
+                delta = effective_lr * (advantage - pred_score) * rcw
+                self.weights[weight_key] += delta
 
-        # Epsilon-greedy exploration
         self._maybe_explore()
 
-        # Softmax normalization (replaces clamp + sum norm, eliminates forced 0.01 issue)
         values = np.array([self.weights.get(k, 0.0) for k in weight_keys])
         exp_values = np.exp(values - np.max(values))
         softmax_values = exp_values / np.sum(exp_values)
         for i, k in enumerate(weight_keys):
             self.weights[k] = float(softmax_values[i])
 
-        # EMA smoothing update
         for k in weight_keys:
             self.ema_weights[k] = (
                 self.decay_factor * self.ema_weights[k]
@@ -404,15 +336,13 @@ class RLWeightOptimizer:
         if divergence > self.kpop_threshold:
             extra = min(self.kpop_max_extra, (divergence - self.kpop_threshold) * 0.05)
         effective = max(0.5, factor - extra)
-        for k in self.weights:
+        for k in self._WEIGHT_KEYS:
             self.weights[k] = max(0.01, self.weights[k] * effective)
-        # Softmax normalization
         values = np.array([self.weights.get(k, 0.0) for k in self._WEIGHT_KEYS])
         exp_values = np.exp(values - np.max(values))
         softmax_values = exp_values / np.sum(exp_values)
         for i, k in enumerate(self._WEIGHT_KEYS):
             self.weights[k] = float(softmax_values[i])
-        # Sync EMA weights
         for k in self.ema_weights:
             self.ema_weights[k] = (
                 self.decay_factor * self.ema_weights[k]
