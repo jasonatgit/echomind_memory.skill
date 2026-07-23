@@ -27,7 +27,7 @@
 
 ---
 
-## EchoMind's Core Capabilities
+## 🧠 EchoMind's Core Capabilities
 
 ### Core Architecture
 | Capability | Description |
@@ -77,26 +77,15 @@
 ### Auto-Retrieval Triggers
 EchoMind's memory system is optimized specifically for *research-oriented* memory, storing research papers, theoretical models, and research methodologies.
 
-When a query involves the following *domain keywords* or related *semantics*, the system automatically retrieves research memories:
+When a query involves the following *domain keywords* or related *semantics*, the system automatically retrieves research memories: Management Science, AI, NLP, Biology, Computer Science, Robotics, Recommendation Systems, Statistics & Decision Science.
 
-| Domain |
-|------|
-| Management Science |
-| AI |
-| NLP |
-| Biology |
-| Computer Science |
-| Robotics |
-| Speech & Audio |
-| Recommendation Systems |
-| Statistics & Decision Science |
 
-**Other disciplines and keywords can all be customized**
+*Other disciplines and keywords can all be customized*
 
 
 ---
 
-## Supported Frameworks
+## 🔌 Supported Frameworks
 
 | Framework | Integration Method | Reliability |
 |------|----------|--------|
@@ -109,7 +98,21 @@ When a query involves the following *domain keywords* or related *semantics*, th
 ---
 
 
-## Version History
+
+## 📝 Blog
+
+| Date | Title |
+|:-----|:------|
+| 2026-07 | [Echomind: Self-Reflective Agent Part 1 — Reflection Engine and Memory Lifecycle](blog/echomind-reflective-agent-part1-article-en.md) |
+| 2026-07 | [Echomind: Self-Reflective Agent Part 2 — Knowledge Evolution and Memory Governance](blog/echomind-reflective-agent-part2-article-en.md) |
+| 2026-06 | [Echomind: RL Self-Learning Memory System](blog/echomind-rl-article-en.md) |
+| 2026-05 | [Memory Engine: Why Every AI Agent Needs a Memory System](blog/echomind-agent-memory-article-en.md) |
+
+*Some content includes AI-generated material.*
+
+---
+
+## 📜 Version History
 
 | Version | Highlights |
 |:--------|:-----------|
@@ -125,7 +128,7 @@ When a query involves the following *domain keywords* or related *semantics*, th
 
 
 ---
-## Quick Links
+## 🔗 Quick Links
 
 | Document | Description |
 |:---------|:-----------|
@@ -136,7 +139,7 @@ Data is stored in a single SQLite file at ~/.echomind/memory.db. Back up by copy
 
 
 
-## Vision
+## 🔭 Vision
 
 AI is not a tool, it's a collaborator. Collaborators shouldn't have to "re-meet you" every time.
 
@@ -151,15 +154,15 @@ EchoMind enables your AI to:
 
 
 ---
-## Contact
+## 📧 Contact
 *email：*[jasonyouatgmaildotcom](mailto:jasonyouatgmaildotcom)
 
 
 ---
-## Q&A *Click to expand*
+## ❓ Q&A *Click to expand*
 
 <details>
-<summary><b>Hermes Agent Profile Isolation & FAQ</b></summary>
+<summary><b>⚙️ Hermes Agent Profile Isolation & FAQ</b></summary>
 
 ### Q: How do I use EchoMind across Hermes Profiles?
 
@@ -251,7 +254,7 @@ Yes. EchoMind v1.2.0+ fully supports Hermes v0.17.0's MemoryProvider interface, 
 </details>
 
 <details>
-<summary><b>MCP Gateway Setup & FAQ</b></summary>
+<summary><b>🌐 MCP Gateway Setup & FAQ</b></summary>
 
 ### Q: How do I connect EchoMind to Claude Code via MCP?
 

@@ -28,7 +28,7 @@
 ---
 
 
-## EchoMind 核心能力
+## 🧠 EchoMind 核心能力
 
 ### 基础架构
 | 功能 | 说明 |
@@ -78,26 +78,13 @@
 ### 自动检索触发
 EchoMind 记忆系统专门针对*科研方向*的记忆进行了优化，对查询的研究论文、理论模型、研究方法等进行存储。
 
-当查询涉及以下领域*关键词*或相关*语义*时，系统自动检索研究记忆：
-
-| 领域  |
-|------|
-| 管理科学 |
-| AI  |
-| NLP  |
-| 生物学  |
-| 计算机  |
-| 机器人  |
-| 语音与音频  |
-| 推荐系统  |
-| 统计与决策  |
-
-**其他学科与关键词均可定制优化**
+当查询涉及以下领域*关键词*或相关*语义*时，系统自动检索研究记忆：管理科学、AI、NLP、生物学、计算机、机器人、语音与音频、推荐系统、统计与决策。
+*其他学科与关键词均可定制优化*
 
 
 ---
 
-## 支持框架
+## 🔌  支持框架
 
 | 框架 | 支持方式 | 可靠性 |
 |------|----------|--------|
@@ -110,7 +97,23 @@ EchoMind 记忆系统专门针对*科研方向*的记忆进行了优化，对查
 ---
 
 
-## 版本历史
+
+## 📝 博客
+
+| 日期 | 标题 |
+|:-----|:------|
+| 2026-07 | 🪞 [Echomind: Self-Reflective Agent 上篇 —— 反思引擎与记忆生命周期](blog/echomind-reflective-agent-part1-article.md) |
+| 2026-07 | 🪞 [Echomind: Self-Reflective Agent 下篇 —— 知识演化与记忆治理](blog/echomind-reflective-agent-part2-article.md) |
+| 2026-06 | 🎯[Echomind: RL 强化自学习的记忆系统](blog/echomind-rl-article.md) |
+| 2026-05 | 🧠[Memory Engine：为什么每个 AI 智能体都需要一个记忆系统](blog/echomind-agent-memory-article.md) |
+
+*部分内容含AI创作*
+
+
+---
+
+
+## 📜 版本历史
 
 | 版本 | 核心要点 |
 |:--------|:-----------|
@@ -126,7 +129,7 @@ EchoMind 记忆系统专门针对*科研方向*的记忆进行了优化，对查
 
 
 ---
-## 快速链接
+## 🔗 快速链接
 
 | 文档 | 说明 |
 |:---------|:-----------|
@@ -137,7 +140,7 @@ EchoMind 记忆系统专门针对*科研方向*的记忆进行了优化，对查
 
 
 
-## 愿景
+## 🔭 愿景
 
 AI 不是工具，是协作者。协作者不应该每次见面都"重新认识你"。
 
@@ -155,7 +158,7 @@ EchoMind Memory Engine 让你的 AI：
 
 ---
 
-## Q&A *点击展开*
+## ❓ Q&A *点击展开*
 
 <details>
 <summary><b>Hermes Agent分身隔离及常见问题</b></summary>
@@ -251,7 +254,7 @@ cp ~/.echomind/memory.db ~/.echomind/memory.db.backup-$(date +%Y%m%d)
 </details>
 
 <details>
-<summary><b>MCP 网关设置与常见问题</b></summary>
+<summary><b>🌐 MCP 网关设置与常见问题</b></summary>
 
 ### Q: 如何将 EchoMind 通过 MCP 连接到 Claude Code？
 
