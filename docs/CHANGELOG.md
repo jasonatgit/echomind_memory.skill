@@ -1,6 +1,35 @@
 # EchoMind Changelog
 
-## v1.2.3 New Features
+## v1.2.6 — Bug Fix & Reliability Release (2026-07-31)
+
+**Fixes: 42 issues across 3 audit rounds covering core engine, storage layer, and API layer.**
+
+| Category | Fixes | Key Changes |
+|----------|:---:|-------------|
+| **Critical** | 8 | Hermes LLM sync dead code restored, sync_turn crash fix, /api/reflect exception handling, HTTP params gaps filled |
+| **High** | 13 | knowledge/experience last_access_at update fix, RL decay_all redesign, predict_score semantic fix, config priority corrected |
+| **Medium** | 13 | context LRU order fix, memory state decay for context, HTTP 500 error codes, LLM retry with exponential backoff |
+| **Low** | 8 | Config validation, per-user RL weight isolation, code dedup in MCP gateway, return type unification |
+
+**Architecture Changes:**
+- `mcp_gateway.py` refactored from 372-line duplicate to 80-line thin wrapper delegating to `mcp_common.py`
+- `StoreRequest` and `ReflectRequest` now include `project`/`session_id`/`correction`/`profile` fields
+- MCP tools now pass `project`/`session_id`/`profile` parameters
+- `ExperienceEntry` model now includes `last_access_at` field
+- `ContextMessage.content` now accepts None (tool-call message compatibility)
+- Config validation added for critical parameters
+- Migration v4 indexes expanded to include `context_memory` and `research_papers`
+
+**API Changes:**
+| Endpoint | Change |
+|----------|--------|
+| `POST /api/memory/store` | New params: `project`, `session_id`, `correction` |
+| `POST /api/memory/retrieve` | New params: `project`, `session_id` |
+| `POST /api/reflect` | New param: `profile` |
+| MCP `echomind_reflect` | Added Phase 2 support (`llm_response` param) |
+| MCP `echomind_retrieve`/`echomind_store` | Added `project`/`session_id`/`profile` params |
+
+---
 
 **Core Highlights:**
 *RL advantage baseline, RCW per-source weighting, knowledge diversity, profile export.*

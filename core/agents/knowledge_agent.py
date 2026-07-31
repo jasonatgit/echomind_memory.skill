@@ -80,7 +80,7 @@ class KnowledgeMemoryAgent:
                     entry_tags = []
                 if not any(t in entry_tags for t in tags):
                     continue
-            if domain and entry.metadata.get("category", entry.metadata.get("domain")) != domain:
+            if domain and (entry.metadata.get("category") or entry.metadata.get("domain")) != domain:
                 continue
 
             # Keyword match scoring
@@ -104,7 +104,9 @@ class KnowledgeMemoryAgent:
                     relevance = max(relevance, 0.85)
 
             results.append({"id": entry.id, "content": entry.content,
-                            "metadata": entry.metadata, "relevance": relevance})
+                            "metadata": entry.metadata, "relevance": relevance,
+                            "created_at": entry.created_at.isoformat() if entry.created_at else "",
+                            "last_updated": entry.metadata.get("last_updated", "")})
 
         results.sort(key=lambda x: x.get("relevance", 0), reverse=True)
         return results[:top_k]
@@ -154,7 +156,7 @@ class KnowledgeMemoryAgent:
             })
         return results[:limit]
 
-    def add_document(self, content: str, metadata: Dict) -> str:
+    def add_document(self, content: str, metadata: Dict, entry_id: str = None) -> str:
         content_hash = int(hashlib.md5(content.encode()).hexdigest(), 16) % (2**63 - 1)
         if content_hash in self._content_index:
             existing_id = self._content_index[content_hash]
@@ -180,6 +182,8 @@ class KnowledgeMemoryAgent:
         entry = KnowledgeEntry(
             content=content, metadata=metadata,
             user_id=metadata.get("user_id", "default"))
+        if entry_id:
+            entry.id = entry_id
         self.store[entry.id] = entry
         self._content_index[content_hash] = entry.id
         self._add_to_index(entry)

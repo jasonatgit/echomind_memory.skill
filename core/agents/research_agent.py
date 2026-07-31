@@ -70,6 +70,7 @@ class ResearchMemoryAgent:
                     "keywords": p.keywords, "domain": p.domain,
                     "paper_type": p.paper_type, "key_points": p.key_points,
                     "importance_score": p.importance_score, "relevance": relevance,
+                    "created_at": p.created_at.isoformat() if p.created_at else "",
                 })
         results.sort(key=lambda x: x["relevance"] * x["importance_score"], reverse=True)
         return results[:top_k]

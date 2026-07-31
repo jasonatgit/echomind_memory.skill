@@ -73,6 +73,9 @@ def handle_tools_list():
                     "query": {"type": "string", "description": "Search query"},
                     "user_id": {"type": "string", "default": "cli"},
                     "max_results": {"type": "integer", "default": 5},
+                    "project": {"type": "string", "default": "default"},
+                    "session_id": {"type": "string", "default": ""},
+                    "profile": {"type": "string", "default": "default"},
                 },
                 "required": ["query"],
             },
@@ -89,6 +92,9 @@ def handle_tools_list():
                     "success": {"type": "boolean", "default": True},
                     "experience_summary": {"type": "string"},
                     "context": {"type": "array", "items": {"type": "object"}},
+                    "project": {"type": "string", "default": "default"},
+                    "session_id": {"type": "string", "default": ""},
+                    "profile": {"type": "string", "default": "default"},
                 },
                 "required": [],
             },
@@ -177,6 +183,9 @@ def handle_tool_call(name, arguments):
             "user_id": arguments.get("user_id", "cli"),
             "query": arguments.get("query", ""),
             "max_results": arguments.get("max_results", 5),
+            "project": arguments.get("project", "default"),
+            "session_id": arguments.get("session_id", ""),
+            "profile": arguments.get("profile", "default"),
         })
         if "error" in result:
             return {"content": [{"type": "text", "text": f"Error: {result['error']}"}]}
@@ -200,6 +209,9 @@ def handle_tool_call(name, arguments):
             "task_status": arguments.get("task_status", "completed"),
             "success": arguments.get("success", True),
             "experience_summary": exp,
+            "project": arguments.get("project", "default"),
+            "session_id": arguments.get("session_id", ""),
+            "profile": arguments.get("profile", "default"),
         })
         if "error" in result:
             return {"content": [{"type": "text", "text": f"Error storing: {result['error']}"}]}
@@ -236,14 +248,32 @@ def handle_tool_call(name, arguments):
         return {"content": [{"type": "text", "text": f"Feedback recorded."}]}
 
     elif name == "echomind_reflect":
-        result = _api_post("/api/reflect", {
+        llm_response = arguments.get("llm_response")
+        payload = {
             "user_id": arguments.get("user_id", ""),
             "count": arguments.get("count", 8),
-            "llm_response": None,
-        })
-        if "error" in result:
-            return {"content": [{"type": "text", "text": f"Error: {result['error']}"}]}
-        return {"content": [{"type": "text", "text": f"Reflection prepared for {result.get('record_count',0)} records."}]}
+        }
+        if llm_response is not None:
+            # Phase 2: process LLM response and write back to memory
+            payload["llm_response"] = llm_response
+            if arguments.get("record_ids"):
+                payload["record_ids"] = arguments["record_ids"]
+            result = _api_post("/api/reflect", payload)
+            if "error" in result:
+                return {"content": [{"type": "text", "text": f"Reflection error: {result['detail']}"}]}
+            return {"content": [{"type": "text", "text": (
+                f"Reflection done. Insights: {result.get('insights', 0)}, "
+                f"Preferences: {result.get('preferences', 0)}, "
+                f"Knowledge: {result.get('knowledge', 0)}"
+            )}]}
+        else:
+            # Phase 1: build prompt only (return for caller-side LLM processing)
+            payload["llm_response"] = None
+            result = _api_post("/api/reflect", payload)
+            if "error" in result:
+                return {"content": [{"type": "text", "text": f"Error: {result['error']}"}]}
+            return {"content": [{"type": "text", "text": f"Reflection prepared for {result.get('record_count', 0)} records. "
+                f"Prompt: {result.get('prompt', '')[:200]}... (use with llm_response to commit)"}]}
 
     elif name == "echomind_delete":
         mt = arguments.get("memory_type", "")

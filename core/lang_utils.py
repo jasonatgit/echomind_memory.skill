@@ -3,7 +3,10 @@
 # Adding a new language = adding a YAML section, zero code changes.
 
 import re
+import logging
 from typing import List, Set, Optional, Dict, Any
+
+logger = logging.getLogger(__name__)
 
 
 _profiles_cache: Optional[dict] = None
@@ -101,4 +104,8 @@ def get_prompt(name: str, lang: str, **fmt_kwargs) -> str:
         template = profiles.get("en", {}).get("prompts", {}).get(name, "")
     if not template:
         return ""
-    return template.strip().format(**fmt_kwargs)
+    try:
+        return template.strip().format(**fmt_kwargs)
+    except KeyError as e:
+        logger.warning("Prompt '%s' missing format key: %s", name, e)
+        return ""

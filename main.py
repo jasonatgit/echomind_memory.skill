@@ -92,13 +92,17 @@ def call(tool_name: str, config_path: str = None, **kwargs):
                 "task_id": kwargs.get("task_id", "")}
 
     elif tool_name == "record_feedback":
-        agent.record_feedback(
-            user_id=kwargs.get("user_id", ""),
-            task_id=kwargs.get("task_id", ""),
-            feedback=kwargs.get("feedback", "positive"),
-            retrieved_memories=kwargs.get("retrieved_memories", []),
-        )
-        return {"status": "feedback_received", "user_id": kwargs.get("user_id", "")}
+        try:
+            agent.record_feedback(
+                user_id=kwargs.get("user_id", ""),
+                task_id=kwargs.get("task_id", ""),
+                feedback=kwargs.get("feedback", "positive"),
+                retrieved_memories=kwargs.get("retrieved_memories", []),
+            )
+            return {"status": "feedback_received", "user_id": kwargs.get("user_id", "")}
+        except Exception as e:
+            logging.getLogger("MemoryAgent").error("record_feedback failed: %s", e)
+            return {"status": "error", "detail": str(e)}
 
     elif tool_name == "sync_code_memory":
         agent.sync_to_code_project(

@@ -42,7 +42,7 @@ class ExperienceMemoryAgent:
                         success: bool, steps: List[str], summary: str,
                         project: str = "default", session_id: str = "",
                         session_title: str = "", tags: List[str] = None,
-                        profile: str = "default") -> str:
+                        profile: str = "default", entry_id: str = None) -> str:
         summary_hash = int(hashlib.md5(f"{user_id}:{summary}".encode()).hexdigest(), 16) % (2**63 - 1)
         if summary_hash in self._summary_index:
             existing_id = self._summary_index[summary_hash]
@@ -63,6 +63,8 @@ class ExperienceMemoryAgent:
             session_title=session_title, tags=tags or [],
             profile=profile,
         )
+        if entry_id:
+            entry.id = entry_id
         self.store[entry.id] = entry
         self._summary_index[summary_hash] = entry.id
         self._index_entry(entry)
@@ -108,7 +110,12 @@ class ExperienceMemoryAgent:
                     "steps": entry.steps_sequence, "success": entry.success,
                     "frequency": entry.frequency,
                     "relevance": min(0.9, 0.3 + 0.1 * entry.frequency),
-                    "metadata": {"trust_score": 0.5 if not entry.success else min(0.95, 0.7 + 0.05 * entry.frequency)},
+                    "metadata": {
+                        "trust_score": 0.5 if not entry.success else min(0.95, 0.7 + 0.05 * entry.frequency),
+                        "tags": entry.tags if isinstance(entry.tags, list) else [],
+                    },
+                    "created_at": entry.created_at.isoformat() if entry.created_at else "",
+                    "last_access_at": entry.last_access_at.isoformat() if hasattr(entry, 'last_access_at') and entry.last_access_at else "",
                 })
         similar.sort(key=lambda x: x["frequency"], reverse=True)
         return similar[:limit]

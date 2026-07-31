@@ -5,7 +5,7 @@ from typing import List
 
 class ContextMessage(BaseModel):
     role: str
-    content: str
+    content: Optional[str] = ""
     timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 

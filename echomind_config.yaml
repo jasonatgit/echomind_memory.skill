@@ -1,8 +1,8 @@
 # echomind_config.yaml — EchoMind full configuration parameters
-# Version: v1.2.3
+# Version: v1.2.6
 #
 # Distributed via GitHub as default config. Use directly or copy to ~/.echomind/ then modify.
-# Priority: runtime ext_params > YAML overrides > built-in FALLBACK_CONFIG
+# Priority: runtime > YAML overrides > engine ext_params > built-in FALLBACK_CONFIG
 
 version: 2
 
@@ -25,15 +25,22 @@ enable_rl_optimizer: true
 max_context_tokens: 4096
 
 rl:
+  # 5-dimensional weight vector (softmax-normalized at runtime)
   initial_weights:
     relevance: [0.30, 0.50]
+    recency: [0.15, 0.25]
+    frequency: [0.10, 0.20]
+    explicit_feedback: [0.10, 0.20]
+    trust_score: [0.05, 0.15]
   learning_rate: 0.07
   decay_factor: 0.97
   max_buffer_size: 50
+  seed: null
 
 reflection:
   batch_size: [5, 12]
   max_daily: [5, 20]
+  min_records: 6
 
 retrieval:
   experience_top_k: 5

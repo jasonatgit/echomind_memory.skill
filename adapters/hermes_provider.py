@@ -198,7 +198,7 @@ class EchomindMemoryProvider:
         User's explicit config always takes priority.
         """
         try:
-            from .config_manager import get_config_manager
+            from core.config_manager import get_config_manager
             cfg = get_config_manager()
 
             # Skip sync if user has explicitly configured an endpoint
@@ -236,12 +236,12 @@ class EchomindMemoryProvider:
             if api_key:
                 overrides["llm.api_key"] = api_key
             if model_name:
-                overrides["llm.default_model"] = model_name
+                overrides["llm.model"] = model_name
 
             for k, v in overrides.items():
                 cfg.set_runtime(k, v)
 
-            from .llm_client import reload_llm_client
+            from core.llm_client import reload_llm_client
             reload_llm_client()
             logger.info("LLM config synced from Hermes: provider=%s", provider)
         except Exception as e:
@@ -291,23 +291,46 @@ class EchomindMemoryProvider:
 
     # ── Correction signal detection ──
 
-    _CORRECTION_KEYWORDS_ZH = ["不对", "错了", "应该是", "不是这样", "更正", "改一下", "不对的"]
-    _CORRECTION_KEYWORDS_EN = ["wrong", "not correct", "should be", "actually", "instead", "mistake", "incorrect"]
+    _CORRECTION_KEYWORDS_ZH = ["不对", "错了", "不是这样", "更正", "改一下"]
+    _CORRECTION_KEYWORDS_ZH_WEAK = ["应该是", "不对的"]
+    _CORRECTION_KEYWORDS_EN = ["mistake", "incorrect", "not correct"]
+    _CORRECTION_KEYWORDS_EN_WEAK = ["wrong", "actually", "instead", "should be"]
+    _NEGATION_CONTEXT = ["not", "no", "n't", "不要", "不能", "不是"]
 
     def _detect_correction(self, user_content: str) -> bool:
         """Detect if user is correcting the agent's response.
 
-        Returns True when correction keywords appear in user input.
+        Two-tier detection:
+        - Strong keywords always trigger (e.g. "mistake", "不对")
+        - Weak keywords only trigger with context (sentence-start or negation nearby)
         """
         if not user_content:
             return False
         lower = user_content.lower()
+        # Tier 1: strong keywords (always trigger)
         for kw in self._CORRECTION_KEYWORDS_ZH:
             if kw in user_content:
                 return True
         for kw in self._CORRECTION_KEYWORDS_EN:
             if kw in lower:
                 return True
+        # Tier 2: weak keywords (require contextual evidence)
+        for kw in self._CORRECTION_KEYWORDS_ZH_WEAK:
+            if kw in user_content:
+                # Check if near a negation word
+                idx = user_content.find(kw)
+                window = user_content[max(0, idx - 20):idx + len(kw) + 20]
+                if any(neg in window for neg in self._NEGATION_CONTEXT):
+                    return True
+        for kw in self._CORRECTION_KEYWORDS_EN_WEAK:
+            if kw in lower:
+                idx = lower.find(kw)
+                # Trigger if at sentence start (first 50 chars) or near negation
+                if idx < 50:
+                    return True
+                window = lower[max(0, idx - 30):idx + len(kw) + 30]
+                if any(neg in window for neg in self._NEGATION_CONTEXT):
+                    return True
         return False
 
     def sync_turn(self, user_content: str, assistant_content: str, *,
@@ -360,8 +383,8 @@ class EchomindMemoryProvider:
                 logger.warning(f"sync_turn: turn {self._turn_count} store failed")
         except Exception as e:
             logger.error(f"sync_turn error: {e}")
-            # cache to on failure buffer retry on next
-            self._context_buffer = messages[-20:]  # keep recent 20 messages
+            # cache to retry on next turn; guard against messages=None
+            self._context_buffer = (messages or [])[-20:]  # keep recent 20 messages
 
     # ═══════════════════════════════════════════════════
     # LLM Tool definitions（Explicit invocation, supplementing auto-access）
@@ -828,7 +851,11 @@ def _hermes_llm_fn(prompt: str) -> str:
     client = _get_llm_client()
     if client is None:
         return ""
-    result = client.chat(prompt)
+    try:
+        result = client.chat(prompt)
+    except Exception as e:
+        logger.warning("Reflection LLM call failed: %s", e)
+        return ""
     if result is None or not result.strip():
         return ""
     return result

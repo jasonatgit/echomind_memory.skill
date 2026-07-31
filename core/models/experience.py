@@ -1,7 +1,7 @@
 from pydantic import BaseModel, Field
 import uuid
 from datetime import datetime, timezone
-from typing import List
+from typing import List, Optional
 
 
 class ExperienceEntry(BaseModel):
@@ -17,5 +17,6 @@ class ExperienceEntry(BaseModel):
     steps_sequence: List[str] = Field(default_factory=list)
     summary: str = ""
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    last_access_at: Optional[datetime] = None
     tags: List[str] = Field(default_factory=list)
     frequency: int = 1

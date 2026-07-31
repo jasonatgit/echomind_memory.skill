@@ -18,7 +18,11 @@ class SessionContext:
         self.memory = ContextMemory()
 
     def add_message(self, message: Dict[str, str]) -> None:
-        msg = ContextMessage(**message)
+        """Add a message; handle None content (e.g. tool_call messages)."""
+        content = message.get("content")
+        if content is None:
+            content = ""
+        msg = ContextMessage(role=message.get("role", "user"), content=content)
         self.memory.messages.append(msg)
         if len(self.memory.messages) > self.memory.window_size:
             self.memory.messages.pop(0)

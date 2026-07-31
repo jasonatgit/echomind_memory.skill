@@ -81,10 +81,13 @@ class StoreRequest(BaseModel):
     platform: Optional[str] = None
     task_id: str
     title: Optional[str] = None
-    context: List[ContextMessage]
+    context: List[Dict[str, Any]]
     task_status: str
     success: bool = False
     experience_summary: Optional[str] = None
+    project: Optional[str] = "default"
+    session_id: Optional[str] = ""
+    correction: bool = False
     profile: str = "default"
 
 class FeedbackRequest(BaseModel):
@@ -124,6 +127,7 @@ class ReflectRequest(BaseModel):
     count: int = 8
     record_ids: Optional[List[str]] = None
     llm_response: Optional[str] = None
+    profile: str = "default"
 
 
 # ── Error handler (v1.2.0: avoid leaking internal details) ──
@@ -131,10 +135,13 @@ class ReflectRequest(BaseModel):
 EXCEPTION_RESPONSE = {"status": "error", "detail": "Internal server error"}
 
 
-def _error_response(e: Exception, log_context: str = "") -> dict:
-    """Unified error response — logs exception, returns generic message."""
+def _error_response(e: Exception, log_context: str = "") -> JSONResponse:
+    """Unified error response — logs exception, returns HTTP 500."""
     logger.error(f"{log_context}: {e}", exc_info=True)
-    return {"status": "error", "detail": "Operation failed"}
+    return JSONResponse(
+        status_code=500,
+        content={"status": "error", "detail": "Operation failed"},
+    )
 
 
 @app.exception_handler(HTTPException)
@@ -149,7 +156,11 @@ async def http_exception_handler(request, exc: HTTPException):
 @app.post("/api/memory/retrieve")
 async def api_retrieve(req: RetrieveRequest, auth=Depends(verify_api_key)):
     try:
-        result = memory_agent.retrieve_for_task(req.query, req.user_id, req.task_id, platform=req.platform, profile=req.profile)
+        result = memory_agent.retrieve_for_task(
+            req.query, req.user_id, req.task_id,
+            platform=req.platform, project=req.project,
+            session_id=req.session_id, profile=req.profile,
+        )
         working = [
             {"source": m.source, "content": m.content,
              "importance": m.importance, "metadata": m.metadata}
@@ -171,11 +182,22 @@ async def api_retrieve(req: RetrieveRequest, auth=Depends(verify_api_key)):
 @app.post("/api/memory/store")
 async def api_store(req: StoreRequest, auth=Depends(verify_api_key)):
     try:
+        # Convert context messages to dict format (handles both Pydantic models and raw dicts)
+        ctx = []
+        for m in req.context:
+            if hasattr(m, "model_dump"):
+                ctx.append(m.model_dump())
+            elif isinstance(m, dict):
+                ctx.append(m)
+            else:
+                ctx.append({"role": getattr(m, "role", "user"), "content": getattr(m, "content", "")})
         ok = memory_agent.store(
-            req.user_id, req.task_id,
-            [{"role": m.role, "content": m.content} for m in req.context],
+            req.user_id, req.task_id, ctx,
             req.task_status, req.success, req.experience_summary,
             platform=req.platform, title=req.title,
+            project=req.project or "default",
+            session_id=req.session_id or "",
+            correction=req.correction,
             profile=req.profile,
         )
         return {"status": "stored" if ok else "error", "user_id": req.user_id, "task_id": req.task_id}
@@ -191,7 +213,7 @@ async def search_sessions(q: str = "", user_id: str = None, project: str = None,
         return {"results": results, "count": len(results)}
     except Exception as e:
         logger.error("search_sessions: %s", e, exc_info=True)
-        return {"results": [], "error": "Search failed"}
+        return JSONResponse(status_code=500, content={"results": [], "error": "Search failed"})
 
 @app.post("/api/memory/feedback")
 async def api_feedback(req: FeedbackRequest, auth=Depends(verify_api_key)):
@@ -240,48 +262,73 @@ async def api_reflect(req: ReflectRequest, auth=Depends(verify_api_key)):
     - llm_response=None → returns prompt for caller to process (Path B)
     - llm_response=... → parses and writes back (Path A / process)
     """
-    if req.llm_response is None:
-        records = memory_agent.get_recent_episodic(req.user_id, req.count)
-        prompt, record_ids = memory_agent.reflective.build_prompt(
-            records, req.user_id, req.platform or "http"
-        )
-        return {
-            "phase": "build",
-            "prompt": prompt,
-            "record_ids": record_ids,
-            "record_count": len(records),
-        }
-    else:
-        # Fetch full records (not just IDs) for process_result
-        full_records = memory_agent.get_recent_episodic(req.user_id, req.count)
-        # Filter to requested IDs (if specified)
-        if req.record_ids:
-            id_set = set(req.record_ids)
-            records = [r for r in full_records if r.get("id") in id_set]
-            if not records:
-                # Records may have been evicted; use placeholders
-                records = [{"id": rid, "content": "", "text": ""} for rid in id_set]
-        else:
-            records = full_records
-        output = memory_agent.reflective.process_result(
-            raw_response=req.llm_response,
-            records=records,
-            user_id=req.user_id,
-            platform=req.platform or "http",
-        )
-        if output is None:
-            raise HTTPException(
-                status_code=400,
-                detail="Reflection failed: parse error or confidence too low",
+    try:
+        if req.llm_response is None:
+            records = memory_agent.get_recent_episodic(req.user_id, req.count)
+            prompt, record_ids = memory_agent.reflective.build_prompt(
+                records, req.user_id, req.platform or "http"
             )
-        return {
-            "phase": "done",
-            "insights": len(output.key_insights),
-            "preferences": len(output.user_preferences),
-            "rules": len(output.procedural_rules),
-            "knowledge": len(output.new_knowledge),
-            "confidence": output.confidence,
-        }
+            return {
+                "phase": "build",
+                "prompt": prompt,
+                "record_ids": record_ids,
+                "record_count": len(records),
+            }
+        else:
+            # Fetch full records (not just IDs) for process_result
+            full_records = memory_agent.get_recent_episodic(req.user_id, req.count)
+            # Filter to requested IDs (if specified)
+            if req.record_ids:
+                id_set = set(req.record_ids)
+                records = [r for r in full_records if r.get("id") in id_set]
+                if not records:
+                    # Records may have been evicted; use placeholders
+                    records = [{"id": rid, "content": "", "text": ""} for rid in id_set]
+            else:
+                records = full_records
+            output = memory_agent.reflective.process_result(
+                raw_response=req.llm_response,
+                records=records,
+                user_id=req.user_id,
+                platform=req.platform or "http",
+            )
+            if output is None:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Reflection failed: parse error or confidence too low",
+                )
+            # Handle both ReflectionOutput and dict/string returns
+            if hasattr(output, "key_insights"):
+                insights = len(output.key_insights)
+                preferences = len(output.user_preferences)
+                rules = len(output.procedural_rules)
+                knowledge = len(output.new_knowledge)
+                confidence = output.confidence
+            elif isinstance(output, dict):
+                insights = len(output.get("key_insights", []))
+                preferences = len(output.get("user_preferences", []))
+                rules = len(output.get("procedural_rules", []))
+                knowledge = len(output.get("new_knowledge", []))
+                confidence = output.get("confidence", 0.0)
+            else:
+                # Raw string or unexpected type
+                insights = 0
+                preferences = 0
+                rules = 0
+                knowledge = 0
+                confidence = 0.0
+            return {
+                "phase": "done",
+                "insights": insights,
+                "preferences": preferences,
+                "rules": rules,
+                "knowledge": knowledge,
+                "confidence": confidence,
+            }
+    except HTTPException:
+        raise
+    except Exception as e:
+        return _error_response(e, "api_reflect")
 
 
 # ── Config (v1.1.0) ──
@@ -337,7 +384,7 @@ async def api_delete_memory(memory_type: str, memory_id: str, auth=Depends(verif
         return {"status": "deleted" if deleted else "not_found", "memory_type": memory_type, "memory_id": memory_id}
     except Exception as e:
         logger.error(f"api_delete_memory: {e}", exc_info=True)
-        return {"status": "error", "detail": "Delete failed"}
+        return JSONResponse(status_code=500, content={"status": "error", "detail": "Delete failed"})
 
 @app.post("/api/memory/delete-user")
 async def api_delete_user(req: DeleteRequest, auth=Depends(verify_api_key)):
@@ -363,7 +410,7 @@ async def api_cleanup(auth=Depends(verify_api_key)):
         return {"status": "cleaned", "counts": counts}
     except Exception as e:
         logger.error(f"api_cleanup: {e}", exc_info=True)
-        return {"status": "error", "detail": "Cleanup failed"}
+        return JSONResponse(status_code=500, content={"status": "error", "detail": "Cleanup failed"})
 
 
 # ── Memory Health ──
@@ -374,7 +421,7 @@ async def api_memory_health(auth=Depends(verify_api_key)):
         return {"status": "ok", "stats": stats}
     except Exception as e:
         logger.error(f"api_memory_health: {e}", exc_info=True)
-        return {"status": "error", "detail": "Health check failed"}
+        return JSONResponse(status_code=500, content={"status": "error", "detail": "Health check failed"})
 
 class StateRequest(BaseModel):
     state: str
@@ -389,21 +436,20 @@ async def api_set_memory_state(memory_type: str, memory_id: str,
         return {"status": "ok", "memory_type": memory_type, "memory_id": memory_id, "state": req.state}
     except Exception as e:
         logger.error(f"api_set_memory_state: {e}", exc_info=True)
-        return {"status": "error", "detail": "State update failed"}
+        return JSONResponse(status_code=500, content={"status": "error", "detail": "State update failed"})
 
 
 # ── Knowledge Evolution ──
 @app.get("/api/knowledge/{knowledge_id}/evolution")
 async def api_knowledge_evolution(knowledge_id: str, auth=Depends(verify_api_key)):
     try:
-        rows = memory_agent.db._conn.execute(
-            "SELECT * FROM knowledge_evolution WHERE source_id=? OR target_id=? ORDER BY created_at DESC",
-            (knowledge_id, knowledge_id)
-        ).fetchall()
-        return {"knowledge_id": knowledge_id, "evolution": [dict(r) for r in rows]}
+        if not memory_agent._persistence_enabled or not memory_agent.db._conn:
+            return JSONResponse(status_code=400, content={"status": "error", "detail": "Persistence not enabled"})
+        chain = memory_agent.db.get_evolution_chain(knowledge_id)
+        return {"knowledge_id": knowledge_id, "evolution": chain}
     except Exception as e:
         logger.error(f"api_knowledge_evolution: {e}", exc_info=True)
-        return {"status": "error", "detail": "Evolution lookup failed"}
+        return JSONResponse(status_code=500, content={"status": "error", "detail": "Evolution lookup failed"})
 
 
 # ── MCP over HTTP (P3-1: Streamable HTTP MCP — JSON-RPC minimal viable) ──

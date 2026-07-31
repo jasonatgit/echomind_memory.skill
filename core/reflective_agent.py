@@ -34,6 +34,13 @@ class ReflectiveAgent:
             self.config = cfg.get_section("reflection")
         self._daily_count = 0
         self._last_reflection: Optional[datetime] = None
+        # Fix daily limit once at init (was previously re-randomized on every call)
+        max_daily = self.config.get("max_daily", [5, 20])
+        if isinstance(max_daily, (list, tuple)):
+            import random as _rng
+            self._daily_limit = int(_rng.uniform(max_daily[0], max_daily[1]))
+        else:
+            self._daily_limit = int(max_daily)
 
     # ── Engine status detection ──
 
@@ -91,12 +98,7 @@ class ReflectiveAgent:
 
     def _check_daily_limit(self) -> bool:
         """Return True if daily reflection limit reached."""
-        max_daily = self.config.get("max_daily", [5, 20])
-        if isinstance(max_daily, (list, tuple)):
-            limit = int(__import__("random").uniform(max_daily[0], max_daily[1]))
-        else:
-            limit = int(max_daily)
-        return self._daily_count >= limit
+        return self._daily_count >= self._daily_limit
 
     def reflect_with_llm(
         self,
@@ -126,14 +128,18 @@ class ReflectiveAgent:
         if result is not None and not isinstance(result, tuple):
             self._daily_count += 1
             self._last_reflection = datetime.now(timezone.utc)
-        # Unify return type to ReflectionOutput
+        # Unify return type to ReflectionOutput (never return raw dict/str)
         if isinstance(result, dict):
             from .models.reflection import ReflectionOutput
 
             try:
                 return ReflectionOutput(**result)
             except Exception:
-                return result
+                logger.warning("reflect_with_llm: failed to coerce dict to ReflectionOutput")
+                return None
+        if isinstance(result, str):
+            # Raw string from fallback — not a valid reflection output
+            return None
         return result
 
     # ── Two-phase HTTP API (phase 2): process LLM response ──
@@ -164,5 +170,11 @@ class ReflectiveAgent:
             self._last_reflection = datetime.now(timezone.utc)
             if isinstance(result, dict):
                 from .models.reflection import ReflectionOutput
-                return ReflectionOutput(**result)
+                try:
+                    return ReflectionOutput(**result)
+                except Exception:
+                    logger.warning("process_result: failed to coerce dict to ReflectionOutput")
+                    return None
+            if isinstance(result, str):
+                return None
         return result

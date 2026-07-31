@@ -155,7 +155,8 @@ class MainMemoryAgent:
             loaded["experiences"] += 1
 
         # 4. Context memory（Restore with session isolation）
-        for c in all_data.get("contexts", []):
+        # Load in reverse order (oldest first) so LRU eviction removes oldest, not newest
+        for c in reversed(all_data.get("contexts", [])):
             session_id = c.get("session_id", "")
             messages = c.get("messages", [])
             for msg in messages:
@@ -216,13 +217,14 @@ class MainMemoryAgent:
         else:
             logger.info("Empty DB — fresh start")
 
-        # 8. RL Weight restoration — scan ALL users, use last found
+        # 8. RL Weight restoration — use first user found (deterministic, not "last found")
         saved_weights = self.db.load_rl_weights("default")
-        if loaded.get("users", 0) > 0 and self.user_agent.store:
+        if not saved_weights and loaded.get("users", 0) > 0 and self.user_agent.store:
             for store_key, u in list(self.user_agent.store.items()):
                 w = self.db.load_rl_weights(u.user_id, profile=u.profile)
                 if w:
                     saved_weights = w
+                    break  # Use first found, not last
         # If no user-specific weights found, try loading from user preferences JSON
         if not saved_weights and loaded.get("users", 0) > 0:
             for store_key, u in list(self.user_agent.store.items()):
@@ -467,6 +469,11 @@ class MainMemoryAgent:
             if recent_contexts:
                 retrieved["context"] = recent_contexts
 
+        # Load per-user RL weights for isolated scoring
+        if self._persistence_enabled:
+            user_weights = self.db.load_rl_weights(user_id, profile=profile)
+            self.rl_optimizer.load_weights_for_user(user_weights)
+
         scored = self._compute_importance(retrieved, task_context, user_id, platform, features)
         # P0-2: Group-by-domain sampling — ensure knowledge diversity in top-8
         ranked = sorted(scored, key=lambda x: x.importance, reverse=True)
@@ -549,10 +556,7 @@ class MainMemoryAgent:
             elif source == "knowledge":
                 for mem in memories:
                     relevance = mem["relevance"]
-                    recency = 1.0
-                    if "last_updated" in mem["metadata"]:
-                        age = (datetime.now(timezone.utc) - datetime.fromisoformat(mem["metadata"]["last_updated"])).days
-                        recency = max(0, 1 - age / self._SCORE_RECENCY_DECAY_DAYS)
+                    recency = self._freshness(mem)  # unified Ebbinghaus freshness (safe timezone handling)
                     trust = mem["metadata"].get("trust_score", 0.5)
                     freshness = self._freshness(mem)
                     if freshness < self._FRESHNESS_ARCHIVE_THRESHOLD:
@@ -683,7 +687,15 @@ class MainMemoryAgent:
         # Extract domain from metadata for knowledge/experience sources
         def _item_domain(mem: MemoryRecord) -> str:
             if isinstance(mem.metadata, dict):
-                return mem.metadata.get("domain", "") or mem.metadata.get("category", "") or ""
+                # Direct domain key (experience, research, context)
+                d = mem.metadata.get("domain", "") or mem.metadata.get("category", "") or ""
+                if d:
+                    return d
+                # Nested: knowledge_agent.search() puts whole result dict as metadata,
+                # with domain/category inside mem.metadata["metadata"]
+                inner = mem.metadata.get("metadata", {})
+                if isinstance(inner, dict):
+                    return inner.get("domain", "") or inner.get("category", "") or ""
             return ""
         # Items with empty domain keep their rank position
         domains_seen: set[str] = set()
@@ -722,7 +734,10 @@ class MainMemoryAgent:
             record.get("created_at") or
             record.get("metadata", {}).get("created_at", "") or
             record.get("last_updated") or
-            record.get("metadata", {}).get("last_updated", "")
+            record.get("metadata", {}).get("last_updated", "") or
+            record.get("updated_at") or
+            record.get("metadata", {}).get("updated_at", "") or
+            ""
         )
         if not date_str or date_str == "":
             return 1.0
@@ -756,6 +771,7 @@ class MainMemoryAgent:
                 ("knowledge", "knowledge_memory", "id"),
                 ("experience", "experience_memory", "id"),
                 ("task", "task_memory", "id"),
+                ("context", "context_memory", "session_id"),
             ]:
                 rows = self.db._conn.execute(
                     f"SELECT {id_col} as rid, created_at, last_access_at, last_updated "
@@ -849,7 +865,7 @@ class MainMemoryAgent:
                                         steps=[{"step": "Initialize", "status": task_status}],
                                         profile=profile, project=project,
                                         task_type=features.get("task_type"))
-            task_tags = self._extract_task_tags(context) if hasattr(self, '_extract_task_tags') else []
+            task_tags = self._extract_task_tags(context)
             self._infer_user_preferences(context, user_id, platform=platform, profile=profile)
             self._infer_habits(user_id, context, profile=profile)
 
@@ -933,7 +949,7 @@ profile=profile, language=lang)
                                 "project": project, "session_id": session_id or "",
                                 "session_title": session_title, "tags": task_tags,
                                 "category": research_domain,
-                            })
+                            }, entry_id=f"{user_id}:{task_id}")
                     if exp_data:
                         exp_id = f"{user_id}:{exp_data['summary'][:20]}:{int(datetime.now(timezone.utc).timestamp())}"
                         self.db.save_experience(user_id, exp_data["task_type"], success,
@@ -971,7 +987,7 @@ profile=profile, language=lang, experience_id=exp_id)
                         user_id=user_id, task_type=exp_data["task_type"],
                         project=project, session_id=session_id or "",
                         session_title=session_title, tags=task_tags,
-                        profile=profile,
+                        profile=profile, entry_id=exp_id,
                     )
             elif success or experience_summary:
                 steps_from_context = [m["content"] for m in context if m["role"] != "system"]
@@ -996,7 +1012,8 @@ profile=profile, language=lang, experience_id=exp_id)
             if correction:
                 logger.info("Correction detected — triggering immediate reflection")
                 self._pending_reflection = True
-                self._store_count.pop(user_id, None)
+                with self._store_lock:
+                    self._store_count.pop(user_id, None)
                 if platform != "hermes":
                     self._trigger_auto_reflection(user_id)
             else:
@@ -1213,14 +1230,20 @@ profile=profile, language=lang, experience_id=exp_id)
         return sum(0.5 + h["avg_reward"] / 2 for h in history) / len(history)
 
     def record_feedback(self, user_id: str, task_id: str, feedback: str,
-                        retrieved_memories: List[Dict], profile: str = "default"):
+                        retrieved_memories: List, profile: str = "default"):
         if feedback not in ["positive", "negative"]:
             raise ValueError("feedback must be 'positive' or 'negative'")
+        # Defensive: convert Pydantic MemoryRecord objects to dicts
+        # (in case caller passes retrieve_for_task return directly without JSON round-trip)
+        _normalized_memories = [
+            m.model_dump() if hasattr(m, 'model_dump') else m
+            for m in (retrieved_memories or [])
+        ]
         from .learning.rl_weight_optimizer import FeedbackRecord
         cw = self.rl_optimizer.get_current_weights()
         feedback_record = FeedbackRecord(
             user_id=user_id, task_id=task_id,
-            retrieved_memories=retrieved_memories, user_feedback=feedback,
+            retrieved_memories=_normalized_memories, user_feedback=feedback,
             metadata={"weights_snapshot": cw, "feedback": feedback},
         )
         self.rl_optimizer.add_feedback(feedback_record)

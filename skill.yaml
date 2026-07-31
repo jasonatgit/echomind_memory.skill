@@ -1,5 +1,5 @@
 name: echomind_memory
-version: "1.2.3"
+version: "1.2.6"
 description: "A persistent memory system that lets your AI remember user preferences, tasks, knowledge, and self-learned experiences. Supports OpenClaw, Hermes, Claude Code, and OpenCode ecosystems."
 author: "jasonatgit"
 license: MIT
@@ -37,6 +37,18 @@ tools:
           type: integer
           default: 5
           description: "Maximum number of memories to return. Default: 5"
+        project:
+          type: string
+          default: "default"
+          description: "Optional. Project identifier for memory isolation."
+        session_id:
+          type: string
+          default: ""
+          description: "Optional. Session identifier for context grouping."
+        profile:
+          type: string
+          default: "default"
+          description: "Optional. User profile for memory isolation."
       required:
         - user_id
         - query
@@ -100,6 +112,22 @@ tools:
           type: boolean
         experience_summary:
           type: string
+        project:
+          type: string
+          default: "default"
+          description: "Optional. Project identifier for memory isolation."
+        session_id:
+          type: string
+          default: ""
+          description: "Optional. Session identifier for context grouping."
+        correction:
+          type: boolean
+          default: false
+          description: "Optional. Set to true if the user is correcting the agent's previous response (triggers immediate reflection)."
+        profile:
+          type: string
+          default: "default"
+          description: "Optional. User profile for memory isolation."
       required:
         - user_id
         - task_id
@@ -125,6 +153,10 @@ tools:
           type: array
           items:
             type: object
+        profile:
+          type: string
+          default: "default"
+          description: "Optional. User profile for memory isolation."
       required:
         - user_id
         - task_id

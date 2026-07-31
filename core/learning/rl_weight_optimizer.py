@@ -216,20 +216,38 @@ class RLWeightOptimizer:
         return np.array(state, dtype=np.float32)
 
     def predict_score(self, state: np.ndarray) -> float:
-        """Predict expected reward from both task features and source ratios."""
+        """Predict expected reward using proper source→weight mapping.
+
+        Maps 7 source ratios to 5 weight dimensions via _WEIGHT_SOURCE_MAP,
+        then dots with weights. Task features contribute as a scaled binary sum.
+        """
         w = [self.ema_weights.get(k, 0.2) for k in self._WEIGHT_KEYS]
         source_ratios = state[self._TASK_FEATURE_COUNT:]
         n_ratios = len(source_ratios)
-        if n_ratios > len(w):
-            median_w = float(np.median(w)) if w else 0.2
-            w_ext = w + [median_w] * (n_ratios - len(w))
-        else:
-            w_ext = w[:n_ratios]
+
+        # Build source ratio dict: {source_name: ratio}
+        source_names = self._source_order
+        source_dict = {}
+        for i, name in enumerate(source_names):
+            source_dict[name] = float(source_ratios[i]) if i < n_ratios else 0.0
+
+        # Map source ratios to weight dimensions via _WEIGHT_SOURCE_MAP
+        mapped_scores = []
+        for wk in self._WEIGHT_KEYS:
+            mapped_sources = self._WEIGHT_SOURCE_MAP.get(wk, [])
+            if mapped_sources:
+                vals = [source_dict.get(s, 0.0) for s in mapped_sources]
+                mapped_scores.append(sum(vals) / len(vals))
+            else:
+                mapped_scores.append(0.0)
+
+        # Dot product: 5 mapped scores × 5 weights
+        source_part = float(np.dot(np.array(mapped_scores), np.array(w)))
+
         # Task features contribute as binary flag sum × avg weight × 0.3 scale
         task_features = state[:self._TASK_FEATURE_COUNT]
-        avg_w = float(np.mean(list(self.ema_weights.values()))) if self.ema_weights else 0.2
+        avg_w = float(np.mean(w)) if w else 0.2
         task_part = float(np.sum(task_features)) * avg_w * 0.3 / max(len(task_features), 1)
-        source_part = float(np.dot(source_ratios, w_ext))
         return task_part + source_part
 
     def add_feedback(self, feedback: FeedbackRecord):
@@ -245,7 +263,8 @@ class RLWeightOptimizer:
             feedback.metadata["lr_multiplier"] = lr_mult
 
         self.feedback_buffer.append(feedback)
-        if len(self.feedback_buffer) >= 10:
+        _update_threshold = min(10, self.max_buffer_size)
+        if len(self.feedback_buffer) >= _update_threshold:
             self._update_weights()
             self.feedback_buffer = []
         if len(self.feedback_buffer) > self.max_buffer_size:
@@ -310,6 +329,17 @@ class RLWeightOptimizer:
         if len(self.history) > 100:
             self.history.pop(0)
 
+    def load_weights_for_user(self, weights: Dict[str, float] = None):
+        """Load per-user weights into the optimizer.
+
+        If weights is None or empty, no change (keep current global weights).
+        Called before retrieve_for_task to ensure per-user weight isolation.
+        """
+        if not weights:
+            return
+        self.weights = weights.copy()
+        self.ema_weights = weights.copy()
+
     def get_current_weights(self) -> Dict[str, float]:
         return self.ema_weights.copy()
 
@@ -331,24 +361,40 @@ class RLWeightOptimizer:
         return max(kl_fwd, kl_rev)
 
     def decay_all(self, factor: float = 0.95):
+        """Differential decay: pull divergent weights back toward snapshot.
+
+        Previous implementation multiplied all weights by the same factor then
+        softmax-normalized, which is a mathematical identity (no effect).
+        This version applies per-dimension decay proportional to divergence,
+        then clamps to _WEIGHT_SPEC ranges instead of softmax.
+        """
         divergence = self._compute_divergence()
         extra = 0.0
         if divergence > self.kpop_threshold:
             extra = min(self.kpop_max_extra, (divergence - self.kpop_threshold) * 0.05)
-        effective = max(0.5, factor - extra)
+        effective_base = max(0.5, factor - extra)
+
+        # Per-dimension differential decay: weights farther from snapshot decay more
+        snap = self.policy_snapshots[-1]["weights"] if self.policy_snapshots else {}
         for k in self._WEIGHT_KEYS:
-            self.weights[k] = max(0.01, self.weights[k] * effective)
-        values = np.array([self.weights.get(k, 0.0) for k in self._WEIGHT_KEYS])
-        exp_values = np.exp(values - np.max(values))
-        softmax_values = exp_values / np.sum(exp_values)
-        for i, k in enumerate(self._WEIGHT_KEYS):
-            self.weights[k] = float(softmax_values[i])
-        for k in self.ema_weights:
+            snap_val = snap.get(k, self.weights.get(k, 0.2))
+            current = self.weights.get(k, 0.2)
+            # Dimension-specific decay: more divergent → stronger pull toward snapshot
+            dim_div = abs(current - snap_val)
+            dim_factor = max(0.3, effective_base - dim_div * 0.5)
+            # Pull toward snapshot value, not just shrink
+            self.weights[k] = current * dim_factor + snap_val * (1 - dim_factor)
+            # Clamp to spec range
+            lo, hi = self._WEIGHT_SPEC[k]["range"]
+            self.weights[k] = max(lo, min(hi, self.weights[k]))
+
+        # EMA smooth (no softmax — it would cancel the differential decay)
+        for k in self._WEIGHT_KEYS:
             self.ema_weights[k] = (
-                self.decay_factor * self.ema_weights[k]
+                self.decay_factor * self.ema_weights.get(k, 0.2)
                 + (1 - self.decay_factor) * self.weights[k]
             )
-        logger.info(f"[RL] decay_all: factor={effective:.3f} (div={divergence:.2f}, extra={extra:.3f})")
+        logger.info(f"[RL] decay_all: base_factor={effective_base:.3f} (div={divergence:.2f}, extra={extra:.3f})")
 
     def get_history(self) -> List[Dict]:
         return self.history.copy()

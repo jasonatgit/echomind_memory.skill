@@ -74,6 +74,10 @@ FALLBACK_CONFIG = {
     "rl": {
         "initial_weights": {
             "relevance": [0.30, 0.50],
+            "recency": [0.15, 0.25],
+            "frequency": [0.10, 0.20],
+            "explicit_feedback": [0.10, 0.20],
+            "trust_score": [0.05, 0.15],
         },
         "learning_rate": 0.07,
         "decay_factor": 0.97,
@@ -161,6 +165,7 @@ class ConfigManager:
                     data = yaml.safe_load(f)
                 self._active_path = full_path
                 self._yaml_cache = data or {}
+                self._validate_config()
                 logger.info("Config loaded from: %s", full_path)
                 return
             except (yaml.YAMLError, OSError) as e:
@@ -172,18 +177,61 @@ class ConfigManager:
         self._active_path = None
         self._yaml_cache = {}
 
+    def _validate_config(self):
+        """Lightweight schema validation for critical config values.
+
+        Logs warnings for invalid values and reverts to FALLBACK_CONFIG defaults.
+        Schema: {section.key: (expected_type, range_tuple, validator_fn)}
+        """
+        schema = {
+            "server.port": (int, None, lambda v: v > 0 and v < 65536),
+            "reflection.max_daily": (int, None, lambda v: v > 0),
+            "reflection.batch_size": (int, None, lambda v: v > 0),
+            "reflection.min_records": (int, None, lambda v: v > 0),
+            "rl.learning_rate": (float, None, lambda v: 0 < v < 1),
+            "rl.decay_factor": (float, None, lambda v: 0 < v < 1),
+            "rl.max_buffer_size": (int, None, lambda v: v > 0),
+        }
+        for section_key, (expected_type, type_b, validator) in schema.items():
+            sec, key = section_key.split(".", 1)
+            sec_data = self._yaml_cache.get(sec, {})
+            if not isinstance(sec_data, dict):
+                continue
+            val = sec_data.get(key)
+            if val is None:
+                continue
+            # Type check
+            if not isinstance(val, expected_type):
+                # Allow list/tuple for random-range configs (reflection.batch_size etc.)
+                if isinstance(val, (list, tuple)):
+                    continue
+                logger.warning(
+                    "Config %s: expected %s, got %s (value=%r). Using default.",
+                    section_key, expected_type.__name__, type(val).__name__, val,
+                )
+                del sec_data[key]
+                continue
+            # Range check
+            if validator and not validator(val):
+                logger.warning(
+                    "Config %s: value %r out of valid range. Using default.",
+                    section_key, val,
+                )
+                del sec_data[key]
+
     def get(self, section: str, key: str, default: Any = None) -> Any:
         runtime_key = f"{section}.{key}"
         if runtime_key in self._runtime_overrides:
             return self._runtime_overrides[runtime_key]
 
-        ext_val = self._ext_params.get(section, {}).get(key)
-        if ext_val is not None:
-            return ext_val
-
+        # YAML takes priority over engine ext_params (user config wins)
         yaml_val = self._yaml_cache.get(section, {}).get(key)
         if yaml_val is not None:
             return yaml_val
+
+        ext_val = self._ext_params.get(section, {}).get(key)
+        if ext_val is not None:
+            return ext_val
 
         section_fb = FALLBACK_CONFIG.get(section, {})
         if isinstance(section_fb, dict):
@@ -202,12 +250,14 @@ class ConfigManager:
                     target[k] = v
             return target
 
-        yaml_sec = self._yaml_cache.get(section, {})
-        if isinstance(yaml_sec, dict):
-            _deep_update(base, yaml_sec)
-        ext_sec = self._ext_params.get(section, {})
+        # ext_params applied first (lowest priority), then YAML overwrites (user config wins)
+        # Deep-copy to prevent callers from mutating cached values
+        ext_sec = copy.deepcopy(self._ext_params.get(section, {}))
         if isinstance(ext_sec, dict):
             _deep_update(base, ext_sec)
+        yaml_sec = copy.deepcopy(self._yaml_cache.get(section, {}))
+        if isinstance(yaml_sec, dict):
+            _deep_update(base, yaml_sec)
         # Apply runtime overrides (set via set_runtime)
         runtime = {}
         for kp, kv in self._runtime_overrides.items():
@@ -227,8 +277,11 @@ class ConfigManager:
         self._observers.append(callback)
 
     def reload(self):
+        # Preserve runtime overrides across reload (e.g. Hermes LLM sync)
+        saved_overrides = dict(self._runtime_overrides)
         self._load_config()
         self._runtime_overrides.clear()
+        self._runtime_overrides.update(saved_overrides)
         # Notify LLM client singleton to reload on next get (if any)
         try:
             from .llm_client import reload_llm_client

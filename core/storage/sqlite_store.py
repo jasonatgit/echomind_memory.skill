@@ -78,6 +78,8 @@ _MIGRATIONS = [
          "CREATE INDEX IF NOT EXISTS idx_task_last_access ON task_memory(last_access_at)",
          "CREATE INDEX IF NOT EXISTS idx_experience_last_access ON experience_memory(last_access_at)",
          "CREATE INDEX IF NOT EXISTS idx_knowledge_last_access ON knowledge_memory(last_access_at)",
+         "CREATE INDEX IF NOT EXISTS idx_context_last_access ON context_memory(last_access_at)",
+         "CREATE INDEX IF NOT EXISTS idx_papers_last_access ON research_papers(last_access_at)",
      ]),
     (5, "Add context_archive table for evicted session messages",
      [
@@ -877,7 +879,10 @@ class SqliteStore:
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
                 ON CONFLICT(id) DO UPDATE SET
                     content=excluded.content, metadata=excluded.metadata,
-                    trust_score=excluded.trust_score, updated_at=datetime('now'),
+                    trust_score=excluded.trust_score, domain=excluded.domain,
+                    tags=excluded.tags, project=excluded.project,
+                    session_id=excluded.session_id, session_title=excluded.session_title,
+                    language=excluded.language, updated_at=datetime('now'),
                     last_access_at=datetime('now')
             """, (knowledge_id, domain, content, json.dumps(metadata or {}), trust_score,
                   entry_type, json.dumps(prerequisites or []), output_template,
@@ -944,8 +949,10 @@ class SqliteStore:
             where += " AND platform = ?"
             params.append(platform)
         if query:
-            where += " AND messages LIKE ?"
-            params.append(f"%{query}%")
+            # Escape LIKE wildcards to prevent unintended broad matching
+            safe_query = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            where += " AND messages LIKE ? ESCAPE '\\'"
+            params.append(f"%{safe_query}%")
         rows = self._conn.execute(
             f"SELECT * FROM context_memory {where} ORDER BY updated_at DESC LIMIT ?",
             params + [limit]).fetchall()
@@ -1181,7 +1188,7 @@ class SqliteStore:
             "context_memory": "updated_at",
             "knowledge_memory": "updated_at",
             "research_papers": "created_at",
-            "experience_memory": "",  # No timestamp column — skip legacy records
+            "experience_memory": "created_at",
         }
         results = {}
         with self._lock:
@@ -1295,6 +1302,7 @@ class SqliteStore:
             )
             self._conn.commit()
 
+    @with_retry_on_busy()
     @_require_conn
     def get_memory_state(self, memory_type: str, memory_id: str) -> str:
         """Return the current state of a memory record, defaulting to 'active'.

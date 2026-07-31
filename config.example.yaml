@@ -1,8 +1,42 @@
-# config.example.yaml — EchoMind config template
+# config.example.yaml — EchoMind user config template
 # Copy to ~/.echomind/echomind_config.yaml and modify as needed
 
-# ── Server config ──
+# ── LLM ──
+llm:
+  # Provider: openai_compatible | ollama | none
+  provider: "openai_compatible"
+  endpoint: ""        # https://your-api.example.com/v1
+  api_key: ""         # supports ${ENV_VAR} syntax
+  model: "local"
+  temperature: 0.3
+  max_tokens: 1500
+  timeout: 60
+
+  # Optional: cheaper model for semantic retrieval scoring
+  # semantic_model: ""
+  # semantic_temperature: 0
+
+# ── Server ──
 server:
-  host: "127.0.0.1"   # HTTP API listen address
-  port: 8005          # HTTP API listen port
-  api_key: ""         # API Key (empty=skip auth)
+  host: "127.0.0.1"
+  port: 8005
+  api_key: ""         # API Key auth (optional)
+
+# ── RL Self-Optimization ──
+rl:
+  initial_weights:
+    relevance: [0.30, 0.50]
+
+# ── Reflection ──
+reflection:
+  batch_size: [5, 12]
+
+
+# ── Retrieval ──
+retrieval:
+  experience_top_k: 5
+
+
+# ── Database ──
+db:
+  path: "~/.echomind/memory.db"

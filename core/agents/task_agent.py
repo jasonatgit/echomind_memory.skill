@@ -66,5 +66,7 @@ class TaskMemoryAgent:
                  and (not project or t.project == project)
                  and (not profile or t.profile == profile)
                  and (not task_type or t.metadata.get("task_type") == task_type)]
-        tasks.sort(key=lambda x: x.updated_at, reverse=True)
-        return [{"task_id": t.task_id, "title": t.title, "status": t.status} for t in tasks[:limit]]
+        tasks.sort(key=lambda x: x.updated_at or datetime.now(timezone.utc), reverse=True)
+        return [{"task_id": t.task_id, "title": t.title, "status": t.status,
+                 "created_at": t.created_at.isoformat() if t.created_at else "",
+                 "updated_at": t.updated_at.isoformat() if t.updated_at else ""} for t in tasks[:limit]]

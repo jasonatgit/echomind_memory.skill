@@ -80,42 +80,52 @@ class LLMClient:
         """Send a chat completion request. Returns response text or empty string.
 
         Overrides: model, temperature, max_tokens, timeout.
+        Retries with exponential backoff (0.5s, 1s) on transient failures.
         """
         if not self._available:
             return ""
-        try:
-            import requests
-            headers = {"Content-Type": "application/json"}
-            if self._api_key:
-                headers["Authorization"] = f"Bearer {self._api_key}"
+        import requests
+        import time
+        headers = {"Content-Type": "application/json"}
+        if self._api_key:
+            headers["Authorization"] = f"Bearer {self._api_key}"
 
-            body = {
-                "model": overrides.get("model", self._model),
-                "messages": [{"role": "user", "content": prompt}],
-                "temperature": overrides.get("temperature", self._temperature),
-                "max_tokens": overrides.get("max_tokens", self._max_tokens),
-            }
-            resp = requests.post(
-                f"{self._endpoint}/chat/completions",
-                json=body,
-                headers=headers,
-                timeout=overrides.get("timeout", self._timeout),
-            )
-            resp.raise_for_status()
-            data = resp.json()
+        body = {
+            "model": overrides.get("model", self._model),
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": overrides.get("temperature", self._temperature),
+            "max_tokens": overrides.get("max_tokens", self._max_tokens),
+        }
+        # Retry: exponential backoff 0.5s, 1s (3 attempts)
+        last_exc = None
+        for attempt in range(3):
             try:
-                content = data["choices"][0]["message"]["content"]
-                if content is None or content.strip() == "":
-                    reason = data.get("choices", [{}])[0].get("finish_reason", "?")
-                    logger.warning("LLM returned empty content (finish_reason=%s)", reason)
+                resp = requests.post(
+                    f"{self._endpoint}/chat/completions",
+                    json=body,
+                    headers=headers,
+                    timeout=overrides.get("timeout", self._timeout),
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                try:
+                    content = data["choices"][0]["message"]["content"]
+                    if content is None or content.strip() == "":
+                        reason = data.get("choices", [{}])[0].get("finish_reason", "?")
+                        logger.warning("LLM returned empty content (finish_reason=%s)", reason)
+                        return ""
+                    return content
+                except (KeyError, IndexError, TypeError):
+                    logger.warning("LLM returned unexpected response format: %s", str(data)[:200])
                     return ""
-                return content
-            except (KeyError, IndexError, TypeError):
-                logger.warning("LLM returned unexpected response format: %s", str(data)[:200])
-                return ""
-        except Exception as e:
-            logger.warning("LLM chat failed: %s", e)
-            return ""
+            except Exception as e:
+                last_exc = e
+                if attempt < 2:
+                    time.sleep(0.5 * (2 ** attempt))
+                    logger.debug("LLM retry %d after: %s", attempt + 1, e)
+                else:
+                    logger.warning("LLM chat failed after 3 attempts: %s", last_exc)
+                    return ""
 
     def score(self, query: str, memory_text: str, lang: str = "en") -> float:
         """Semantic relevance score 0.0–1.0 between query and a memory item.
