@@ -1,5 +1,21 @@
 # EchoMind Changelog
 
+## v1.2.7 — Deep Code Review Fixes & Regression Tests (2026-08-04)
+
+**Review method:** full deepseek-v4-flash code review + 4-parallel agent audit of memory data-links, then fix + 48-test suite (33 existing + 15 new).
+
+| Area | Fixes |
+|------|-------|
+| **Data-link / Freshness** | `_load_from_db` restores all timestamps (Ebbinghaus survives restart); unified `last_access_at` format; knowledge `last_access_at` propagated; user `model_dump(mode=json)`; `_freshness` handles datetime objects |
+| **Transaction** | `_batch_active` + `_maybe_commit()` gating → `transaction()` now truly atomic (rollback on failure) |
+| **Persistence** | Completed UPSERT `DO UPDATE SET` for task/experience/knowledge/paper/note; migration v3 preserves `created_at` |
+| **Dispatch/API** | `main.py` forwards `project`/`session_id`/`title`/`correction`; `api_delete_user` → HTTP 500; `mcp_gateway` thin wrapper (version 1.2.7); reflect profile scoping |
+| **RL/Safety** | daily-limit resets across UTC days; `db._lock` on state writes; single freshness; `_content_index` rebuild on load; safe JSON loads; transcript upsert; `batch_score` parse |
+| **Critical bug** | `models/context.py` missing `Optional` import (fixed) |
+
+**Tests:** fixed conftest + storage/core assertions; added `tests/test_regressions.py` (15 tests).
+
+---
 ## v1.2.6 — Bug Fix & Reliability Release (2026-07-31)
 
 **Fixes: 42 issues across 3 audit rounds covering core engine, storage layer, and API layer.**
