@@ -37,12 +37,14 @@ class TestCrud:
         users = sqlite_store.load_users()
         match = [u for u in users if u["user_id"] == "user_1"]
         assert len(match) == 1
-        assert json.loads(match[0]["preferences"]) == {"style": "concise"}
+        # preferences stored under platform-aware _default wrapper
+        assert match[0]["preferences"] == {"_default": {"style": "concise"}}
+        assert match[0]["habits"] == {"time": "morning"}
 
     def test_save_and_load_task(self, sqlite_store):
         sqlite_store.save_task("user_1", "task_1", "Test", "completed", [], {"lang": "py"})
         tasks = sqlite_store.load_tasks()
-        match = [t for t in tasks if t["id"] == "task_1"]
+        match = [t for t in tasks if t["id"] == "user_1:task_1"]
         assert len(match) == 1
         assert match[0]["title"] == "Test"
 

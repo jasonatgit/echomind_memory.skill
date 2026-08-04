@@ -106,6 +106,7 @@ class KnowledgeMemoryAgent:
             results.append({"id": entry.id, "content": entry.content,
                             "metadata": entry.metadata, "relevance": relevance,
                             "created_at": entry.created_at.isoformat() if entry.created_at else "",
+                            "last_access_at": entry.last_access_at or entry.metadata.get("last_access_at", ""),
                             "last_updated": entry.metadata.get("last_updated", "")})
 
         results.sort(key=lambda x: x.get("relevance", 0), reverse=True)

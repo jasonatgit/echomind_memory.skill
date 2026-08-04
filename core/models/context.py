@@ -1,6 +1,6 @@
 from pydantic import BaseModel, Field
 from datetime import datetime, timezone
-from typing import List
+from typing import List, Optional
 
 
 class ContextMessage(BaseModel):

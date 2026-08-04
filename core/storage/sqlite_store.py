@@ -60,6 +60,16 @@ def _normalize_row(row) -> Dict:
             row[k] = _JSON_DEFAULTS.get(k, "")
     return row
 
+
+def _safe_json_loads(value, default):
+    """Parse a JSON column safely; return default on malformed input."""
+    if value is None:
+        return default
+    try:
+        return json.loads(value)
+    except (json.JSONDecodeError, TypeError):
+        return default
+
 SCHEMA_VERSION = 3  # v1: 无 profile 列 (v1.1.5-), v2: 有 profile 列 (v1.1.6+), v3: user_memory 复合PK (v1.2.0)
 
 # Incremental migrations beyond v3 (stored as PRAGMA user_version)
@@ -205,6 +215,7 @@ class SqliteStore:
         Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
         self._conn: Optional[sqlite3.Connection] = None
         self._lock: Optional[threading.RLock] = None
+        self._batch_active = False
 
     def connect(self):
         self._conn = sqlite3.connect(self.db_path, check_same_thread=False)
@@ -400,7 +411,7 @@ class SqliteStore:
                 CREATE INDEX IF NOT EXISTS idx_notes_user ON research_notes(user_id);
                 CREATE INDEX IF NOT EXISTS idx_session_transcripts_user ON session_transcripts(user_id);
             """)
-            self._conn.commit()
+            self._maybe_commit()
             self._migrate_existing_tables()
             # build profile index after migration (ensure profile column exists)
             self._conn.executescript("""
@@ -413,7 +424,7 @@ class SqliteStore:
                 CREATE INDEX IF NOT EXISTS idx_notes_profile ON research_notes(profile);
                 CREATE INDEX IF NOT EXISTS idx_transcripts_profile ON session_transcripts(profile);
             """)
-            self._conn.commit()
+            self._maybe_commit()
             # Auto-migrate: add language column to existing databases (idempotent)
             _LANG_TABLES = ["task_memory", "experience_memory", "knowledge_memory"]
             for table in _LANG_TABLES:
@@ -431,7 +442,7 @@ class SqliteStore:
                     SET metadata = json_set(metadata, '$.category', domain)
                     WHERE json_extract(metadata, '$.category') IS NULL
                 """)
-                self._conn.commit()
+                self._maybe_commit()
             except sqlite3.OperationalError:
                 pass
             logger.info("All 9 memory tables ensured")
@@ -467,7 +478,7 @@ class SqliteStore:
                             raise
                     self._conn.execute(f"PRAGMA user_version = {version}")
                     logger.info("Migration v%d: %s", version, desc)
-                self._conn.commit()
+                self._maybe_commit()
         except Exception as e:
             self._conn.rollback()
             logger.error("Schema migration failed, rolled back: %s", e, exc_info=True)
@@ -477,9 +488,21 @@ class SqliteStore:
         """Context manager for atomic batch writes.
 
         Usage: with store.transaction(): store.save_user(...); store.save_task(...)
-        Uses BEGIN IMMEDIATE to acquire write lock upfront.
+        Uses BEGIN IMMEDIATE to acquire write lock upfront. While batch-active,
+        save_* methods defer auto-commit so the batch is atomic (rollback on error).
         """
-        return _TransactionContext(self._conn, self._lock)
+        def _set_batch(on):
+            self._batch_active = on
+        return _TransactionContext(self._conn, self._lock, _set_batch)
+
+    def _maybe_commit(self):
+        """Commit unless an outer batch transaction is active.
+
+        Inside `transaction()`, defer the commit so the whole batch is atomic
+        (rollback on any failure). When no batch is active, commit immediately.
+        """
+        if not self._batch_active:
+            self._conn.commit()
 
 
 
@@ -559,6 +582,12 @@ class SqliteStore:
                 if "last_updated" in um_cols:
                     insert_cols.append("last_updated")
                     select_cols.append("last_updated")
+                if "last_access_at" in um_cols:
+                    insert_cols.append("last_access_at")
+                    select_cols.append("COALESCE(last_access_at, '')")
+                if "created_at" in um_cols:
+                    insert_cols.append("created_at")
+                    select_cols.append("COALESCE(created_at, datetime('now'))")
                 if "version" in um_cols:
                     insert_cols.append("version")
                     select_cols.append("version")
@@ -570,7 +599,7 @@ class SqliteStore:
 
             # 4. Write schema version number
             self._conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
-            self._conn.commit()
+            self._maybe_commit()
             logger.info(
                 f"Migration: {len(_PROFILE_TABLES)} tables migrated "
                 f"to schema v{SCHEMA_VERSION} (profile column)"
@@ -606,7 +635,7 @@ class SqliteStore:
             (_LOAD_LIMIT,)).fetchall()
         if len(rows) >= _LOAD_LIMIT:
             logger.warning("load_users: truncated at LIMIT=%d (more rows in DB)", _LOAD_LIMIT)
-        return [{k: (json.loads(r[k]) if k in ('preferences','habits','history') else r[k])
+        return [{k: (_safe_json_loads(r[k], {} if k == 'preferences' else []) if k in ('preferences','habits','history') else r[k])
                  for k in r.keys()} for r in (_normalize_row(r) or r for r in rows)]
 
     @_require_conn
@@ -616,7 +645,7 @@ class SqliteStore:
             (_LOAD_LIMIT,)).fetchall()
         if len(rows) >= _LOAD_LIMIT:
             logger.warning("load_tasks: truncated at LIMIT=%d (more rows in DB)", _LOAD_LIMIT)
-        return [{k: (json.loads(r[k]) if k in ('steps','metadata','tags') else r[k])
+        return [{k: (_safe_json_loads(r[k], {'steps': [], 'metadata': {}, 'tags': []}[k]) if k in ('steps','metadata','tags') else r[k])
                  for k in r.keys()} for r in (_normalize_row(r) or r for r in rows)]
 
     @_require_conn
@@ -626,7 +655,7 @@ class SqliteStore:
             (_LOAD_LIMIT,)).fetchall()
         if len(rows) >= _LOAD_LIMIT:
             logger.warning("load_experiences: truncated at LIMIT=%d (more rows in DB)", _LOAD_LIMIT)
-        return [{k: (json.loads(r[k]) if k in ('steps_sequence','tags') else r[k])
+        return [{k: (_safe_json_loads(r[k], [] if k == 'steps_sequence' else []) if k in ('steps_sequence','tags') else r[k])
                  for k in r.keys()} for r in (_normalize_row(r) or r for r in rows)]
 
     @_require_conn
@@ -636,7 +665,7 @@ class SqliteStore:
             (_LOAD_LIMIT,)).fetchall()
         if len(rows) >= _LOAD_LIMIT:
             logger.warning("load_contexts: truncated at LIMIT=%d (more rows in DB)", _LOAD_LIMIT)
-        return [{k: (json.loads(r[k]) if k in ('messages',) else r[k])
+        return [{k: (_safe_json_loads(r[k], []) if k == 'messages' else r[k])
                  for k in r.keys()} for r in (_normalize_row(r) or r for r in rows)]
 
     @_require_conn
@@ -646,7 +675,7 @@ class SqliteStore:
             (_LOAD_LIMIT,)).fetchall()
         if len(rows) >= _LOAD_LIMIT:
             logger.warning("load_knowledge: truncated at LIMIT=%d (more rows in DB)", _LOAD_LIMIT)
-        return [{k: (json.loads(r[k]) if k in ('metadata','prerequisites','tags') else r[k])
+        return [{k: (_safe_json_loads(r[k], {'metadata': {}, 'prerequisites': [], 'tags': []}[k]) if k in ('metadata','prerequisites','tags') else r[k])
                  for k in r.keys()} for r in (_normalize_row(r) or r for r in rows)]
 
     @_require_conn
@@ -667,7 +696,7 @@ class SqliteStore:
         rows = self._conn.execute(
             f"SELECT * FROM research_papers{w} ORDER BY importance_score DESC LIMIT ?",
             params + [limit]).fetchall()
-        return [{k: (json.loads(r[k]) if k in ('authors','keywords','key_points','metadata') else r[k])
+        return [{k: (_safe_json_loads(r[k], [] if k in ('authors','keywords','key_points') else {}) if k in ('authors','keywords','key_points','metadata') else r[k])
                  for k in r.keys()} for r in (_normalize_row(r) or r for r in rows)]
 
     @_require_conn
@@ -683,7 +712,7 @@ class SqliteStore:
         w = " WHERE " + " AND ".join(where) if where else ""
         rows = self._conn.execute(
             f"SELECT * FROM research_notes{w} ORDER BY updated_at DESC").fetchall()
-        return [{k: (json.loads(r[k]) if k in ('linked_papers','tags') else r[k])
+        return [{k: (_safe_json_loads(r[k], []) if k in ('linked_papers','tags') else r[k])
                  for k in r.keys()} for r in (_normalize_row(r) or r for r in rows)]
 
     # ═══════════════════════════════════════════════════
@@ -770,7 +799,7 @@ class SqliteStore:
                   json.dumps(history or [], ensure_ascii=False),
                   profile,
                   version))
-            self._conn.commit()
+            self._maybe_commit()
 
     def _get_user_raw(self, user_id: str, profile: str = "default") -> Dict:
         row = self._conn.execute(
@@ -801,13 +830,17 @@ class SqliteStore:
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
                 ON CONFLICT(id) DO UPDATE SET
                     status=excluded.status, steps=excluded.steps,
-                    metadata=excluded.metadata, updated_at=datetime('now'),
+                    metadata=excluded.metadata, title=excluded.title,
+                    project=excluded.project, profile=excluded.profile,
+                    session_id=excluded.session_id, session_title=excluded.session_title,
+                    tags=excluded.tags, language=excluded.language,
+                    updated_at=datetime('now'),
                     last_access_at=datetime('now')
             """, (task_pk, user_id, title, status,
                   json.dumps(steps or []), json.dumps(metadata or {}),
                   project, profile, session_id, session_title,
                   json.dumps(tags or []), language))
-            self._conn.commit()
+            self._maybe_commit()
 
     @with_retry_on_busy()
     @_require_conn
@@ -825,12 +858,16 @@ class SqliteStore:
                 ON CONFLICT(id) DO UPDATE SET
                     steps_sequence=excluded.steps_sequence,
                     summary=excluded.summary,
+                    task_type=excluded.task_type, success=excluded.success,
+                    tags=excluded.tags, session_id=excluded.session_id,
+                    session_title=excluded.session_title, project=excluded.project,
+                    profile=excluded.profile, language=excluded.language,
                     frequency=experience_memory.frequency + 1,
                     last_access_at=datetime('now')
             """, (eid, user_id, task_type, int(success), json.dumps(steps),
                   summary, project, profile, session_id, session_title,
                   json.dumps(tags or []), language))
-            self._conn.commit()
+            self._maybe_commit()
 
     @with_retry_on_busy()
     @_require_conn
@@ -848,7 +885,7 @@ class SqliteStore:
                     last_access_at=datetime('now')
             """, (session_id, user_id, json.dumps(messages, ensure_ascii=False),
                   token_count, platform, project, profile))
-            self._conn.commit()
+            self._maybe_commit()
 
     @with_retry_on_busy()
     @_require_conn
@@ -882,13 +919,17 @@ class SqliteStore:
                     trust_score=excluded.trust_score, domain=excluded.domain,
                     tags=excluded.tags, project=excluded.project,
                     session_id=excluded.session_id, session_title=excluded.session_title,
-                    language=excluded.language, updated_at=datetime('now'),
+                    language=excluded.language,
+                    entry_type=excluded.entry_type,
+                    prerequisites=excluded.prerequisites,
+                    output_template=excluded.output_template,
+                    updated_at=datetime('now'),
                     last_access_at=datetime('now')
             """, (knowledge_id, domain, content, json.dumps(metadata or {}), trust_score,
                   entry_type, json.dumps(prerequisites or []), output_template,
                   user_id, project, profile, session_id, session_title,
                   json.dumps(tags or []), language))
-            self._conn.commit()
+            self._maybe_commit()
 
     @with_retry_on_busy()
     @_require_conn
@@ -911,11 +952,13 @@ class SqliteStore:
                     keywords=excluded.keywords, domain=excluded.domain,
                     paper_type=excluded.paper_type, key_points=excluded.key_points,
                     importance_score=excluded.importance_score,
+                    metadata=excluded.metadata, project=excluded.project,
+                    profile=excluded.profile, user_id=excluded.user_id,
                     last_access_at=datetime('now')
             """, (paper_id, title, json.dumps(authors or []), year, journal, abstract,
                   json.dumps(keywords or []), domain, paper_type, json.dumps(key_points or []),
                   importance_score, json.dumps(metadata or {}), project, profile, user_id))
-            self._conn.commit()
+            self._maybe_commit()
 
     @with_retry_on_busy()
     @_require_conn
@@ -929,11 +972,13 @@ class SqliteStore:
                 ON CONFLICT(id) DO UPDATE SET
                     content=excluded.content,
                     linked_papers=excluded.linked_papers, tags=excluded.tags,
+                    topic=excluded.topic, project=excluded.project,
+                    profile=excluded.profile, user_id=excluded.user_id,
                     updated_at=datetime('now')
             """, (note_id, user_id, topic, content,
                   json.dumps(linked_papers or []), json.dumps(tags or []),
                   project, profile))
-            self._conn.commit()
+            self._maybe_commit()
 
     # ═══════════════════════════════════════════════════
     # SEARCH
@@ -956,7 +1001,7 @@ class SqliteStore:
         rows = self._conn.execute(
             f"SELECT * FROM context_memory {where} ORDER BY updated_at DESC LIMIT ?",
             params + [limit]).fetchall()
-        return [{k: (json.loads(r[k]) if k == "messages" else r[k])
+        return [{k: (_safe_json_loads(r[k], []) if k == "messages" else r[k])
                  for k in r.keys()} for r in rows]
 
     @with_retry_on_busy()
@@ -978,7 +1023,7 @@ class SqliteStore:
                     INSERT INTO user_memory (user_id, preferences, profile, last_updated, last_access_at)
                     VALUES (?, json_object('rl_weights', json(?)), ?, datetime('now'), datetime('now'))
                 """, (user_id, json.dumps(weights), profile))
-            self._conn.commit()
+            self._maybe_commit()
 
     @_require_conn
     def load_rl_weights(self, user_id: str, profile: str = None) -> Optional[Dict[str, float]]:
@@ -1013,20 +1058,27 @@ class SqliteStore:
                 ON CONFLICT(session_id) DO UPDATE SET
                     messages=excluded.messages, updated_at=datetime('now')
             """, (session_id, user_id, project, profile, json.dumps(messages, ensure_ascii=False)))
-            self._conn.commit()
+            self._maybe_commit()
 
     @with_retry_on_busy()
     @_require_conn
     def save_transcript_summary(self, session_id: str, summary: str,
                                 key_decisions: List = None):
         with self._lock:
+            # INSERT OR IGNORE then UPDATE, so a summary for a missing
+            # transcript row is not silently lost (no bare UPDATE no-op)
+            self._conn.execute("""
+                INSERT OR IGNORE INTO session_transcripts
+                (session_id, messages, updated_at)
+                VALUES (?, '[]', datetime('now'))
+            """, (session_id,))
             self._conn.execute("""
                 UPDATE session_transcripts
                 SET compressed_summary=?, key_decisions=?,
                     updated_at=datetime('now')
                 WHERE session_id=?
             """, (summary, json.dumps(key_decisions or []), session_id))
-            self._conn.commit()
+            self._maybe_commit()
 
     @_require_conn
     def _get_recent_session_count(self, user_id: str, days: int = 7) -> int:
@@ -1092,14 +1144,20 @@ class SqliteStore:
                     data.get("created_at", datetime.now(timezone.utc).isoformat()),
                 ),
             )
-            self._conn.commit()
+            self._maybe_commit()
 
     @_require_conn
-    def get_recent_episodic(self, user_id: str, count: int = 8) -> List[Dict]:
+    def get_recent_episodic(self, user_id: str, count: int = 8,
+                            profile: str = None) -> List[Dict]:
+        where = "user_id=?"
+        params = [user_id]
+        if profile:
+            where += " AND profile=?"
+            params.append(profile)
         rows = self._conn.execute(
-            "SELECT id, user_id, title, status, steps, created_at, project, tags, session_id "
-            "FROM task_memory WHERE user_id=? ORDER BY created_at DESC LIMIT ?",
-            (user_id, count),
+            f"SELECT id, user_id, title, status, steps, created_at, project, tags, session_id, profile "
+            f"FROM task_memory WHERE {where} ORDER BY created_at DESC LIMIT ?",
+            params + [count],
         ).fetchall()
         records = [dict(r) for r in rows]
         # Enrich with content summary from experience_memory for reflection engine
@@ -1149,7 +1207,7 @@ class SqliteStore:
             cursor = self._conn.execute(
                 f"DELETE FROM {table} WHERE {id_col}=?", (memory_id,)
             )
-            self._conn.commit()
+            self._maybe_commit()
             return cursor.rowcount > 0
 
     @with_retry_on_busy()
@@ -1171,7 +1229,7 @@ class SqliteStore:
                         f"DELETE FROM {table} WHERE user_id=?", (user_id,)
                     )
                 results[key] = cursor.rowcount
-            self._conn.commit()
+            self._maybe_commit()
         return results
 
     @_require_conn
@@ -1214,7 +1272,7 @@ class SqliteStore:
                         (f"-{days} days",),
                     )
                 results[key] = cursor.rowcount
-            self._conn.commit()
+            self._maybe_commit()
         return results
 
     def close(self):
@@ -1300,7 +1358,7 @@ class SqliteStore:
                 "previous_state=memory_states.state, state_changed_at=datetime('now')",
                 (memory_type, memory_id, state, reason, previous, source)
             )
-            self._conn.commit()
+            self._maybe_commit()
 
     @with_retry_on_busy()
     @_require_conn
@@ -1356,7 +1414,7 @@ class SqliteStore:
                 "confidence, reason, detection_method) VALUES (?,?,?,?,?,?)",
                 (source_id, target_id, relation_type, confidence, reason, detection_method)
             )
-            self._conn.commit()
+            self._maybe_commit()
 
     @_require_conn
     def get_evolution_chain(self, knowledge_id: str, limit: int = 10) -> List[Dict]:
@@ -1369,19 +1427,29 @@ class SqliteStore:
         return [dict(r) for r in rows]
 
 class _TransactionContext:
-    """Internal transaction context manager."""
+    """Internal transaction context manager.
 
-    def __init__(self, conn, lock):
+    Wraps BEGIN IMMEDIATE so a batch of saves is atomic. When batch-active,
+    save_* methods defer their auto-commit so a later failure rolls back all
+    earlier writes (fixes loss of atomicity from per-save commits).
+    """
+
+    def __init__(self, conn, lock, batch_setter=None):
         self.conn = conn
         self.lock = lock
+        self._set_batch = batch_setter  # callable(True/False) or None
 
     def __enter__(self):
         self.lock.acquire()
         self.conn.execute("BEGIN IMMEDIATE TRANSACTION")
+        if self._set_batch:
+            self._set_batch(True)
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         try:
+            if self._set_batch:
+                self._set_batch(False)
             if exc_type is None:
                 self.conn.commit()
             else:

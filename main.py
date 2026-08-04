@@ -60,6 +60,8 @@ def call(tool_name: str, config_path: str = None, **kwargs):
             user_id=kwargs.get("user_id", ""),
             task_id=kwargs.get("task_id"),
             platform=kwargs.get("platform"),
+            project=kwargs.get("project", "default"),
+            session_id=kwargs.get("session_id", ""),
             profile=kwargs.get("profile", "default"),
         )
         working = [
@@ -83,9 +85,11 @@ def call(tool_name: str, config_path: str = None, **kwargs):
             success=kwargs.get("success", False),
             experience_summary=kwargs.get("experience_summary"),
             platform=kwargs.get("platform"),
+            title=kwargs.get("title"),
             project=kwargs.get("project", "default"),
             session_id=kwargs.get("session_id", ""),
             profile=kwargs.get("profile", "default"),
+            correction=kwargs.get("correction", False),
         )
         return {"status": "stored",
                 "user_id": kwargs.get("user_id", ""),

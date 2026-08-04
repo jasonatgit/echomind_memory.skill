@@ -264,7 +264,7 @@ async def api_reflect(req: ReflectRequest, auth=Depends(verify_api_key)):
     """
     try:
         if req.llm_response is None:
-            records = memory_agent.get_recent_episodic(req.user_id, req.count)
+            records = memory_agent.get_recent_episodic(req.user_id, req.count, profile=req.profile)
             prompt, record_ids = memory_agent.reflective.build_prompt(
                 records, req.user_id, req.platform or "http"
             )
@@ -276,7 +276,7 @@ async def api_reflect(req: ReflectRequest, auth=Depends(verify_api_key)):
             }
         else:
             # Fetch full records (not just IDs) for process_result
-            full_records = memory_agent.get_recent_episodic(req.user_id, req.count)
+            full_records = memory_agent.get_recent_episodic(req.user_id, req.count, profile=req.profile)
             # Filter to requested IDs (if specified)
             if req.record_ids:
                 id_set = set(req.record_ids)
@@ -395,7 +395,7 @@ async def api_delete_user(req: DeleteRequest, auth=Depends(verify_api_key)):
         return {"status": "deleted", "user_id": req.user_id, "counts": counts}
     except Exception as e:
         logger.error(f"api_delete_user: {e}", exc_info=True)
-        return {"status": "error", "detail": "Delete failed"}
+        return JSONResponse(status_code=500, content={"status": "error", "detail": "Delete failed"})
 
 @app.post("/api/memory/cleanup")
 async def api_cleanup(auth=Depends(verify_api_key)):

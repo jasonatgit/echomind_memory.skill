@@ -70,7 +70,6 @@ def mock_llm_fn():
 def memory_agent(tmp_db_path):
     """Create a MainMemoryAgent with temp DB and persistence enabled."""
     from core.memory_agent import MainMemoryAgent
-    from core.config_manager import _ConfigManager
 
     # Override config to use temp db path
     agent = MainMemoryAgent()

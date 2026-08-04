@@ -127,11 +127,13 @@ class MainMemoryAgent:
         for t in all_data.get("tasks", []):
             task = TaskMemory(
                 user_id=t["user_id"], project=t.get("project","default"),
-                session_id=t.get("session_id",""), 
+                session_id=t.get("session_id",""),
                 session_title=t.get("session_title",""),
                 task_id=t.get("id", ""),
                 title=t.get("title",""), status=t.get("status","pending"),
-                steps=t.get("steps",[]), tags=t.get("tags",[]))
+                steps=t.get("steps",[]), tags=t.get("tags",[]),
+                created_at=self._parse_db_ts(t.get("created_at")),
+                updated_at=self._parse_db_ts(t.get("updated_at")))
             task.metadata = t.get("metadata", {})
             self.task_agent.store[t.get("id", "")] = task
             loaded["tasks"] += 1
@@ -146,7 +148,9 @@ class MainMemoryAgent:
                 task_type=e.get("task_type","default"),
                 success=bool(e.get("success",0)),
                 steps_sequence=e.get("steps_sequence",[]),
-                summary=e.get("summary",""), tags=e.get("tags",[]))
+                summary=e.get("summary",""), tags=e.get("tags",[]),
+                created_at=self._parse_db_ts(e.get("created_at")),
+                last_access_at=self._parse_db_ts(e.get("last_access_at")))
             exp.frequency = e.get("frequency", 1)  # restore persisted frequency
             self.experience_agent.store[e.get("id","")] = exp
             exp.id = e.get("id", exp.id)  # align model id with DB key before indexing
@@ -179,10 +183,15 @@ class MainMemoryAgent:
             entry = KnowledgeEntry(
                 content=k.get("content",""),
                 metadata=metadata,
-                user_id=k.get("user_id", k.get("metadata", {}).get("user_id", "default")))
+                user_id=k.get("user_id", k.get("metadata", {}).get("user_id", "default")),
+                created_at=self._parse_db_ts(k.get("created_at")),
+                last_access_at=k.get("last_access_at") or "")
             entry.id = k.get("id", entry.id)
             self.knowledge_agent.store[entry.id] = entry
             self.knowledge_agent._add_to_index(entry)
+            self.knowledge_agent._content_index[
+                int(hashlib.md5(entry.content.encode()).hexdigest(), 16) % (2**63 - 1)
+            ] = entry.id
             loaded["knowledge"] += 1
 
         # 6. Research papers
@@ -197,7 +206,8 @@ class MainMemoryAgent:
                 keywords=p.get("keywords",[]), domain=p.get("domain","general"),
                 paper_type=p.get("paper_type","theory"),
                 key_points=p.get("key_points",[]),
-                importance_score=p.get("importance_score",0.5))
+                importance_score=p.get("importance_score",0.5),
+                created_at=self._parse_db_ts(p.get("created_at")))
             self.research_agent.papers[paper.id] = paper
             loaded["papers"] += 1
 
@@ -208,7 +218,9 @@ class MainMemoryAgent:
                 profile=n.get("profile","default"),
                 topic=n.get("topic",""), content=n.get("content",""),
                 linked_papers=n.get("linked_papers",[]),
-                tags=n.get("tags",[]))
+                tags=n.get("tags",[]),
+                created_at=self._parse_db_ts(n.get("created_at")),
+                updated_at=self._parse_db_ts(n.get("updated_at")))
             self.research_agent.notes[note.id] = note
             loaded["notes"] += 1
 
@@ -556,15 +568,14 @@ class MainMemoryAgent:
             elif source == "knowledge":
                 for mem in memories:
                     relevance = mem["relevance"]
-                    recency = self._freshness(mem)  # unified Ebbinghaus freshness (safe timezone handling)
-                    trust = mem["metadata"].get("trust_score", 0.5)
-                    freshness = self._freshness(mem)
+                    freshness = self._freshness(mem)  # unified Ebbinghaus freshness (safe tz handling)
                     if freshness < self._FRESHNESS_ARCHIVE_THRESHOLD:
                         continue
+                    trust = mem["metadata"].get("trust_score", 0.5)
                     # Domain boost: same-domain memories get +0.1
                     mem_domain = mem["metadata"].get("domain") or mem["metadata"].get("category", "")
                     domain_boost = self._SCORE_DOMAIN_BOOST if (research_domain != "general" and mem_domain == research_domain) else 0
-                    score = (relevance * weights["relevance"] + recency * weights["recency"] + trust * weights["trust_score"] + domain_boost) * freshness
+                    score = (relevance * weights["relevance"] + freshness * weights["recency"] + trust * weights["trust_score"] + domain_boost) * freshness
                     scored.append(MemoryRecord(source=source, content=mem["content"], importance=round(score, 3), metadata=mem, relevance=relevance, trust_score=trust))
 
             elif source == "experience":
@@ -721,6 +732,29 @@ class MainMemoryAgent:
                         result.append(mem)
         return result[:top_k]
 
+    @staticmethod
+    def _parse_db_ts(value) -> Optional[datetime]:
+        """Parse a DB timestamp value (string or datetime) into an aware UTC datetime.
+
+        Handles both naive SQLite format ('YYYY-MM-DD HH:MM:SS') and aware ISO format.
+        Returns None when value is empty/invalid so callers can fall back to defaults.
+        """
+        if value is None:
+            return None
+        if isinstance(value, datetime):
+            if value.tzinfo is None:
+                return value.replace(tzinfo=timezone.utc)
+            return value
+        if isinstance(value, str) and value.strip():
+            s = value.strip().replace(" ", "T")
+            if "+" not in s and not s.endswith("Z") and not s.endswith("+00:00"):
+                s += "+00:00"
+            try:
+                return datetime.fromisoformat(s)
+            except ValueError:
+                return None
+        return None
+
     def _freshness(self, record: Dict[str, Any]) -> float:
         """Compute Ebbinghaus forgetting curve freshness.
 
@@ -741,20 +775,14 @@ class MainMemoryAgent:
         )
         if not date_str or date_str == "":
             return 1.0
-        try:
-            # Normalize naive datetime string (e.g. from SQLite) to aware UTC
-            date_str = date_str.replace(" ", "T")
-            if date_str.endswith("T"):
-                date_str = date_str[:-1]
-            if "+" not in date_str and not date_str.endswith("Z") and not date_str.endswith("+00:00"):
-                date_str += "+00:00"
-            days = (datetime.now(timezone.utc) - datetime.fromisoformat(date_str)).days
-            if days < 0:
-                return 1.0
-            half_life = self.cfg.get("retrieval", "decay_half_life", default=self._DECAY_HALF_LIFE)
-            return 2.0 ** (-days / max(half_life, 1))
-        except (ValueError, TypeError):
+        dt = self._parse_db_ts(date_str)
+        if dt is None:
             return 1.0
+        days = (datetime.now(timezone.utc) - dt).days
+        if days < 0:
+            return 1.0
+        half_life = self.cfg.get("retrieval", "decay_half_life", default=self._DECAY_HALF_LIFE)
+        return 2.0 ** (-days / max(half_life, 1))
 
     def _update_memory_states(self, user_id: str = ""):
         """Scan recent memories and update states based on Ebbinghaus freshness.
@@ -773,10 +801,11 @@ class MainMemoryAgent:
                 ("task", "task_memory", "id"),
                 ("context", "context_memory", "session_id"),
             ]:
-                rows = self.db._conn.execute(
-                    f"SELECT {id_col} as rid, created_at, last_access_at, last_updated "
-                    f"FROM {table} ORDER BY created_at DESC LIMIT 200"
-                ).fetchall()
+                with self.db._lock:
+                    rows = self.db._conn.execute(
+                        f"SELECT {id_col} as rid, created_at, last_access_at, last_updated "
+                        f"FROM {table} ORDER BY created_at DESC LIMIT 200"
+                    ).fetchall()
                 for r in rows:
                     current = self.db.get_memory_state(mem_type, r["rid"])
                     if current in ("archived", "superseded"):
@@ -796,14 +825,14 @@ class MainMemoryAgent:
         """Update last_access_at timestamps for records that were just retrieved."""
         if not self._persistence_enabled or not self.db._conn:
             return
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")  # match DB datetime('now') format
         for source, records in retrieved.items():
             if source == "user":
                 continue  # user memory has no row-level last_access_at
             if not isinstance(records, list):
                 continue
             for rec in records:
-                rec_id = rec.get("id") or rec.get("session_id") or ""
+                rec_id = rec.get("id") or rec.get("session_id") or rec.get("task_id") or ""
                 if not rec_id:
                     continue
                 table_map = {
@@ -820,15 +849,20 @@ class MainMemoryAgent:
                 id_col = "id"
                 if source == "context":
                     id_col = "session_id"
+                elif source == "task_history" and rec.get("task_id"):
+                    # task_history rows are keyed by composite user:task_id
+                    rec_id = f"{rec.get('user_id') or user_id}:{rec.get('task_id')}"
                 try:
-                    self.db._conn.execute(
-                        f"UPDATE {table} SET last_access_at=? WHERE {id_col}=?",
-                        (now, rec_id),
-                    )
+                    with self.db._lock:
+                        self.db._conn.execute(
+                            f"UPDATE {table} SET last_access_at=? WHERE {id_col}=?",
+                            (now, rec_id),
+                        )
                 except Exception:
                     pass
         try:
-            self.db._conn.commit()
+            with self.db._lock:
+                self.db._conn.commit()
         except Exception:
             pass
 
@@ -951,7 +985,10 @@ profile=profile, language=lang)
                                 "category": research_domain,
                             }, entry_id=f"{user_id}:{task_id}")
                     if exp_data:
-                        exp_id = f"{user_id}:{exp_data['summary'][:20]}:{int(datetime.now(timezone.utc).timestamp())}"
+                        # Deterministic id from summary hash — matches experience_agent._summary_index,
+                        # so DB ON CONFLICT dedups consistently with in-memory (fixes reload duplication)
+                        exp_hash = int(hashlib.md5(f"{user_id}:{exp_data['summary']}".encode()).hexdigest(), 16)
+                        exp_id = f"exp:{user_id}:{exp_hash % (2**63-1)}"
                         self.db.save_experience(user_id, exp_data["task_type"], success,
                                      exp_data["steps"],
                                      exp_data["summary"],
@@ -1025,10 +1062,11 @@ profile=profile, language=lang, experience_id=exp_id)
             logger.error("store() failed", exc_info=True)
             return False
 
-    def get_recent_episodic(self, user_id: str, count: int = 8) -> List[Dict]:
+    def get_recent_episodic(self, user_id: str, count: int = 8,
+                            profile: str = None) -> List[Dict]:
         """Get recent N episodic records for ReflectiveAgent"""
         if self._persistence_enabled:
-            return self.db.get_recent_episodic(user_id, count)
+            return self.db.get_recent_episodic(user_id, count, profile=profile)
         return []
 
     def _store_handle_reflection_trigger(self, user_id: str, platform: str):

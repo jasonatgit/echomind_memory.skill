@@ -193,12 +193,9 @@ class LLMClient:
                 max_tokens=len(items) * 3 + 5,
             )
             scores = []
-            for token in raw.strip().split():
-                try:
-                    s = int(token)
-                    scores.append(min(max(s, 0), 10) / 10.0)
-                except ValueError:
-                    scores.append(0.0)
+            for token in re.findall(r'\b(?:10|[0-9])\b', raw):
+                s = int(token)
+                scores.append(min(max(s, 0), 10) / 10.0)
             # Pad or truncate to match items length
             while len(scores) < len(items):
                 scores.append(0.0)

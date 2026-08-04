@@ -1,7 +1,7 @@
 from pydantic import BaseModel, Field
 import uuid
 from datetime import datetime, timezone
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 
 
 class KnowledgeEntry(BaseModel):
@@ -10,3 +10,4 @@ class KnowledgeEntry(BaseModel):
     content: str
     metadata: Dict[str, Any] = Field(default_factory=dict)
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    last_access_at: Optional[str] = None

@@ -128,12 +128,16 @@ def handle_tools_list():
         },
         {
             "name": "echomind_reflect",
-            "description": "Trigger reflection on recent memories.",
+            "description": "Trigger reflection on recent memories. Phase 1 (no llm_response) returns a prompt for caller-side LLM processing; Phase 2 (with llm_response) commits the reflection result to memory.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "user_id": {"type": "string"},
                     "count": {"type": "integer", "default": 8},
+                    "llm_response": {"type": "string", "description": "Optional. LLM response to the Phase-1 prompt. Omit for Phase 1 (build prompt)."},
+                    "record_ids": {"type": "array", "items": {"type": "string"}, "description": "Optional. Specific record IDs to reflect on (Phase 2)."},
+                    "platform": {"type": "string", "default": "http"},
+                    "profile": {"type": "string", "default": "default"},
                 },
                 "required": ["user_id"],
             },
@@ -252,6 +256,8 @@ def handle_tool_call(name, arguments):
         payload = {
             "user_id": arguments.get("user_id", ""),
             "count": arguments.get("count", 8),
+            "platform": arguments.get("platform", "http"),
+            "profile": arguments.get("profile", "default"),
         }
         if llm_response is not None:
             # Phase 2: process LLM response and write back to memory
@@ -260,7 +266,7 @@ def handle_tool_call(name, arguments):
                 payload["record_ids"] = arguments["record_ids"]
             result = _api_post("/api/reflect", payload)
             if "error" in result:
-                return {"content": [{"type": "text", "text": f"Reflection error: {result['detail']}"}]}
+                return {"content": [{"type": "text", "text": f"Reflection error: {result['error']}"}]}
             return {"content": [{"type": "text", "text": (
                 f"Reflection done. Insights: {result.get('insights', 0)}, "
                 f"Preferences: {result.get('preferences', 0)}, "
@@ -304,7 +310,7 @@ def handle_mcp_request(msg: dict) -> dict:
         return {"jsonrpc": "2.0", "id": msg_id, "result": {
             "protocolVersion": "2024-11-05",
             "capabilities": {"tools": {}, "resources": {}},
-            "serverInfo": {"name": "echomind-mcp", "version": "1.2.2"},
+            "serverInfo": {"name": "echomind-mcp", "version": "1.2.6"},
         }}
     elif method == "tools/list":
         return {"jsonrpc": "2.0", "id": msg_id, "result": handle_tools_list()}

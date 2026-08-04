@@ -61,11 +61,25 @@ class TestRetrieve:
         assert isinstance(result, dict)
 
     def test_importance_score_range(self, memory_agent):
-        """_compute_importance returns scores in [0, 1] range."""
-        score = memory_agent._compute_importance(
-            "user_1", "python sorting", "python", "development",
+        """_compute_importance returns MemoryRecord list with scores in [0, 1]."""
+        retrieved = {
+            "knowledge": [
+                {"content": "python is a language",
+                 "metadata": {"category": "general"},
+                 "relevance": 0.8, "created_at": "2026-01-01T00:00:00+00:00"},
+            ],
+            "experience": [
+                {"summary": "fixed sorting", "frequency": 3, "success": True,
+                 "metadata": {}, "relevance": 0.7,
+                 "created_at": "2026-01-01T00:00:00+00:00"},
+            ],
+        }
+        records = memory_agent._compute_importance(
+            retrieved, "python sorting", "user_1", "test",
         )
-        assert 0.0 <= score <= 1.0
+        assert isinstance(records, list)
+        for rec in records:
+            assert 0.0 <= rec.importance <= 1.0
 
 
 class TestFeedback:

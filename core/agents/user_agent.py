@@ -31,7 +31,7 @@ class UserMemoryAgent:
 
     def _extract_platform_prefs(self, mem: UserMemory, platform: str) -> Dict[str, Any]:
         """Extract current platform preferences from platform-aware preferences JSON."""
-        raw = mem.model_dump()
+        raw = mem.model_dump(mode="json")
         prefs = raw.get("preferences", {})
         if not isinstance(prefs, dict):
             prefs = {}

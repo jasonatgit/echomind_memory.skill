@@ -34,6 +34,7 @@ class ReflectiveAgent:
             self.config = cfg.get_section("reflection")
         self._daily_count = 0
         self._last_reflection: Optional[datetime] = None
+        self._daily_count_date = datetime.now(timezone.utc).date()
         # Fix daily limit once at init (was previously re-randomized on every call)
         max_daily = self.config.get("max_daily", [5, 20])
         if isinstance(max_daily, (list, tuple)):
@@ -41,6 +42,14 @@ class ReflectiveAgent:
             self._daily_limit = int(_rng.uniform(max_daily[0], max_daily[1]))
         else:
             self._daily_limit = int(max_daily)
+
+    def _reset_daily_if_new_day(self):
+        """Reset the daily reflection counter when the UTC calendar day changes.
+        Prevents the 'daily' limit from becoming a process-lifetime cap."""
+        today = datetime.now(timezone.utc).date()
+        if today != self._daily_count_date:
+            self._daily_count = 0
+            self._daily_count_date = today
 
     # ── Engine status detection ──
 
@@ -98,6 +107,7 @@ class ReflectiveAgent:
 
     def _check_daily_limit(self) -> bool:
         """Return True if daily reflection limit reached."""
+        self._reset_daily_if_new_day()
         return self._daily_count >= self._daily_limit
 
     def reflect_with_llm(
