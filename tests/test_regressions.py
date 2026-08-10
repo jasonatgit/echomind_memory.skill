@@ -43,12 +43,27 @@ class TestTransactionAtomicity:
 # ── Daily-limit reset (H6) ──
 
 class TestDailyLimitReset:
-    def test_check_daily_limit_uses_fixed_threshold(self, memory_agent):
-        """_daily_limit fixed at init, not re-randomized per call."""
+    def test_check_daily_limit_is_threshold_compare(self, memory_agent):
+        """T2: below limit returns False, at/over limit returns True."""
         ra = memory_agent.reflective
-        observed = {ra._check_daily_limit() for _ in range(5)}
-        # _check_daily_limit is a threshold compare; returns bool each time
-        assert all(isinstance(x, bool) for x in observed)
+        assert ra._check_daily_limit() is False  # fresh: count < limit
+        ra._daily_count = ra._daily_limit
+        assert ra._check_daily_limit() is True
+
+    def test_process_result_short_circuits_at_limit(self, memory_agent):
+        """T2/M-6: process_result returns None once the daily limit is hit, so the
+        HTTP layer can distinguish 429 (limit) from 400 (parse failure) via
+        _check_daily_limit()."""
+        import core.reflective_agent as ra_module
+
+        ra = memory_agent.reflective
+        ra._daily_count = ra._daily_limit  # at the limit
+        # Ensure an engine is present so the ONLY reason to return None here is
+        # the limit short-circuit (in a no-Cython env _engine is None and would
+        # return None first, making the assertion vacuous).
+        with mock.patch.object(ra_module, "_engine", new=object()):
+            assert ra.process_result("llm", [], "u1", "http") is None
+        assert ra._check_daily_limit() is True
 
     def test_reset_daily_count_on_day_change(self, memory_agent):
         """Counter resets when UTC calendar day changes."""
@@ -151,20 +166,91 @@ class TestSafeJsonLoads:
 # ── main.py param pass-through (H1) ──
 
 class TestMainParamPassThrough:
-    def test_retrieve_forwards_project_session(self, memory_agent):
-        """main.py dispatch must not drop project/session_id."""
-        with mock.patch.object(
-            memory_agent, "retrieve_for_task", return_value={"working_memory": [],
-                                                             "confidence_score": 0.0,
-                                                             "retrieved_memories": [],
-                                                             "feedback_request": False}
-        ) as rm:
-            # simulate main.py tool call wiring
-            memory_agent.retrieve_for_task(
-                task_context="q", user_id="u", task_id="t",
-                platform="http", project="proj", session_id="sess", profile="default",
+    def test_retrieve_forwards_project_session(self):
+        """T3: main.call('retrieve_memory') really reaches retrieve_for_task with
+        project/session_id/profile intact. (The OLD test mocked the method then
+        called it directly — circular and never exercised main.py.)"""
+        import main as main_module
+
+        fake_agent = mock.Mock()
+        fake_agent.is_persistence_enabled.return_value = True
+        fake_agent.retrieve_for_task.return_value = {
+            "retrieved_memories": [], "confidence_score": 0.0,
+            "feedback_request": False,
+        }
+        fake_agent.rl_optimizer.get_current_weights.return_value = {}
+        path = "/tmp/echomind-main-test.yaml"
+        # Pre-seed the agent cache so main.call() hits the cached branch and
+        # operates on our fake instead of opening a real DB.
+        with mock.patch.dict(main_module._call_agents, {path: (fake_agent, None)}):
+            main_module.call(
+                "retrieve_memory", config_path=path,
+                query="q", user_id="u", task_id="t",
+                platform="http", project="proj", session_id="sess", profile="p2",
             )
-            rm.assert_called_once()
-            kwargs = rm.call_args.kwargs
-            assert kwargs["project"] == "proj"
-            assert kwargs["session_id"] == "sess"
+        fake_agent.retrieve_for_task.assert_called_once()
+        kwargs = fake_agent.retrieve_for_task.call_args.kwargs
+        assert kwargs["project"] == "proj"
+        assert kwargs["session_id"] == "sess"
+        assert kwargs["profile"] == "p2"
+        assert kwargs["platform"] == "http"
+
+
+# ── Autoreflection Absorption Phase 1+2 (epistemic_mode, provenance, autoreflection_score) ──
+
+class TestEpistemicMode:
+    def test_resolve_epistemic_returns_user_provided(self, memory_agent):
+        assert "user_provided" == memory_agent._resolve_epistemic("user_direct")
+
+    def test_resolve_epistemic_returns_fuzzy_for_assistant(self, memory_agent):
+        assert "fuzzy" == memory_agent._resolve_epistemic("assistant")
+
+    def test_resolve_epistemic_returns_reasoned_for_reflection(self, memory_agent):
+        assert "reasoned" == memory_agent._resolve_epistemic("reflection")
+
+    def test_resolve_epistemic_external_import_is_referenced(self, memory_agent):
+        """W-1: external imports map to 'referenced' (was untested)."""
+        assert "referenced" == memory_agent._resolve_epistemic("external_import")
+
+    def test_resolve_epistemic_unknown_source_falls_back(self, memory_agent):
+        """W-1: any unrecognized source maps to 'unknown', never crashes."""
+        assert "unknown" == memory_agent._resolve_epistemic("bogus_source")
+
+
+class TestEvolutionProvenanceMigration:
+    def test_migration_v9_adds_origin_columns(self, sqlite_store):
+        """After migration v9, knowledge_evolution has origin columns."""
+        cursor = sqlite_store._conn.execute("PRAGMA table_info(knowledge_evolution)")
+        cols = {r[1] for r in cursor.fetchall()}
+        for expected in ("origin_agent", "origin_session_id", "origin_turn"):
+            assert expected in cols, f"Missing column: {expected}"
+
+
+class TestAutoreflectionScore:
+    def test_score_returns_tuple(self, memory_agent):
+        score, summary = memory_agent.compute_autoreflection_score()
+        assert isinstance(score, int)
+        assert 0 <= score <= 4
+        assert isinstance(summary, str)
+        assert "score" in summary.lower()
+
+    def test_score_c2_increases_with_records(self, memory_agent, sqlite_store):
+        """After loading real data, C2 should be 1 (records present)."""
+        memory_agent.db = sqlite_store
+        sqlite_store.save_knowledge("k:score", "test", "content", {})
+        sqlite_store.save_memory_state("knowledge", "k:score", "active")
+        score, _ = memory_agent.compute_autoreflection_score()
+        assert score >= 1
+
+
+class TestKnowledgeSearchEpistemic:
+    def test_epistemic_mode_in_search_result(self, memory_agent):
+        ka = memory_agent.knowledge_agent
+        ka.add_document("test knowledge", {"epistemic_mode": "fuzzy",
+                                            "epistemic_detail": "LLM-generated",
+                                            "source": "test", "user_id": "u1"},
+                        entry_id="epi:1")
+        results = ka.search("test knowledge")
+        assert len(results) >= 1
+        assert results[0].get("epistemic_mode") == "fuzzy"
+        assert results[0].get("epistemic_detail") == "LLM-generated"

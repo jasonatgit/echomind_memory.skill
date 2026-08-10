@@ -1,5 +1,35 @@
 # EchoMind 更新日志
 
+## v1.2.8 — 自我反思吸收 Phase 1+2 (2026-08-11)
+
+| 功能 | 说明 |
+|------|------|
+| **认知模式（Epistemic Mode）** | 知识条目现在在 metadata 中携带 `epistemic_mode`（user_provided / reasoned / fuzzy / referenced），写入时按来源自动判定——零 LLM 成本 |
+| **溯源列** | 迁移 v9 为 `knowledge_evolution` 添加 `origin_agent`、`origin_session_id`、`origin_turn` 三列，实现记忆供应链追踪 |
+| **自我反思评分** | `compute_autoreflection_score()` 评估四标准成熟度：情境觉察、架构一致性、从架构分析、整合与扩展——返回 (分数 0-4, 诊断摘要) |
+| **系统提示诊断** | `system_prompt_block()` 现在向智能体上下文追加实时记忆健康信息（统计、RL 权重、演化状态） |
+| **知识搜索** | 搜索结果包含 `epistemic_mode` 和 `epistemic_detail`，供下游信任评估使用 |
+| **认知位置** | 知识条目在 metadata 中追踪 `cognitive_pos`（nok/fok/exo）——上下文邻近度，补充 Ebbinghaus 遗忘曲线 |
+
+**测试:** 新增 8 项回归测试（认知解析器、溯源迁移列、自我反思评分、知识搜索）；全量 56 项通过。
+
+---
+## v1.2.7 — 深度代码审查修复 & 回归测试 (2026-08-04)
+
+**审查方法:** full deepseek-v4-flash 代码审查 + 4 路并行记忆数据链路审计，修复后 + 48 项测试套件（33 原有 + 15 新）。
+
+| 领域 | 修复 |
+|------|------|
+| **数据链路/新鲜度** | `_load_from_db` 恢复所有时间戳（Ebbinghaus 在重启后保持）；统一 `last_access_at` 格式；knowledge `last_access_at` 贯通；user `model_dump(mode=json)`；`_freshness` 处理 datetime 对象 |
+| **事务** | `_batch_active` + `_maybe_commit()` 门控 → `transaction()` 现在真正原子化（失败时回滚） |
+| **持久化** | 补全 task/experience/knowledge/paper/note 的 UPSERT `DO UPDATE SET` 字段；迁移 v3 保留 `created_at` |
+| **调度/API** | `main.py` 转发 `project`/`session_id`/`title`/`correction`；`api_delete_user` → HTTP 500；`mcp_gateway` 薄封装（版本 1.2.7）；reflect profile 作用域 |
+| **RL/安全** | 日限额跨 UTC 天重置；状态写入加 `db._lock`；单次 freshness；`_content_index` 在加载时重建；安全 JSON 加载；transcript upsert；`batch_score` 解析 |
+| **关键 bug** | `models/context.py` 缺少 `Optional` 导入（已修复） |
+
+**测试:** 修复 conftest + storage/core 断言；新增 `tests/test_regressions.py`（15 tests）。
+
+---
 ## v1.2.3  新增功能
 
 **核心要点：**
@@ -75,7 +105,7 @@
 
 ---
 
-## v1.1.0 版本学术参考
+##  各版本学术参考
 
 本次发行的 v1.1.0 的技术方案中Self-Reflective Agent部分设计受到以下研究的启发：
 
@@ -85,6 +115,7 @@ Liang, X., He, Y., Xia, Y., Song, X., Wang, J., Tao, M., Sun, L., Yuan, X., Su, 
 
 - **论文地址：** [arXiv:2409.00872](https://arxiv.org/abs/2409.00872)
 - **发表期刊：** *Neurocomputing* (2025)
+- **使用版本:** Echomind Memory Engine v1.1.0
 
 
 ### 2、SRMA: Self-Reflective Memory Consolidation in Agentic Architectures
@@ -93,6 +124,14 @@ Satya, P. R. B. (2026).
 
 - **论文地址：** [IJCA Vol.187 No.73](https://www.ijcaonline.org/archives/volume187/number73/self-reflective-memory-consolidation-in-agentic-architectures/)
 - **发表期刊：** *International Journal of Computer Applications*, 187(73)
+- **使用版本:** Echomind Memory Engine v1.1.0
+
+
+### 3、Lewis (2026) "Autoreflection: How Agentic Strange Loops Turn Human Culture into AI Infrastructure" 
+- **论文地址：** https://arxiv.org/abs/2608.03800
+- **使用版本:** Echomind Memory Engine v1.2.8
+- **引用范围:** 知识认知状态分类、溯源追踪、架构自诊断、自我反思评分
+
 
 ---
 

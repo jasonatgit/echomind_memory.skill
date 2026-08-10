@@ -107,7 +107,9 @@ class KnowledgeMemoryAgent:
                             "metadata": entry.metadata, "relevance": relevance,
                             "created_at": entry.created_at.isoformat() if entry.created_at else "",
                             "last_access_at": entry.last_access_at or entry.metadata.get("last_access_at", ""),
-                            "last_updated": entry.metadata.get("last_updated", "")})
+                            "last_updated": entry.metadata.get("last_updated", ""),
+                            "epistemic_mode": entry.metadata.get("epistemic_mode", ""),
+                            "epistemic_detail": entry.metadata.get("epistemic_detail", "")})
 
         results.sort(key=lambda x: x.get("relevance", 0), reverse=True)
         return results[:top_k]

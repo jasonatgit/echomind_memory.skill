@@ -33,7 +33,11 @@ api_key_header = APIKeyHeader(name=API_KEY_NAME, auto_error=False)
 
 
 def verify_api_key(api_key: str = Depends(api_key_header)):
-    expected = cfg.get("api_key", "")
+    # M-3 fix: read the api_key live from the config manager on every request
+    # instead of using the module-level `cfg` snapshot taken at import time.
+    # Otherwise /api/config/parameter and /api/config/reload hot-updates would
+    # never take effect on authentication.
+    expected = get_config_manager().get_section("server").get("api_key", "")
     if not expected:
         logger.warning("API key not configured — authentication DISABLED")
         return ""  # no key configured — allow all (backward compat)
@@ -154,7 +158,7 @@ async def http_exception_handler(request, exc: HTTPException):
 
 # ── Routes ──
 @app.post("/api/memory/retrieve")
-async def api_retrieve(req: RetrieveRequest, auth=Depends(verify_api_key)):
+def api_retrieve(req: RetrieveRequest, auth=Depends(verify_api_key)):
     try:
         result = memory_agent.retrieve_for_task(
             req.query, req.user_id, req.task_id,
@@ -180,7 +184,7 @@ async def api_retrieve(req: RetrieveRequest, auth=Depends(verify_api_key)):
             return _error_response(e, "api_retrieve")
 
 @app.post("/api/memory/store")
-async def api_store(req: StoreRequest, auth=Depends(verify_api_key)):
+def api_store(req: StoreRequest, auth=Depends(verify_api_key)):
     try:
         # Convert context messages to dict format (handles both Pydantic models and raw dicts)
         ctx = []
@@ -205,7 +209,7 @@ async def api_store(req: StoreRequest, auth=Depends(verify_api_key)):
         return _error_response(e, "api_store")
 
 @app.get("/api/memory/search-sessions")
-async def search_sessions(q: str = "", user_id: str = None, project: str = None, limit: int = 5, auth=Depends(verify_api_key)):
+def search_sessions(q: str = "", user_id: str = None, project: str = None, limit: int = 5, auth=Depends(verify_api_key)):
     if not memory_agent or not memory_agent.is_persistence_enabled():
         return {"results": [], "message": "Persistence is not enabled"}
     try:
@@ -216,7 +220,7 @@ async def search_sessions(q: str = "", user_id: str = None, project: str = None,
         return JSONResponse(status_code=500, content={"results": [], "error": "Search failed"})
 
 @app.post("/api/memory/feedback")
-async def api_feedback(req: FeedbackRequest, auth=Depends(verify_api_key)):
+def api_feedback(req: FeedbackRequest, auth=Depends(verify_api_key)):
     try:
         memory_agent.record_feedback(req.user_id, req.task_id, req.feedback, req.retrieved_memories)
         return {"status": "feedback_received", "user_id": req.user_id}
@@ -224,7 +228,7 @@ async def api_feedback(req: FeedbackRequest, auth=Depends(verify_api_key)):
         return _error_response(e, "api_feedback")
 
 @app.post("/api/memory/sync-code")
-async def api_sync_code(req: SyncCodeRequest, auth=Depends(verify_api_key)):
+def api_sync_code(req: SyncCodeRequest, auth=Depends(verify_api_key)):
     try:
         memory_agent.sync_to_code_project(req.project_root, req.user_id)
         return {"status": "synced", "path": f"{req.project_root}/.echomind"}
@@ -232,7 +236,7 @@ async def api_sync_code(req: SyncCodeRequest, auth=Depends(verify_api_key)):
         return _error_response(e, "api_sync_code")
 
 @app.post("/api/research/paper")
-async def api_add_paper(req: ResearchPaperRequest, auth=Depends(verify_api_key)):
+def api_add_paper(req: ResearchPaperRequest, auth=Depends(verify_api_key)):
     try:
         paper_id = memory_agent.add_research_paper(
             title=req.title, authors=req.authors, year=req.year,
@@ -244,7 +248,7 @@ async def api_add_paper(req: ResearchPaperRequest, auth=Depends(verify_api_key))
         return _error_response(e, "api_add_paper")
 
 @app.post("/api/research/note")
-async def api_add_note(req: ResearchNoteRequest, auth=Depends(verify_api_key)):
+def api_add_note(req: ResearchNoteRequest, auth=Depends(verify_api_key)):
     try:
         note_id = memory_agent.add_research_note(
             user_id=req.user_id, topic=req.topic, content=req.content,
@@ -256,7 +260,7 @@ async def api_add_note(req: ResearchNoteRequest, auth=Depends(verify_api_key)):
 
 # ── Reflection (v1.1.0) ──
 @app.post("/api/reflect")
-async def api_reflect(req: ReflectRequest, auth=Depends(verify_api_key)):
+def api_reflect(req: ReflectRequest, auth=Depends(verify_api_key)):
     """
     Two-phase reflection endpoint:
     - llm_response=None → returns prompt for caller to process (Path B)
@@ -293,6 +297,14 @@ async def api_reflect(req: ReflectRequest, auth=Depends(verify_api_key)):
                 platform=req.platform or "http",
             )
             if output is None:
+                # M-6 fix: process_result returns None both for a genuine parse
+                # failure AND for hitting the daily reflection limit. Distinguish
+                # them so callers get 429 (limit) not a misleading 400 (parse).
+                if memory_agent.reflective._check_daily_limit():
+                    raise HTTPException(
+                        status_code=429,
+                        detail="Daily reflection limit reached; try again tomorrow",
+                    )
                 raise HTTPException(
                     status_code=400,
                     detail="Reflection failed: parse error or confidence too low",
@@ -339,7 +351,7 @@ class ConfigUpdateRequest(BaseModel):
 
 
 @app.get("/api/config")
-async def api_get_config(auth=Depends(verify_api_key)):
+def api_get_config(auth=Depends(verify_api_key)):
     cfg = get_config_manager()
     return {
         "config_path": cfg.config_path,
@@ -355,7 +367,7 @@ async def api_get_config(auth=Depends(verify_api_key)):
 
 
 @app.post("/api/config/parameter")
-async def api_set_config_param(req: ConfigUpdateRequest, auth=Depends(verify_api_key)):
+def api_set_config_param(req: ConfigUpdateRequest, auth=Depends(verify_api_key)):
     cfg = get_config_manager()
     key_path = f"{req.section}.{req.key}"
     cfg.set_runtime(key_path, req.value)
@@ -363,7 +375,7 @@ async def api_set_config_param(req: ConfigUpdateRequest, auth=Depends(verify_api
 
 
 @app.post("/api/config/reload")
-async def api_reload_config(auth=Depends(verify_api_key)):
+def api_reload_config(auth=Depends(verify_api_key)):
     cfg = get_config_manager()
     cfg.reload()
     return {"status": "reloaded", "config_path": cfg.config_path}
@@ -378,7 +390,7 @@ class DeleteRequest(BaseModel):
     user_id: Optional[str] = None
 
 @app.delete("/api/memory/{memory_type}/{memory_id}")
-async def api_delete_memory(memory_type: str, memory_id: str, auth=Depends(verify_api_key)):
+def api_delete_memory(memory_type: str, memory_id: str, auth=Depends(verify_api_key)):
     try:
         deleted = memory_agent.db.delete_memory(memory_type, memory_id)
         return {"status": "deleted" if deleted else "not_found", "memory_type": memory_type, "memory_id": memory_id}
@@ -387,7 +399,7 @@ async def api_delete_memory(memory_type: str, memory_id: str, auth=Depends(verif
         return JSONResponse(status_code=500, content={"status": "error", "detail": "Delete failed"})
 
 @app.post("/api/memory/delete-user")
-async def api_delete_user(req: DeleteRequest, auth=Depends(verify_api_key)):
+def api_delete_user(req: DeleteRequest, auth=Depends(verify_api_key)):
     if not req.user_id:
         raise HTTPException(status_code=422, detail="user_id required")
     try:
@@ -398,7 +410,7 @@ async def api_delete_user(req: DeleteRequest, auth=Depends(verify_api_key)):
         return JSONResponse(status_code=500, content={"status": "error", "detail": "Delete failed"})
 
 @app.post("/api/memory/cleanup")
-async def api_cleanup(auth=Depends(verify_api_key)):
+def api_cleanup(auth=Depends(verify_api_key)):
     try:
         ttl = {
             "context": 30,
@@ -415,7 +427,7 @@ async def api_cleanup(auth=Depends(verify_api_key)):
 
 # ── Memory Health ──
 @app.get("/api/memory/health")
-async def api_memory_health(auth=Depends(verify_api_key)):
+def api_memory_health(auth=Depends(verify_api_key)):
     try:
         stats = memory_agent.db.get_memory_stats()
         return {"status": "ok", "stats": stats}
@@ -427,8 +439,23 @@ class StateRequest(BaseModel):
     state: str
     reason: str = ""
 
+@app.get("/api/memory/autoreflection")
+def api_autoreflection(auth=Depends(verify_api_key)):
+    """Expose the autoreflection self-assessment score (0-4) and diagnostics.
+
+    W-4 fix: compute_autoreflection_score previously had no external entry point
+    (only direct Python calls), so the "autoreflective score" claimed in
+    README/CHANGELOG was unreachable by users/agents.
+    """
+    try:
+        score, summary = memory_agent.compute_autoreflection_score()
+        return {"status": "ok", "score": score, "summary": summary}
+    except Exception as e:
+        logger.error(f"api_autoreflection: {e}", exc_info=True)
+        return JSONResponse(status_code=500, content={"status": "error", "detail": str(e)})
+
 @app.post("/api/memory/{memory_type}/{memory_id}/state")
-async def api_set_memory_state(memory_type: str, memory_id: str,
+def api_set_memory_state(memory_type: str, memory_id: str,
                                 req: StateRequest, auth=Depends(verify_api_key)):
     try:
         memory_agent.db.save_memory_state(
@@ -441,7 +468,7 @@ async def api_set_memory_state(memory_type: str, memory_id: str,
 
 # ── Knowledge Evolution ──
 @app.get("/api/knowledge/{knowledge_id}/evolution")
-async def api_knowledge_evolution(knowledge_id: str, auth=Depends(verify_api_key)):
+def api_knowledge_evolution(knowledge_id: str, auth=Depends(verify_api_key)):
     try:
         if not memory_agent._persistence_enabled or not memory_agent.db._conn:
             return JSONResponse(status_code=400, content={"status": "error", "detail": "Persistence not enabled"})
@@ -466,7 +493,9 @@ async def mcp_endpoint(request: dict):
     if not _MCP_AVAILABLE:
         return {"jsonrpc": "2.0", "error": {"code": -32603, "message": "MCP not available"}}
     try:
-        return await asyncio.to_thread(handle_mcp_request, request)
+        resp = await asyncio.to_thread(handle_mcp_request, request)
+        # M-7 fix: notifications return None (JSON-RPC expects no response)
+        return {} if resp is None else resp
     except Exception as e:
         logger.error(f"mcp_endpoint: {e}", exc_info=True)
         return {"jsonrpc": "2.0", "error": {"code": -32603, "message": str(e)}}

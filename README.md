@@ -47,6 +47,9 @@
 | **Memory Health Report** | Aggregated stats by type and state + 7-day growth + flags summary |
 | **Entity Extraction** | LLM-first keyword-fallback extraction (technologies / concepts) |
 | **Experience Distillation & Reuse** | Previously fixed bugs / used models → auto-recommended next time |
+| **Epistemic Knowledge Classification** | Every knowledge entry carries an epistemic_mode (user_provided / reasoned / fuzzy / referenced) — distinguishes real user facts from LLM-generated inference, resolved automatically at write time (zero LLM cost) |
+| **Self-Reflection Score & Diagnostics** | Self-assessment via 4-criterion maturity model (situated-awareness, architectural-congruence, analysis-from-architecture, incorporation-and-expansion); real-time system health injected into agent context |
+| **Knowledge Provenance Tracking** | Provenance chain (origin_agent, origin_session_id, origin_turn) stored in knowledge_evolution for memory-supply-chain auditing |
 
 ### Retrieval & Optimization (RL-Enhanced Self-Learning)
 | Capability | Description |
@@ -103,6 +106,7 @@ When a query involves the following *domain keywords* or related *semantics*, th
 
 | Date | Title |
 |:-----|:------|
+| 2026-08 | [EchoMind：Autoreflection-Teaching AI Memory to Think About Itself](blog/echomind-autoreflection-article-en.md) |
 | 2026-07 | [Echomind: Self-Reflective Agent Part 1 — Reflection Engine and Memory Lifecycle](blog/echomind-reflective-agent-part1-article-en.md) |
 | 2026-07 | [Echomind: Self-Reflective Agent Part 2 — Knowledge Evolution and Memory Governance](blog/echomind-reflective-agent-part2-article-en.md) |
 | 2026-06 | [Echomind: RL Self-Learning Memory System](blog/echomind-rl-article-en.md) |
@@ -116,6 +120,8 @@ When a query involves the following *domain keywords* or related *semantics*, th
 
 | Version | Highlights |
 |:--------|:-----------|
+| v1.2.8 | *Self-reflection absorption : epistemic classification, provenance tracking, architectural self-diagnosis. * |
+| v1.2.7 | *Deep code review: 42 bug fixes + 48 regression tests.* |
 | v1.2.3 | *RL advantage baseline, RCW per-source weighting, knowledge diversity, profile export.* |
 | v1.2.2 | *Memory lifecycle management, knowledge evolution tracking, entity extraction, Streamable HTTP MCP.* |
 | v1.2.0 | *MCP stdio gateway, Ebbinghaus forgetting curve, session-isolated context, memory CRUD.* |

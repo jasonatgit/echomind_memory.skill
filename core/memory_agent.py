@@ -207,7 +207,8 @@ class MainMemoryAgent:
                 paper_type=p.get("paper_type","theory"),
                 key_points=p.get("key_points",[]),
                 importance_score=p.get("importance_score",0.5),
-                created_at=self._parse_db_ts(p.get("created_at")))
+                created_at=self._parse_db_ts(p.get("created_at")),
+                last_access_at=p.get("last_access_at") or "")
             self.research_agent.papers[paper.id] = paper
             loaded["papers"] += 1
 
@@ -421,8 +422,14 @@ class MainMemoryAgent:
                 f"Text: {text[:300]}"
             )
         result = llm.chat(prompt, temperature=0, max_tokens=20).strip()
-        for did in domain_keywords:
-            if did in result:
+        # L-5 fix: match domain IDs exactly (normalize punctuation/whitespace)
+        # instead of a raw substring scan. Substring matching mis-triggers when
+        # an ID is a prefix of another (e.g. "ai" matching "ai_ethics" output)
+        # or when a keyword inside the text happens to contain an ID literally.
+        # Longest IDs first so a prefix relationship can't shadow the real one.
+        cleaned = "".join(ch for ch in result if ch.isalnum() or ch == "_")
+        for did in sorted(domain_keywords, key=len, reverse=True):
+            if cleaned == did:
                 return did
         return self.cfg.get("domain", "default", default="general")
 
@@ -462,7 +469,14 @@ class MainMemoryAgent:
         if features["has_history"]:
             if task_id:
                 composite_id = f"{user_id}:{task_id}"
-                retrieved["task_progress"] = self.task_agent.get_task_progress(composite_id)
+                tp = self.task_agent.get_task_progress(composite_id)
+                # L-1 fix: carry task_id/user_id so the freshness updater can
+                # refresh task_memory.last_access_at (get_task_progress alone
+                # does not expose them, so the row never refreshed).
+                if tp:
+                    tp["task_id"] = task_id
+                    tp["user_id"] = user_id
+                retrieved["task_progress"] = tp
             else:
                 retrieved["task_history"] = self.task_agent.get_recent_tasks(
                     user_id=user_id, task_type=features["task_type"],
@@ -829,6 +843,12 @@ class MainMemoryAgent:
         for source, records in retrieved.items():
             if source == "user":
                 continue  # user memory has no row-level last_access_at
+            if source == "task_progress":
+                # L-1 fix: task_progress is a single dict (not a list)
+                if isinstance(records, dict) and records:
+                    records = [records]
+                else:
+                    continue
             if not isinstance(records, list):
                 continue
             for rec in records:
@@ -849,8 +869,9 @@ class MainMemoryAgent:
                 id_col = "id"
                 if source == "context":
                     id_col = "session_id"
-                elif source == "task_history" and rec.get("task_id"):
-                    # task_history rows are keyed by composite user:task_id
+                elif source in ("task_history", "task_progress") and rec.get("task_id"):
+                    # task_memory rows are keyed by composite user:task_id
+                    # (L-1: task_progress added so its last_access_at refreshes)
                     rec_id = f"{rec.get('user_id') or user_id}:{rec.get('task_id')}"
                 try:
                     with self.db._lock:
@@ -858,6 +879,11 @@ class MainMemoryAgent:
                             f"UPDATE {table} SET last_access_at=? WHERE {id_col}=?",
                             (now, rec_id),
                         )
+                    # L-4 fix: keep the in-RAM ResearchPaper model in sync with the
+                    # DB so paper freshness decays on subsequent searches (the RAM
+                    # dict is the actual data source for search_papers).
+                    if source == "research" and rec_id in self.research_agent.papers:
+                        self.research_agent.papers[rec_id].last_access_at = now
                 except Exception:
                     pass
         try:
@@ -872,6 +898,25 @@ class MainMemoryAgent:
             return []
         return self.db.search_transcripts(query, user_id, project, limit)
 
+    @staticmethod
+    def _resolve_epistemic(source: str) -> str:
+        """Resolve the epistemic mode (Moltspeak sav-verbs) for a new knowledge entry.
+
+        Returns one of: 'user_provided' | 'reasoned' | 'fuzzy' | 'referenced' | 'unknown'.
+        Zero LLM cost — purely heuristic based on source type at write time.
+
+        W-1: dropped the unused `content` parameter; callers now pass the real
+        source so different provenance isn't collapsed to a hardcoded 'assistant'.
+        """
+        if source == "user_direct":
+            return "user_provided"
+        if source == "reflection":
+            return "reasoned"
+        if source == "assistant":
+            return "fuzzy"
+        if source == "external_import":
+            return "referenced"
+        return "unknown"
 
     def store(self, user_id: str, task_id: str, context: List[Dict],
               task_status: str, success: bool = False, experience_summary: str = None,
@@ -965,6 +1010,16 @@ profile=profile, language=lang)
                         entities = self._extract_entities(best_content or experience_summary or "")
                         if entities:
                             kb_metadata["entities"] = entities
+                        # W-1 fix: resolve epistemic mode from the real source instead of a hardcoded
+                        # "assistant" (which collapsed every entry to fuzzy). Knowledge
+                        # distilled by the assistant LLM → fuzzy; knowledge taken from a
+                        # user-provided experience summary → user_provided.
+                        if best_content:
+                            kb_metadata["epistemic_mode"] = self._resolve_epistemic("assistant")
+                            kb_metadata["epistemic_detail"] = "generated by LLM, unverified"
+                        else:
+                            kb_metadata["epistemic_mode"] = self._resolve_epistemic("user_direct")
+                            kb_metadata["epistemic_detail"] = "derived from user-provided experience summary"
                         if not existing_kb:
                             self.db.save_knowledge(
                                 knowledge_id=f"{user_id}:{task_id}",
@@ -1013,7 +1068,9 @@ profile=profile, language=lang, experience_id=exp_id)
                 # P2-1: Evolution detection — scan existing knowledge via Jaccard, classify relations
                 if knowledge_content and knowledge_content != "Auto-extracted knowledge":
                     self._detect_knowledge_evolution(knowledge_content, user_id, research_domain,
-                                                     knowledge_id=task_pk)
+                                                     knowledge_id=task_pk,
+                                                     origin_agent=platform or "default",
+                                                     origin_session_id=session_id or "")
 
             # Store experience to in-memory agent (both persistence and non-persistence paths)
             if self._persistence_enabled:
@@ -1161,6 +1218,9 @@ profile=profile, language=lang, experience_id=exp_id)
         min_occ = infer_cfg.get("min_occurrence", 2)
 
         all_content = " ".join(m.get("content", "") for m in context)
+        # L-3 fix: match case-insensitively (English keywords like "Concise" /
+        # "Python" would otherwise be missed). Chinese keywords are unaffected.
+        all_content_lower = all_content.lower()
         lang = detect_language(all_content)
         inf_kw = get_inference_keywords(lang)
         default_infer = infer_cfg.get("keywords", {})
@@ -1212,8 +1272,9 @@ profile=profile, language=lang, experience_id=exp_id)
         new_prefs = {}
         for pref_name, options in pref_defs.items():
             for value, keywords in options.items():
-                if any(kw in all_content for kw in keywords):
-                    count = sum(all_content.count(kw) for kw in keywords)
+                lkws = [k.lower() for k in keywords]
+                if any(kw in all_content_lower for kw in lkws):
+                    count = sum(all_content_lower.count(lkw) for lkw in lkws)
                     if count >= min_occ:
                         new_prefs[pref_name] = value
                         break
@@ -1278,6 +1339,13 @@ profile=profile, language=lang, experience_id=exp_id)
             for m in (retrieved_memories or [])
         ]
         from .learning.rl_weight_optimizer import FeedbackRecord
+        # H-1 fix: reload this user's own weights before updating. The shared
+        # singleton optimizer may currently hold a different user's weights
+        # (from their most-recent retrieve); without this, add_feedback would
+        # update and persist the wrong user's weights.
+        if self._persistence_enabled:
+            user_weights = self.db.load_rl_weights(user_id, profile=profile)
+            self.rl_optimizer.load_weights_for_user(user_weights)
         cw = self.rl_optimizer.get_current_weights()
         feedback_record = FeedbackRecord(
             user_id=user_id, task_id=task_id,
@@ -1285,7 +1353,7 @@ profile=profile, language=lang, experience_id=exp_id)
             metadata={"weights_snapshot": cw, "feedback": feedback},
         )
         self.rl_optimizer.add_feedback(feedback_record)
-        # Persist RL weights
+        # Persist RL weights (now guaranteed to be this user's weights)
         if self._persistence_enabled:
             self.db.save_rl_weights(user_id, self.rl_optimizer.ema_weights, profile=profile)
         logger.info(f"User {user_id} gave {feedback} feedback on task {task_id}")
@@ -1500,16 +1568,14 @@ profile=profile, language=lang, experience_id=exp_id)
     def _get_flags(self, user_id: str) -> List[Dict]:
         """Scan for needs_verify and contradiction flags (stale handled by P1-1 state machine)."""
         flags = []
+        if not self.db or not getattr(self.db, '_conn', None):
+            return flags  # DB not connected
         all_kb = self.knowledge_agent.search_all(user_id=user_id)
         # needs_verify: single-source knowledge without evolution links
         for kb in all_kb[:50]:
-            if not self.db or not self.db._conn:
-                break
-            row = self.db._conn.execute(
-                "SELECT COUNT(*) as cnt FROM knowledge_evolution WHERE source_id=? OR target_id=?",
-                (kb["id"], kb["id"])
-            ).fetchone()
-            if row and row["cnt"] == 0:
+            # H-3 fix: use store API instead of reaching into private _conn
+            evo_count = self.db.count_evolution_for(kb["id"])
+            if evo_count == 0:
                 age = self._freshness(kb)
                 if age > 0.3:  # still fresh but unverified
                     flags.append({"type": "needs_verify", "memory_type": "knowledge",
@@ -1542,8 +1608,14 @@ profile=profile, language=lang, experience_id=exp_id)
         return (a_pos and b_neg) or (a_neg and b_pos)
 
     def _detect_knowledge_evolution(self, content: str, user_id: str, domain: str = "general",
-                                    knowledge_id: str = ""):
-        """Scan existing knowledge via Jaccard, classify relations, write evolution records."""
+                                    knowledge_id: str = "",
+                                    origin_agent: str = "", origin_session_id: str = "",
+                                    origin_turn: int = 0):
+        """Scan existing knowledge via Jaccard, classify relations, write evolution records.
+
+        origin_* fields are recorded on the evolution rows (provenance, migration v9)
+        so the relationship can be traced to the agent/session/turn that produced it.
+        """
         if not self._persistence_enabled or not content or len(content) < 20 or not knowledge_id:
             return
         try:
@@ -1561,7 +1633,9 @@ profile=profile, language=lang, experience_id=exp_id)
                 if relation:
                     self.db.save_evolution(best_id, knowledge_id, relation,
                         confidence=best_sim, reason="jaccard_match",
-                        detection_method="llm" if best_sim < 0.9 else "jaccard")
+                        detection_method="llm" if best_sim < 0.9 else "jaccard",
+                        origin_agent=origin_agent, origin_session_id=origin_session_id,
+                        origin_turn=origin_turn)
                     if relation == "replaces" and best_sim >= 0.9:
                         self.db.save_memory_state("knowledge", best_id, "superseded",
                             reason=f"replaced_by:{knowledge_id}", source="evolution")
@@ -1603,3 +1677,75 @@ profile=profile, language=lang, experience_id=exp_id)
             if isinstance(kw, str) and kw.lower() in content.lower():
                 entities.append({"type": "technology", "name": kw, "confidence": 0.6, "source": "keyword"})
         return entities[:10]
+
+    # ── Autoreflection score (P4-2 in autoreflection absorption) ──
+
+    def compute_autoreflection_score(self) -> tuple:
+        """Return (score_0_to_4, diagnostics_block) based on the 4 criteria from
+        Lewis (2026): situated awareness, architectural congruence,
+        analysis-from-architecture, incorporation-and-expansion.
+
+        This is a heuristic self-assessment — zero LLM cost — so the agent or
+        the developer can see how far the system has progressed from
+        'telemetry' to true 'autoreflection'.
+        """
+        score = 0
+        lines: list[str] = []
+
+        # 1. Situated awareness: does the system know it runs inside an agentic harness?
+        ref_config = self.reflective.config if hasattr(self, 'reflective') else {}
+        if ref_config and self._persistence_enabled:
+            score += 1
+            lines.append("  ✅ C1: situated awareness — persistence active, reflection configured")
+        else:
+            lines.append("  ❌ C1: situated awareness — persistence or reflection missing")
+
+        # 2. Architectural congruence: does it have enough data to describe its own state?
+        try:
+            stats = self.db.get_memory_stats()
+            total_active = sum(s.get("active", 0) for s in stats.values())
+            if total_active > 0:
+                score += 1
+                lines.append(f"  ✅ C2: architectural congruence — {total_active} active memory records")
+            else:
+                lines.append("  ❌ C2: architectural congruence — no active records")
+        except Exception:
+            lines.append("  ❌ C2: architectural congruence — DB unavailable")
+
+        # 3. Analysis-from-architecture: do we have evidence that the system
+        #    reasoned about its own state?  (proxied by: any reflection output)
+        try:
+            # H-3/W-3 fix: use the store API instead of reaching into private _conn
+            ref_count = self.db.count_reflections()
+            if ref_count > 0:
+                score += 1
+                lines.append(f"  ✅ C3: analysis-from-architecture — {ref_count} reflections recorded")
+            else:
+                lines.append("  ❌ C3: analysis-from-architecture — no reflection output")
+        except Exception:
+            lines.append("  ❌ C3: analysis-from-architecture — DB unavailable")
+
+        # 4. Incorporation-and-expansion: have we incorporated external feedback?
+        try:
+            # (W-5) removed unused `cw` dead variable
+            rl_updated = len(getattr(self.rl_optimizer, 'history', [])) > 0
+            if rl_updated:
+                score += 1
+                lines.append(f"  ✅ C4: incorporation-and-expansion — RL weights active")
+            else:
+                lines.append("  ❌ C4: incorporation-and-expansion — no RL feedback loop")
+        except Exception:
+            lines.append("  ❌ C4: incorporation-and-expansion — RL unavailable")
+
+        # Render a one-line summary
+        if score <= 1:
+            desc = "(telemetry only — not yet autoreflective)"
+        elif score <= 2:
+            desc = "(weak autoreflection — describe but not reason)"
+        elif score <= 3:
+            desc = "(approaching autoreflection — reasoning present, incorporation incomplete)"
+        else:
+            desc = "(autoreflective — all 4 criteria met)"
+
+        summary = f"Autoreflection score: {score}/4 {desc}\n" + "\n".join(lines)
+        return score, summary

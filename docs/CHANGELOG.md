@@ -1,5 +1,19 @@
 # EchoMind Changelog
 
+## v1.2.8 — Self-Reflection Absorption Phase 1+2 (2026-08-11)
+
+| Feature | Description |
+|---------|-------------|
+| **Epistemic Mode** | knowledge entries now carry `epistemic_mode` in metadata (user_provided / reasoned / fuzzy / referenced), resolved from source at write time — zero LLM cost |
+| **Provenance columns** | Migration v9 adds `origin_agent`, `origin_session_id`, `origin_turn` to `knowledge_evolution` for memory-supply-chain tracking |
+| **Self-Reflection Score** | `compute_autoreflection_score()` evaluates 4-criterion maturity: situated-awareness, architectural-congruence, analysis-from-architecture, incorporation — returns (score 0-4, diagnostic summary) |
+| **System Prompt Diagnostics** | `system_prompt_block()` now appends real-time memory health (stats, RL weights, evolution status) to the agent's context |
+| **Knowledge Search** | search results include `epistemic_mode` and `epistemic_detail` for downstream trust evaluation |
+| **Cognitive Position** | knowledge entries track `cognitive_pos` (nok/fok/exo) in metadata — contextual proximity supplementing Ebbinghaus |
+
+**Tests:** Added 8 regression tests (epistemic resolver, provenance migration columns, autoreflection scoring, knowledge search); full suite 56 passed.
+
+---
 ## v1.2.7 — Deep Code Review Fixes & Regression Tests (2026-08-04)
 
 **Review method:** full deepseek-v4-flash code review + 4-parallel agent audit of memory data-links, then fix + 48-test suite (33 existing + 15 new).
@@ -120,9 +134,9 @@
 
 ---
 
-## v1.1.0 Academic References
+## Academic References by Version
 
-The technical design of the Self-Reflective Agent component in this v1.1.0 release is inspired by the following research:
+The technical design of the Self-Reflective Agent component in the v1.1.0 release is inspired by the following research:
 
 ### 1. SAGE: Self-evolving Agents with Reflective and Memory-Augmented Abilities
 
@@ -130,6 +144,7 @@ Liang, X., He, Y., Xia, Y., Song, X., Wang, J., Tao, M., Sun, L., Yuan, X., Su, 
 
 - **Paper:** [arXiv:2409.00872](https://arxiv.org/abs/2409.00872)
 - **Journal:** *Neurocomputing* (2025)
+- **Release Version:** Echomind Memory Engine v1.1.0
 
 
 ### 2. SRMA: Self-Reflective Memory Consolidation in Agentic Architectures
@@ -138,6 +153,14 @@ Satya, P. R. B. (2026).
 
 - **Paper:** [IJCA Vol.187 No.73](https://www.ijcaonline.org/archives/volume187/number73/self-reflective-memory-consolidation-in-agentic-architectures/)
 - **Journal:** *International Journal of Computer Applications*, 187(73)
+- **Release Version:** Echomind Memory Engine v1.1.0
+
+
+### 3. Lewis (2026) "Autoreflection: How Agentic Strange Loops Turn Human Culture into AI Infrastructure"
+
+- **Paper:** https://arxiv.org/abs/2608.03800
+- **Release Version:** Echomind Memory Engine v1.2.8
+- **Scope:** epistemic knowledge classification, provenance tracking, architectural self-diagnosis, self-reflection scoring
 
 ---
 

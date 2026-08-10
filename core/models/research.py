@@ -21,6 +21,11 @@ class ResearchPaper(BaseModel):
     importance_score: float = 0.5
     metadata: Dict[str, Any] = Field(default_factory=dict)
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    # L-4 fix: carry the DB row's last_access_at into the in-RAM paper so
+    # _freshness() can actually decay on access instead of always falling back
+    # to created_at (which made paper freshness constant at 1.0). Stored as a
+    # DB-format string to match the sqlite column; parsed via _parse_db_ts().
+    last_access_at: str = ""
 
 
 class ResearchNote(BaseModel):

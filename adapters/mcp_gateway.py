@@ -33,6 +33,10 @@ def main():
         except json.JSONDecodeError:
             continue
         response = handle_mcp_request(msg)
+        # M-7 fix: notifications return None (no response expected by JSON-RPC);
+        # skip writing a stray frame to stdout.
+        if response is None:
+            continue
         sys.stdout.write(json.dumps(response) + "\n")
         sys.stdout.flush()
 

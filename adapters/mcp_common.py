@@ -320,6 +320,10 @@ def handle_mcp_request(msg: dict) -> dict:
         return {"jsonrpc": "2.0", "id": msg_id, "result": handle_resource_read(params.get("uri", ""))}
     elif method == "tools/call":
         return {"jsonrpc": "2.0", "id": msg_id, "result": handle_tool_call(params.get("name", ""), params.get("arguments", {}))}
-    elif method == "notifications/initialized":
-        return {"jsonrpc": "2.0", "id": msg_id, "result": {}}
+    elif method.startswith("notifications/"):
+        # M-7 fix: JSON-RPC notifications carry no `id` and expect NO response.
+        # Returning a response frame confuses MCP clients (stdio gateway would
+        # write a stray line to stdout). Signal "no response" with None and let
+        # the transport layer skip writing it.
+        return None
     return {"jsonrpc": "2.0", "id": msg_id, "error": {"code": -32601, "message": "Method not found"}}

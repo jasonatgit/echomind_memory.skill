@@ -48,6 +48,9 @@
 | **记忆健康报告** | 按类型+状态聚合统计 + 7天增长 + Flags 摘要 |
 | **实体抽取** | LLM 优先 + 关键词兜底（技术/概念实体） |
 | **经验沉淀与复用** | 上次修复的问题 / 用过的算法模型 → 下次自动推荐 |
+| **认知模式分类** | 每条知识携带 epistemic_mode（user_provided / reasoned / fuzzy / referenced）— 区分用户真实事实与 LLM 生成推理，写入时自动判定（零 LLM 成本） |
+| **自我反思评分与诊断** | 四标准成熟度模型自评（情境觉察、架构一致性、从架构分析、整合与扩展）；实时系统健康注入智能体上下文 |
+| **知识溯源追踪** | knowledge_evolution 中存储溯源链（origin_agent、origin_session_id、origin_turn），实现记忆供应链审计 |
 
 ### 检索与优化（RL强化自学习）
 | 功能 | 说明 |
@@ -102,6 +105,7 @@ EchoMind 记忆系统专门针对*科研方向*的记忆进行了优化，对查
 
 | 日期 | 标题 |
 |:-----|:------|
+| 2026-08 | 🪞 [EchoMind：自我反思-引导 AI 记忆思考自身](blog/echomind-autoreflection-article-zh.md) |
 | 2026-07 | 🪞 [Echomind: Self-Reflective Agent 上篇 —— 反思引擎与记忆生命周期](blog/echomind-reflective-agent-part1-article.md) |
 | 2026-07 | 🪞 [Echomind: Self-Reflective Agent 下篇 —— 知识演化与记忆治理](blog/echomind-reflective-agent-part2-article.md) |
 | 2026-06 | 🎯[Echomind: RL 强化自学习的记忆系统](blog/echomind-rl-article.md) |
@@ -117,6 +121,8 @@ EchoMind 记忆系统专门针对*科研方向*的记忆进行了优化，对查
 
 | 版本 | 核心要点 |
 |:--------|:-----------|
+| v1.2.8 | *自我反思进化：认知状态分类、溯源追踪、架构自诊断。* |
+| v1.2.7 | *深度代码审查：42 项 bug 修复与 48 项回归测试。* |
 | v1.2.3 | *RL advantage baseline、RCW 源权重分配、知识多样性、profile 导出。* |
 | v1.2.2 | *记忆生命周期管理、知识演化追踪、实体抽取、Streamable HTTP MCP。* |
 | v1.2.0 | *MCP stdio 网关、艾宾浩斯遗忘曲线、会话隔离、记忆 CRUD。* |

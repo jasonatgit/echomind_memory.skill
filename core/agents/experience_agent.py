@@ -113,6 +113,10 @@ class ExperienceMemoryAgent:
                     "metadata": {
                         "trust_score": 0.5 if not entry.success else min(0.95, 0.7 + 0.05 * entry.frequency),
                         "tags": entry.tags if isinstance(entry.tags, list) else [],
+                        # M-1 fix: propagate outcome so _compute_importance can
+                        # apply the failed/completed multipliers (previously
+                        # never wired, so _SCORE_FAILED/_COMPLETED were dead).
+                        "task_status": "completed" if entry.success else "failed",
                     },
                     "created_at": entry.created_at.isoformat() if entry.created_at else "",
                     "last_access_at": entry.last_access_at.isoformat() if hasattr(entry, 'last_access_at') and entry.last_access_at else "",

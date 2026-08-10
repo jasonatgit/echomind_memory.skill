@@ -255,7 +255,30 @@ class EchomindMemoryProvider:
         """injected into system prompt static text of"""
         from core.lang_utils import get_prompt
 
-        return get_prompt("hermes_sysprompt", self._detected_lang)
+        base = get_prompt("hermes_sysprompt", self._detected_lang)
+        # Append real-time memory system diagnostics (autoreflection upgrade: telemetry→reasoning)
+        try:
+            if self._agent and self._agent._persistence_enabled:
+                stats = self._agent.db.get_memory_stats()
+                cw = self._agent.rl_optimizer.get_current_weights()
+                diag = "\n\n## Your Memory System (EchoMind v" + \
+                    self._agent.reflective.get_engine_status().get("engine", "?") + ")\n"
+                diag += "You have a persistent memory with 6 types across SQLite tables.\n"
+                diag += "- Knowledge: {active}/{stale}/{archived} | Experience: {exp_active}\n".format(
+                    active=stats.get("knowledge", {}).get("active", 0),
+                    stale=stats.get("knowledge", {}).get("stale", 0),
+                    archived=stats.get("knowledge", {}).get("archived", 0),
+                    exp_active=stats.get("experience", {}).get("active", 0),
+                )
+                diag += "- RL weights: rel={:.2f} rec={:.2f} freq={:.2f}\n".format(
+                    cw.get("relevance", 0.5), cw.get("recency", 0.5), cw.get("frequency", 0.5),
+                )
+                diag += "- Knowledge evolution: " + (
+                    "active" if stats.get("knowledge", {}).get("active", 0) > 0 else "inactive") + "\n"
+                base += diag
+        except Exception:
+            pass  # diagnostics are best-effort; never break the agent loop
+        return base
 
     def prefetch(self, query: str, session_id: str) -> str:
         """Automatically called before each conversation turn — Retrieve relevant memories and inject into context
@@ -760,10 +783,17 @@ class EchomindMemoryProvider:
         """Execute memory search"""
         if not query:
             return "Please provide search keywords"
+        # M-5 fix: propagate project/session/profile scope like prefetch does,
+        # otherwise search hits the default scope and returns memories from the
+        # wrong project/profile, inconsistent with prefetch.
         result = self._agent.retrieve_for_task(
             task_context=query,
             user_id=self._user_id,
+            task_id=self._session_id or None,
             platform=PLATFORM,
+            project=self._project_id,
+            session_id=self._session_id,
+            profile=self._profile,
         )
         return self._format_search_result(result)
 

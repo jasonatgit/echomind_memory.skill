@@ -160,7 +160,13 @@ class RLWeightOptimizer:
                 result[wk] = 1.0
                 continue
             values = [normalized.get(s, 0.0) for s in mapped]
-            result[wk] = sum(values) / len(values)
+            avg = sum(values) / len(values)
+            # M-4 fix: if no mapped source for this weight dimension appeared in
+            # the feedback's memories, fall back to a neutral multiplier (1.0)
+            # instead of 0.0. A 0.0 would make delta = lr*(advantage - pred)*0 = 0
+            # and permanently freeze that dimension (e.g. explicit_feedback has
+            # no "user" memory in the batch).
+            result[wk] = avg if avg > 0 else 1.0
         return result
 
     @staticmethod
@@ -332,13 +338,27 @@ class RLWeightOptimizer:
     def load_weights_for_user(self, weights: Dict[str, float] = None):
         """Load per-user weights into the optimizer.
 
-        If weights is None or empty, no change (keep current global weights).
-        Called before retrieve_for_task to ensure per-user weight isolation.
+        If weights is None or empty, reset to deterministic defaults built from
+        the _WEIGHT_SPEC midpoints (softmax-normalized) instead of silently
+        keeping the previous user's weights — otherwise a user with no saved
+        weights inherits the last-loaded user's weights, leaking per-user
+        isolation.  Called before retrieve_for_task.
         """
         if not weights:
+            self.weights = self._default_weights()
+            self.ema_weights = self.weights.copy()
             return
         self.weights = weights.copy()
         self.ema_weights = weights.copy()
+
+    def _default_weights(self) -> Dict[str, float]:
+        """Deterministic default weights from _WEIGHT_SPEC range midpoints,
+        softmax-normalized (matches the invariant used by __init__/_update_weights)."""
+        mids = [(spec["range"][0] + spec["range"][1]) / 2.0 for spec in self._WEIGHT_SPEC.values()]
+        arr = np.array(mids, dtype=float)
+        exp = np.exp(arr - np.max(arr))
+        soft = exp / np.sum(exp)
+        return {k: float(soft[i]) for i, k in enumerate(self._WEIGHT_KEYS)}
 
     def get_current_weights(self) -> Dict[str, float]:
         return self.ema_weights.copy()
@@ -366,7 +386,16 @@ class RLWeightOptimizer:
         Previous implementation multiplied all weights by the same factor then
         softmax-normalized, which is a mathematical identity (no effect).
         This version applies per-dimension decay proportional to divergence,
-        then clamps to _WEIGHT_SPEC ranges instead of softmax.
+        clamps to _WEIGHT_SPEC ranges, then linearly renormalizes to sum=1 so
+        the result stays consistent with the _update_weights invariant.
+
+        H-2 fixes:
+        - dim_div now compares EMA-current vs EMA-snapshot (both EMA), instead
+          of raw-current vs EMA-snapshot which systematically overstated
+          divergence because raw lags EMA.
+        - After clamping, weights are linearly normalized to sum to 1.0 (not
+          softmax, which would cancel the differential decay) so downstream
+          scoring never sees two different "weight" semantics across methods.
         """
         divergence = self._compute_divergence()
         extra = 0.0
@@ -377,16 +406,24 @@ class RLWeightOptimizer:
         # Per-dimension differential decay: weights farther from snapshot decay more
         snap = self.policy_snapshots[-1]["weights"] if self.policy_snapshots else {}
         for k in self._WEIGHT_KEYS:
-            snap_val = snap.get(k, self.weights.get(k, 0.2))
-            current = self.weights.get(k, 0.2)
-            # Dimension-specific decay: more divergent → stronger pull toward snapshot
-            dim_div = abs(current - snap_val)
+            snap_val = snap.get(k, self.ema_weights.get(k, 0.2))
+            current_ema = self.ema_weights.get(k, 0.2)
+            current_raw = self.weights.get(k, 0.2)
+            # Dimension-specific decay measured on the EMA distribution (matches
+            # _compute_divergence); pull is applied to the raw weights.
+            dim_div = abs(current_ema - snap_val)
             dim_factor = max(0.3, effective_base - dim_div * 0.5)
             # Pull toward snapshot value, not just shrink
-            self.weights[k] = current * dim_factor + snap_val * (1 - dim_factor)
+            self.weights[k] = current_raw * dim_factor + snap_val * (1 - dim_factor)
             # Clamp to spec range
             lo, hi = self._WEIGHT_SPEC[k]["range"]
             self.weights[k] = max(lo, min(hi, self.weights[k]))
+
+        # Restore the sum-to-1 invariant that _update_weights maintains.
+        total = sum(self.weights[k] for k in self._WEIGHT_KEYS)
+        if total > 0:
+            for k in self._WEIGHT_KEYS:
+                self.weights[k] /= total
 
         # EMA smooth (no softmax — it would cancel the differential decay)
         for k in self._WEIGHT_KEYS:

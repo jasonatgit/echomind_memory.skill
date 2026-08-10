@@ -149,8 +149,14 @@ _MIGRATIONS = [
          " detection_method TEXT DEFAULT 'jaccard',"
          " created_at TEXT DEFAULT (datetime('now'))"
          ")",
-         "CREATE INDEX IF NOT EXISTS idx_evolution_source ON knowledge_evolution(source_id)",
-         "CREATE INDEX IF NOT EXISTS idx_evolution_target ON knowledge_evolution(target_id)",
+"CREATE INDEX IF NOT EXISTS idx_evolution_source ON knowledge_evolution(source_id)",
+          "CREATE INDEX IF NOT EXISTS idx_evolution_target ON knowledge_evolution(target_id)",
+      ]),
+    (9, "Add provenance columns to knowledge_evolution for memory provenance tracking",
+     [
+         "ALTER TABLE knowledge_evolution ADD COLUMN origin_agent TEXT DEFAULT ''",
+         "ALTER TABLE knowledge_evolution ADD COLUMN origin_session_id TEXT DEFAULT ''",
+         "ALTER TABLE knowledge_evolution ADD COLUMN origin_turn INTEGER DEFAULT 0",
      ]),
 ]
 # Tables that need a profile column
@@ -1406,13 +1412,23 @@ class SqliteStore:
     @_require_conn
     def save_evolution(self, source_id: str, target_id: str, relation_type: str,
                        confidence: float = 0.5, reason: str = "",
-                       detection_method: str = "jaccard"):
-        """Record a knowledge evolution relationship."""
+                       detection_method: str = "jaccard",
+                       origin_agent: str = "", origin_session_id: str = "",
+                       origin_turn: int = 0):
+        """Record a knowledge evolution relationship.
+
+        origin_agent / origin_session_id / origin_turn populate the provenance
+        columns (migration v9) so evolution records can be traced back to the
+        agent/session/turn that produced them. Default empty/0 keeps backward
+        compatibility for callers that don't track provenance.
+        """
         with self._lock:
             self._conn.execute(
                 "INSERT INTO knowledge_evolution (source_id, target_id, relation_type, "
-                "confidence, reason, detection_method) VALUES (?,?,?,?,?,?)",
-                (source_id, target_id, relation_type, confidence, reason, detection_method)
+                "confidence, reason, detection_method, origin_agent, origin_session_id, origin_turn) "
+                "VALUES (?,?,?,?,?,?,?,?,?)",
+                (source_id, target_id, relation_type, confidence, reason,
+                 detection_method, origin_agent, origin_session_id, origin_turn)
             )
             self._maybe_commit()
 
@@ -1425,6 +1441,35 @@ class SqliteStore:
             (knowledge_id, knowledge_id, limit)
         ).fetchall()
         return [dict(r) for r in rows]
+
+    @_require_conn
+    def count_evolution_for(self, knowledge_id: str) -> int:
+        """Count evolution records touching a knowledge entry (source or target).
+
+        H-3 fix: wraps the raw query memory_agent._get_flags used to run against
+        the private `_conn` so DB access stays inside SqliteStore's locking /
+        decorator discipline.
+        """
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT COUNT(*) as cnt FROM knowledge_evolution "
+                "WHERE source_id=? OR target_id=?",
+                (knowledge_id, knowledge_id)
+            ).fetchone()
+            return int(row["cnt"]) if row else 0
+
+    @_require_conn
+    def count_reflections(self) -> int:
+        """Count persisted reflection records.
+
+        H-3 fix: wraps the raw query compute_autoreflection_score used to run
+        against the private `_conn` so DB access stays behind the store API.
+        """
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT COUNT(*) as cnt FROM reflections"
+            ).fetchone()
+            return int(row["cnt"]) if row else 0
 
 class _TransactionContext:
     """Internal transaction context manager.
