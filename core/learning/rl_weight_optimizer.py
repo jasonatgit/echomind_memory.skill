@@ -50,10 +50,17 @@ class RLWeightOptimizer:
     ):
         if seed is not None:
             random.seed(seed)
+        # Defaults are deterministic midpoints (seed-independent). Only an
+        # explicitly provided list/tuple range is randomized via uniform().
+        # This keeps __init__ defaults matching _default_weights() so a user
+        # with no saved weights never inherits a random (seed-dependent) set.
         self.weights = {}
         for key, spec in self._WEIGHT_SPEC.items():
-            cfg_val = initial_weights.get(key, spec["default"])
-            if isinstance(cfg_val, (list, tuple)) and len(cfg_val) == 2:
+            cfg_val = initial_weights.get(key)
+            if cfg_val is None:
+                mid = (spec["range"][0] + spec["range"][1]) / 2.0
+                self.weights[key] = float(mid)
+            elif isinstance(cfg_val, (list, tuple)) and len(cfg_val) == 2:
                 self.weights[key] = random.uniform(float(cfg_val[0]), float(cfg_val[1]))
             else:
                 self.weights[key] = float(cfg_val)

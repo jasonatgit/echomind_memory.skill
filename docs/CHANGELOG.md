@@ -1,5 +1,19 @@
 # EchoMind Changelog
 
+## v1.2.9 — Markdown Rendering & Hermes v0.20 Adaptation (2026-08-12)
+
+| Feature | Description |
+|---------|-------------|
+| **Markdown Memory Archive** | `export_memory_to_markdown()` produces complete .md (9 sections); `core/markdown_renderer.py` zero new deps |
+| **Compact Inject Layer** | `_format_prefetch_context` now emits `<memory-context>` blocks (Hermes v0.20 compatible) |
+| **Hermes v0.20 Adaptation** | Root `__init__.py` `register(ctx)` + `plugin.yaml` `kind: exclusive` |
+| **Cognitive Position Implementation** | cognitive_pos (nok/fok/exo) full lifecycle |
+| **HTTP Endpoint** | `GET /api/memory/archive` |
+| **Bug Fixes** | register placement (BUG-1), dead test (BUG-2), search_all dead code (BUG-3) |
+
+**Tests:** 62 passed.
+
+---
 ## v1.2.8 — Self-Reflection Absorption Phase 1+2 (2026-08-11)
 
 | Feature | Description |

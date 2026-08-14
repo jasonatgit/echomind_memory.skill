@@ -109,7 +109,8 @@ class KnowledgeMemoryAgent:
                             "last_access_at": entry.last_access_at or entry.metadata.get("last_access_at", ""),
                             "last_updated": entry.metadata.get("last_updated", ""),
                             "epistemic_mode": entry.metadata.get("epistemic_mode", ""),
-                            "epistemic_detail": entry.metadata.get("epistemic_detail", "")})
+                            "epistemic_detail": entry.metadata.get("epistemic_detail", ""),
+                            "cognitive_pos": entry.metadata.get("cognitive_pos", "")})
 
         results.sort(key=lambda x: x.get("relevance", 0), reverse=True)
         return results[:top_k]

@@ -13,6 +13,7 @@
 import sys
 import os
 import atexit
+import logging
 
 _pkg_dir = os.path.dirname(os.path.abspath(__file__))
 if _pkg_dir not in sys.path:

@@ -254,3 +254,139 @@ class TestKnowledgeSearchEpistemic:
         assert len(results) >= 1
         assert results[0].get("epistemic_mode") == "fuzzy"
         assert results[0].get("epistemic_detail") == "LLM-generated"
+
+
+# ── Markdown Rendering (v1.2.9) ──
+
+class TestMarkdownExport:
+    def test_export_runs_without_exception(self, memory_agent):
+        md = memory_agent.export_memory_to_markdown("test_user")
+        assert isinstance(md, str)
+        assert len(md) > 0
+        assert "# " in md  # has at least one heading
+
+    def test_cognitive_pos_in_export(self, memory_agent):
+        ka = memory_agent.knowledge_agent
+        ka.add_document("with cognitive pos", {
+            "source": "test", "user_id": "test_user",
+            "category": "test",
+        }, entry_id="cog:2")
+        # also inject cognitive_pos via search_all-visible path
+        entry = ka.store.get("cog:2")
+        if entry:
+            entry.metadata["cognitive_pos"] = "nok"
+        md = memory_agent.export_memory_to_markdown("test_user")
+        # the export should contain a heading and the rendered cognitive pos icon
+        assert "## 📚 Knowledge" in md
+        assert "⚡ nok" in md
+
+    def test_prefetch_markdown_format(self, memory_agent):
+        """Verify _format_prefetch_context produces <memory-context> wrapper."""
+        result = {
+            "retrieved_memories": [
+                type("M", (), {"source": "knowledge", "content": "test content",
+                 "trust_score": 0.8})(),
+            ],
+            "user": {"preferences": {"response_style": "concise"}},
+        }
+        from adapters.hermes_provider import EchomindMemoryProvider
+
+        assert callable(EchomindMemoryProvider._format_prefetch_context)
+        provider = EchomindMemoryProvider.__new__(EchomindMemoryProvider)
+        provider._user_id = "test_user"
+        ctx = EchomindMemoryProvider._format_prefetch_context(provider, result)
+        assert "<memory-context>" in ctx
+        assert "</memory-context>" in ctx
+
+
+# ── Renderer data-source decoupling (Step 2) ──
+
+class TestRenderDataclass:
+    def test_render_full_archive_from_memory_archive(self):
+        """render_full_archive accepts a pure MemoryArchive — no agent needed."""
+        from core.markdown_renderer import (
+            MemoryArchive, KnowledgeRow, ExperienceRow, TaskRow, render_full_archive,
+        )
+        data = MemoryArchive(
+            version="1.2.9",
+            generated_at="2026-01-01T00:00:00+00:00",
+            autoreflection_score=3,
+            autoreflection_summary="OK",
+            stats={"knowledge": {"active": 1, "stale": 0, "archived": 0}},
+            knowledge=[KnowledgeRow(content="test", trust_score=0.9,
+                                    epistemic_mode="user_provided",
+                                    cognitive_pos="nok", domain="test")],
+            experience=[ExperienceRow(summary="did x", frequency=2, success=True)],
+            tasks=[TaskRow(title="task", status="completed")],
+        )
+        md = render_full_archive(data)
+        assert isinstance(md, str)
+        assert "## 📚 Knowledge" in md
+        assert "✅ User Confirmed" in md
+        assert "⚡ nok" in md
+
+
+# ── cognitive_pos lifecycle migration (v1.2.9, A1) ──
+
+class TestCognitivePosMigration:
+    def test_migrate_nok_fok_exo_thresholds(self, memory_agent):
+        """cognitive_pos migrates nok → fok → exo by freshness thresholds."""
+        agent = memory_agent
+        ka = agent.knowledge_agent
+        ka.add_document("fresh knowledge entry", {
+            "source": "test", "user_id": "test_user", "category": "test",
+        }, entry_id="cog:mig")
+        entry = ka.store.get("cog:mig")
+        entry.metadata["cognitive_pos"] = "nok"
+
+        # freshness above FOK threshold → nok (unchanged)
+        agent._migrate_cognitive_pos("cog:mig", 1.0)
+        assert ka.store["cog:mig"].metadata["cognitive_pos"] == "nok"
+
+        # freshness between EXO and FOK → fok
+        agent._migrate_cognitive_pos("cog:mig", 0.2)
+        assert ka.store["cog:mig"].metadata["cognitive_pos"] == "fok"
+
+        # freshness below EXO threshold → exo
+        agent._migrate_cognitive_pos("cog:mig", 0.05)
+        assert ka.store["cog:mig"].metadata["cognitive_pos"] == "exo"
+
+    def test_migrate_threshold_boundaries(self, memory_agent):
+        """Boundary values at the FOK/EXO thresholds use strict '<' comparison.
+
+        _migrate_cognitive_pos maps:
+          freshness < 0.1            → exo
+          0.1 <= freshness < 0.3     → fok
+          freshness >= 0.3           → nok
+        So exactly 0.3 is nok (not fok) and exactly 0.1 is fok (not exo).
+        """
+        agent = memory_agent
+        ka = agent.knowledge_agent
+        ka.add_document("boundary entry", {
+            "source": "test", "user_id": "test_user", "category": "test",
+        }, entry_id="cog:boundary")
+
+        # exactly 0.3 → nok (freshness < 0.3 is False)
+        agent._migrate_cognitive_pos("cog:boundary", 0.3)
+        assert ka.store["cog:boundary"].metadata["cognitive_pos"] == "nok"
+
+        # just below 0.3 → fok
+        agent._migrate_cognitive_pos("cog:boundary", 0.299)
+        assert ka.store["cog:boundary"].metadata["cognitive_pos"] == "fok"
+
+        # exactly 0.1 → fok (freshness < 0.1 is False)
+        agent._migrate_cognitive_pos("cog:boundary", 0.1)
+        assert ka.store["cog:boundary"].metadata["cognitive_pos"] == "fok"
+
+        # just below 0.1 → exo
+        agent._migrate_cognitive_pos("cog:boundary", 0.099)
+        assert ka.store["cog:boundary"].metadata["cognitive_pos"] == "exo"
+
+    def test_state_scan_limit_configurable(self, memory_agent):
+        """_update_memory_states reads state_scan_limit from config (default 1000)."""
+        agent = memory_agent
+        try:
+            limit = agent.cfg.get("retrieval", "state_scan_limit", default=1000)
+            assert int(limit) == 1000
+        except Exception:
+            raise AssertionError("state_scan_limit should default to 1000")

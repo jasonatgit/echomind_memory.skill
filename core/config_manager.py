@@ -99,6 +99,7 @@ FALLBACK_CONFIG = {
         "preference_score_boost": 0.2,
         "relevance_multiplier": 0.6,
         "recency_multiplier": 0.5,
+        "state_scan_limit": 1000,
     },
     "inference": {
         "min_occurrence": 2,

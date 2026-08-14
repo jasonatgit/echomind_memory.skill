@@ -412,14 +412,21 @@ def api_delete_user(req: DeleteRequest, auth=Depends(verify_api_key)):
 @app.post("/api/memory/cleanup")
 def api_cleanup(auth=Depends(verify_api_key)):
     try:
+        # L-R2 fix: TTLs come from config (cleanup section) instead of being
+        # hardcoded, so operators can tune retention without a code change.
+        def _ttl(mtype, default):
+            try:
+                return int(get_config_manager().get("cleanup", f"ttl_{mtype}", default))
+            except (TypeError, ValueError):
+                return default
         ttl = {
-            "context": 30,
-            "task": 90,
-            "experience": 180,
-            "knowledge": 0,
+            "context": _ttl("context", 30),
+            "task": _ttl("task", 90),
+            "experience": _ttl("experience", 180),
+            "knowledge": _ttl("knowledge", 0),
         }
         counts = memory_agent.db.delete_expired(ttl)
-        return {"status": "cleaned", "counts": counts}
+        return {"status": "cleaned", "counts": counts, "ttl": ttl}
     except Exception as e:
         logger.error(f"api_cleanup: {e}", exc_info=True)
         return JSONResponse(status_code=500, content={"status": "error", "detail": "Cleanup failed"})
@@ -454,6 +461,17 @@ def api_autoreflection(auth=Depends(verify_api_key)):
         logger.error(f"api_autoreflection: {e}", exc_info=True)
         return JSONResponse(status_code=500, content={"status": "error", "detail": str(e)})
 
+@app.get("/api/memory/archive")
+def api_memory_archive(user_id: str = "default", profile: str = "default",
+                       auth=Depends(verify_api_key)):
+    """Export full memory archive as markdown (v1.2.9)."""
+    try:
+        md = memory_agent.export_memory_to_markdown(user_id, profile)
+        return {"md": md, "user_id": user_id, "profile": profile}
+    except Exception as e:
+        logger.error(f"api_memory_archive: {e}", exc_info=True)
+        return JSONResponse(status_code=500, content={"status": "error", "detail": str(e)})
+
 @app.post("/api/memory/{memory_type}/{memory_id}/state")
 def api_set_memory_state(memory_type: str, memory_id: str,
                                 req: StateRequest, auth=Depends(verify_api_key)):
@@ -470,7 +488,9 @@ def api_set_memory_state(memory_type: str, memory_id: str,
 @app.get("/api/knowledge/{knowledge_id}/evolution")
 def api_knowledge_evolution(knowledge_id: str, auth=Depends(verify_api_key)):
     try:
-        if not memory_agent._persistence_enabled or not memory_agent.db._conn:
+        # M-R2 fix: use the public persistence flag + store API instead of
+        # reaching into the private db._conn / _persistence_enabled attrs.
+        if not memory_agent.is_persistence_enabled():
             return JSONResponse(status_code=400, content={"status": "error", "detail": "Persistence not enabled"})
         chain = memory_agent.db.get_evolution_chain(knowledge_id)
         return {"knowledge_id": knowledge_id, "evolution": chain}

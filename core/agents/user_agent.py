@@ -71,7 +71,14 @@ class UserMemoryAgent:
                 logger.warning("update(%s) expects dict, got %s", key, type(value).__name__)
                 return False
         elif key == "history":
-            mem.history.append({"timestamp": datetime.now(timezone.utc).isoformat(), "action": value})
+            # V8-8 fix: include platform (and keep the callers that pass
+            # project) so rendered activity entries aren't blank; previously
+            # only timestamp+action were stored while memory_agent's direct
+            # writes carried project/platform — inconsistent rendering.
+            entry = {"timestamp": datetime.now(timezone.utc).isoformat(), "action": value}
+            if platform:
+                entry["platform"] = platform
+            mem.history.append(entry)
         else:
             setattr(mem, key, value)
         mem.version += 1

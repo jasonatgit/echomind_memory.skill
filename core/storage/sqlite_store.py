@@ -1167,20 +1167,28 @@ class SqliteStore:
         ).fetchall()
         records = [dict(r) for r in rows]
         # Enrich with content summary from experience_memory for reflection engine
-        # Match by id prefix (task id = user_id:task_id, experience id = user_id:task_id:ts)
+        # M-R8 fix: batch all session lookups into a single WHERE ... IN query
+        # instead of one query per record (N+1). Same (user, session) → summary
+        # mapping for any session that may repeat across tasks.
+        sids = sorted({r.get("session_id", "") for r in records if r.get("session_id")})
+        exp_by_sid = {}
+        if sids:
+            placeholders = ",".join("?" * len(sids))
+            exp_rows = self._conn.execute(
+                f"SELECT session_id, summary FROM experience_memory "
+                f"WHERE user_id=? AND session_id IN ({placeholders})",
+                [user_id] + sids,
+            ).fetchall()
+            for er in exp_rows:
+                # keep the latest summary for a session (table is ordered by
+                # created_at; last write wins as we overwrite the map)
+                exp_by_sid[er["session_id"]] = er["summary"]
         for rec in records:
-            rec_id = rec.get("id", "")
             sid = rec.get("session_id", "")
-            if sid:
-                exp_row = self._conn.execute(
-                    "SELECT summary FROM experience_memory "
-                    "WHERE user_id=? AND session_id=? ORDER BY created_at DESC LIMIT 1",
-                    (user_id, sid),
-                ).fetchone()
-                if exp_row:
-                    rec["content"] = exp_row["summary"]
-                    continue
-            rec["content"] = rec.get("title", "")
+            if sid and sid in exp_by_sid:
+                rec["content"] = exp_by_sid[sid]
+            else:
+                rec["content"] = rec.get("title", "")
         return records
 
     # ── Delete operations ──────────────────────────────────
@@ -1470,6 +1478,28 @@ class SqliteStore:
                 "SELECT COUNT(*) as cnt FROM reflections"
             ).fetchone()
             return int(row["cnt"]) if row else 0
+
+    @_require_conn
+    def get_latest_reflection(self, user_id: str) -> Optional[Dict]:
+        """Return the most recent reflection for a user, or None.
+
+        V8-3/V8-9 fix: gives memory._query_archive_data a public store-API
+        path to the latest reflection instead of raw _conn SQL, and scopes the
+        lookup to the user so archives never leak another user's reflection.
+        """
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT confidence, key_insights, new_knowledge FROM reflections "
+                "WHERE user_id=? ORDER BY created_at DESC LIMIT 1",
+                (user_id,),
+            ).fetchone()
+            if not row:
+                return None
+            return {
+                "confidence": row["confidence"],
+                "key_insights": row["key_insights"] or "",
+                "new_knowledge": row["new_knowledge"] or "",
+            }
 
 class _TransactionContext:
     """Internal transaction context manager.

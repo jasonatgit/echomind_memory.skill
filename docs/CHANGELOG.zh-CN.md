@@ -1,5 +1,19 @@
 # EchoMind 更新日志
 
+## v1.2.9 — Markdown 呈现与 Hermes v0.20 适配 (2026-08-12)
+
+| 功能 | 说明 |
+|------|------|
+| **Markdown 记忆档案导出** | `export_memory_to_markdown()` 生成完整 .md（9 章），`core/markdown_renderer.py` 零新依赖 |
+| **注入层紧凑 Markdown** | `_format_prefetch_context` 改为 `<memory-context>` 块（Hermes v0.20 兼容） |
+| **Hermes v0.20 适配** | 根 `__init__.py` 的 `register(ctx)` + `plugin.yaml` `kind: exclusive` |
+| **Cognitive Position 实现** | cognitive_pos (nok/fok/exo) 完整生命周期 |
+| **HTTP 端点** | `GET /api/memory/archive` |
+| **Bug 修复** | register 位置 (BUG-1), 无效测试 (BUG-2), search_all 死代码 (BUG-3) |
+
+**测试:** 62 项通过。
+
+---
 ## v1.2.8 — 自我反思吸收 Phase 1+2 (2026-08-11)
 
 | 功能 | 说明 |

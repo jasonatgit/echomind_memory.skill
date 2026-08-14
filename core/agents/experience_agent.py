@@ -102,15 +102,26 @@ class ExperienceMemoryAgent:
             if min_success_rate > 0.5 and not entry.success:
                 continue
             from ..lang_utils import tokenize as adaptive_tokenize, detect_language
-            q_tokens = adaptive_tokenize(task_context)
+            # V8-2 fix: an empty task_context previously tokenized to [] so the
+            # match was always False and find_similar_tasks() returned [] no
+            # matter what was stored — the "enumerate all" use case (memory.md
+            # export) silently produced nothing. Treat empty context as "match
+            # all candidates" so callers can enumerate the user's experiences.
+            q_tokens = adaptive_tokenize(task_context) if task_context else []
             n_take = 10 if detect_language(task_context) == "zh" else 5
-            if any(k in entry.summary.lower() for k in q_tokens[:n_take]):
+            if not q_tokens or any(k in entry.summary.lower() for k in q_tokens[:n_take]):
                 similar.append({
                     "id": entry.id, "summary": entry.summary,
                     "steps": entry.steps_sequence, "success": entry.success,
                     "frequency": entry.frequency,
                     "relevance": min(0.9, 0.3 + 0.1 * entry.frequency),
+                    # M-R4 fix: expose a domain/category so _diversify_top_k's
+                    # _item_domain() can classify experiences and apply
+                    # domain-level diversity. ExperienceEntry has no dedicated
+                    # domain field; its task_type best describes the category.
+                    "domain": entry.task_type or "",
                     "metadata": {
+                        "domain": entry.task_type or "",
                         "trust_score": 0.5 if not entry.success else min(0.95, 0.7 + 0.05 * entry.frequency),
                         "tags": entry.tags if isinstance(entry.tags, list) else [],
                         # M-1 fix: propagate outcome so _compute_importance can

@@ -21,8 +21,11 @@ from core._reflective_version import get_echomind_version
 __version__ = get_echomind_version()
 
 from adapters.hermes_provider import EchomindMemoryProvider
+from adapters import register as _hermes_register  # BUG-1 fix: v0.20 loader re-export
 
-__all__ = ["EchomindMemoryProvider", "__version__"]
+register = _hermes_register
+
+__all__ = ["EchomindMemoryProvider", "__version__", "register"]
 
 # ── Startup confirmation (user-visible, for Hermes plugin load) ──
 def _startup_check():

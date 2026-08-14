@@ -1,5 +1,5 @@
 # echomind_config.yaml — EchoMind full configuration parameters
-# Version: v1.2.8
+# Version: v1.2.9
 #
 # Distributed via GitHub as default config. Use directly or copy to ~/.echomind/ then modify.
 # Priority: runtime > YAML overrides > engine ext_params > built-in FALLBACK_CONFIG
@@ -52,6 +52,7 @@ retrieval:
   preference_score_boost: 0.2
   relevance_multiplier: 0.6
   recency_multiplier: 0.5
+  state_scan_limit: 1000
 
 llm:
   # Provider mode: openai_compatible | ollama | none

@@ -60,6 +60,11 @@ class MainMemoryAgent:
     _DECAY_HALF_LIFE = 69  # days — freshness = 2^(-days / half_life)
     _FRESHNESS_STALE_THRESHOLD = 0.3  # below this → stale state
     _FRESHNESS_ARCHIVE_THRESHOLD = 0.1  # below this → archived
+    # Cognitive-position (nok/fok/exo) freshness thresholds. Independently
+    # tunable from the lifecycle thresholds above so the two axes can drift
+    # apart later, but default to the same values for now.
+    _COGNITIVE_FOK_THRESHOLD = 0.3  # freshness below this → fok (fading)
+    _COGNITIVE_EXO_THRESHOLD = 0.1  # freshness below this → exo (external)
 
     def __init__(self, db_path: str = None, config_manager=None):
         self.context_agent = ContextMemoryAgent(max_sessions=5)
@@ -805,9 +810,21 @@ class MainMemoryAgent:
           freshness 0.1-0.3 → stale
           freshness < 0.1  → archived
         Transitions: active→stale, active/stale→archived.
+
+        Knowledge entries additionally migrate cognitive_pos (nok/fok/exo) in
+        lockstep with the freshness decay, using independent thresholds so the
+        cognitive-position axis can be tuned separately from lifecycle state.
         """
         if not self._persistence_enabled or not self.db._conn:
             return
+        try:
+            limit = self.cfg.get("retrieval", "state_scan_limit", default=1000)
+        except Exception:
+            limit = 1000
+        try:
+            limit = int(limit)
+        except (TypeError, ValueError):
+            limit = 1000
         try:
             for mem_type, table, id_col in [
                 ("knowledge", "knowledge_memory", "id"),
@@ -818,7 +835,8 @@ class MainMemoryAgent:
                 with self.db._lock:
                     rows = self.db._conn.execute(
                         f"SELECT {id_col} as rid, created_at, last_access_at, last_updated "
-                        f"FROM {table} ORDER BY created_at DESC LIMIT 200"
+                        f"FROM {table} ORDER BY created_at DESC LIMIT ?",
+                        (limit,),
                     ).fetchall()
                 for r in rows:
                     current = self.db.get_memory_state(mem_type, r["rid"])
@@ -828,12 +846,43 @@ class MainMemoryAgent:
                     if freshness < self._FRESHNESS_ARCHIVE_THRESHOLD:
                         if current in ("active", "stale"):
                             self.db.save_memory_state(mem_type, r["rid"], "archived",
-                                                      "freshness_decay", source="system")
+                                                       "freshness_decay", source="system")
                     elif freshness < self._FRESHNESS_STALE_THRESHOLD and current == "active":
                         self.db.save_memory_state(mem_type, r["rid"], "stale",
                                                   "freshness_decay", source="system")
+                    # cognitive_pos lifecycle (knowledge only)
+                    if mem_type == "knowledge":
+                        self._migrate_cognitive_pos(r["rid"], freshness)
         except Exception as e:
             logger.debug("Memory state update skipped: %s", e)
+
+    def _migrate_cognitive_pos(self, knowledge_id: str, freshness: float):
+        """Migrate a knowledge entry's cognitive_pos by freshness.
+
+        nok (current context) → fok (fading) → exo (external deep memory).
+        Persists to both the DB metadata JSON and the in-memory agent so the
+        markdown archive reflects the migration without a reload.
+        """
+        if freshness < self._COGNITIVE_EXO_THRESHOLD:
+            new_pos = "exo"
+        elif freshness < self._COGNITIVE_FOK_THRESHOLD:
+            new_pos = "fok"
+        else:
+            new_pos = "nok"
+        try:
+            with self.db._lock:
+                self.db._conn.execute(
+                    "UPDATE knowledge_memory SET metadata = json_set("
+                    "CASE WHEN json_type(metadata) IS NULL THEN '{}' ELSE metadata END, "
+                    "'$.cognitive_pos', ?) WHERE id = ?",
+                    (new_pos, knowledge_id),
+                )
+            self.db._maybe_commit()
+        except Exception as e:
+            logger.debug("cognitive_pos DB migration failed: %s", e)
+        entry = self.knowledge_agent.store.get(knowledge_id)
+        if entry is not None:
+            entry.metadata["cognitive_pos"] = new_pos
 
     def _update_last_access_for_retrieved(self, retrieved: Dict[str, Any], user_id: str):
         """Update last_access_at timestamps for records that were just retrieved."""
@@ -1020,6 +1069,8 @@ profile=profile, language=lang)
                         else:
                             kb_metadata["epistemic_mode"] = self._resolve_epistemic("user_direct")
                             kb_metadata["epistemic_detail"] = "derived from user-provided experience summary"
+                        # Moltspeak nok~: newly-created knowledge lives in the current context (high fidelity)
+                        kb_metadata["cognitive_pos"] = "nok"
                         if not existing_kb:
                             self.db.save_knowledge(
                                 knowledge_id=f"{user_id}:{task_id}",
@@ -1487,6 +1538,12 @@ profile=profile, language=lang, experience_id=exp_id)
                 "".join(profile_lines), encoding="utf-8")
         except Exception:
             logger.warning("Failed to export profile.md")
+        # Export full markdown memory archive (v1.2.9)
+        try:
+            memory_md = self.export_memory_to_markdown(user_id, profile)
+            (echomind_dir / "memory.md").write_text(memory_md, encoding="utf-8")
+        except Exception:
+            logger.warning("Failed to export memory.md")
         logger.info(f"Synced EchoMind memories to {echomind_dir}")
 
     def get_context(self) -> List[Dict]:
@@ -1749,3 +1806,135 @@ profile=profile, language=lang, experience_id=exp_id)
 
         summary = f"Autoreflection score: {score}/4 {desc}\n" + "\n".join(lines)
         return score, summary
+
+    # ── Markdown Rendering (v1.2.9) ─────────────────────────────
+    # Data extraction lives here; pure rendering lives in core/markdown_renderer.py.
+    # _query_* methods extract structured data from the agent; export calls the renderer.
+
+    def _query_archive_data(self, user_id: str, profile: str = "default"):
+        """Build a MemoryArchive from the agent's current state."""
+        from .markdown_renderer import MemoryArchive, KnowledgeRow, ExperienceRow, TaskRow
+        from ._reflective_version import get_echomind_version
+
+        # autoreflection
+        try:
+            score, summary = self.compute_autoreflection_score()
+        except Exception:
+            score, summary = 0, ""
+
+        # user — V8-1: scope profile to avoid reading the default profile's
+        # preferences/habits/history when an explicit profile was requested.
+        u = self.user_agent.get(user_id, profile=profile)
+        prefs = u.get("preferences", {}) if isinstance(u, dict) else {}
+        habits = u.get("habits", {}) if isinstance(u, dict) else {}
+        history = u.get("history", []) if isinstance(u, dict) else []
+
+        # knowledge → KnowledgeRow list — V8-1: pass profile so the export
+        # stays within the requested profile (was exporting every profile).
+        knowledge: list = []
+        for item in self.knowledge_agent.search_all(user_id=user_id, profile=profile):
+            mode = item.get("metadata", {}).get("epistemic_mode", "")
+            cog = item.get("metadata", {}).get("cognitive_pos", "")
+            trust = item.get("metadata", {}).get("trust_score", 0.5)
+            domain = (item.get("domain") or
+                      item.get("metadata", {}).get("category", "general"))
+            # V8-5: guard against non-numeric trust_score in raw metadata —
+            # float("high") would crash the whole export. Fall back to 0.5.
+            try:
+                trust_f = float(trust) if trust else 0.5
+            except (TypeError, ValueError):
+                trust_f = 0.5
+            knowledge.append(KnowledgeRow(
+                content=item.get("content", "") or "",
+                trust_score=trust_f,
+                epistemic_mode=mode or "",
+                cognitive_pos=cog or "",
+                domain=domain or "general",
+            ))
+
+        # experience → ExperienceRow list
+        # V8-2 fix: an empty task_context previously made find_similar_tasks
+        # return [] (tokenize("") → [] → any() = False), so the experience
+        # section was always empty. Let find_similar_tasks treat an empty
+        # context as "enumerate all matching candidates". V8-1: pass profile.
+        experience: list = []
+        for e in self.experience_agent.find_similar_tasks(
+            task_context="", task_type="", user_id=user_id, profile=profile,
+            min_success_rate=0.0, limit=50,
+        ):
+            experience.append(ExperienceRow(
+                summary=e.get("summary", "") or "",
+                frequency=e.get("frequency", 1),
+                success=bool(e.get("success")),
+            ))
+
+        # tasks → TaskRow list — V8-1: filter by profile as well (the task
+        # store carries a profile per entry; only export the requested one).
+        tasks: list = [
+            TaskRow(title=t.title, status=t.status)
+            for t in self.task_agent.store.values()
+            if t.user_id == user_id and t.profile == profile
+        ]
+
+        # research — V8-1: scope papers to the requested user/profile
+        papers: list = [
+            p for p in self.research_agent.papers.values()
+            if p.user_id == user_id and p.profile == profile
+        ]
+
+        # stats — K2 fix: build header counts from the SAME profile-scoped data
+        # that renders below. The previous get_memory_stats() reported GLOBAL
+        # counts across every profile while the sections below are scoped to
+        # this profile, making the header self-contradict for non-default
+        # profiles. The archive presents current entries only, so lifecycle
+        # state is collapsed to active (the health report uses get_memory_stats).
+        stats = {
+            "knowledge": {"active": len(knowledge), "stale": 0, "archived": 0},
+            "experience": {"active": len(experience), "stale": 0, "archived": 0},
+            "task": {"active": len(tasks), "stale": 0, "archived": 0},
+            "paper": {"active": len(papers), "stale": 0, "archived": 0},
+            "user": {"active": 1, "stale": 0, "archived": 0},
+            "context": {"active": len(self.context_agent._sessions),
+                        "stale": 0, "archived": 0},
+        }
+
+        # reflection — V8-3: filter by user_id so we never leak another
+        # user's latest reflection into this archive. Reflections have no
+        # profile column, so user_id is the only isolation dimension here.
+        ref_conf = 0.0
+        ref_insights = ""
+        ref_knowledge = ""
+        try:
+            # V8-9: use the public store API (get_latest_reflection) instead of
+            # reaching into the private _conn. It also scopes by user_id (V8-3).
+            if self.is_persistence_enabled():
+                row = self.db.get_latest_reflection(user_id)
+                if row:
+                    ref_conf = float(row.get("confidence") or 0.0)
+                    ref_insights = row.get("key_insights") or ""
+                    ref_knowledge = row.get("new_knowledge") or ""
+        except Exception:
+            pass
+
+        return MemoryArchive(
+            version=get_echomind_version(),
+            generated_at=datetime.now(timezone.utc).isoformat(),
+            autoreflection_score=score,
+            autoreflection_summary=summary,
+            stats=stats,
+            user_prefs=prefs,
+            user_habits=habits,
+            user_history=history,
+            knowledge=knowledge,
+            experience=experience,
+            tasks=tasks,
+            papers=papers,
+            reflection_confidence=ref_conf,
+            reflection_insights=ref_insights,
+            reflection_knowledge=ref_knowledge,
+        )
+
+    def export_memory_to_markdown(self, user_id: str, profile: str = "default") -> str:
+        data = self._query_archive_data(user_id, profile)
+        from .markdown_renderer import render_full_archive
+        return render_full_archive(data)

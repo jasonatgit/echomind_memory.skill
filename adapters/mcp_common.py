@@ -72,6 +72,7 @@ def handle_tools_list():
                 "properties": {
                     "query": {"type": "string", "description": "Search query"},
                     "user_id": {"type": "string", "default": "cli"},
+                    "platform": {"type": "string", "default": "mcp"},
                     "max_results": {"type": "integer", "default": 5},
                     "project": {"type": "string", "default": "default"},
                     "session_id": {"type": "string", "default": ""},
@@ -92,9 +93,12 @@ def handle_tools_list():
                     "success": {"type": "boolean", "default": True},
                     "experience_summary": {"type": "string"},
                     "context": {"type": "array", "items": {"type": "object"}},
+                    "platform": {"type": "string", "default": "mcp"},
                     "project": {"type": "string", "default": "default"},
                     "session_id": {"type": "string", "default": ""},
                     "profile": {"type": "string", "default": "default"},
+                    "correction": {"type": "boolean", "default": False,
+                                   "description": "True if this store is a fix/correction of a prior turn"},
                 },
                 "required": [],
             },
@@ -174,18 +178,28 @@ def handle_resources_list():
 
 
 def handle_resource_read(uri):
-    if uri in ("echomind://memory/stats", "echomind://config"):
+    if uri == "echomind://memory/stats":
+        # L-R7: return real memory statistics from the health endpoint instead
+        # of the previous static "see /api/config" placeholder text.
+        result = _api_get("/api/memory/health")
+        return {"contents": [{"uri": uri, "mimeType": "application/json",
+                              "text": json.dumps(result, indent=2, default=str)}]}
+    if uri == "echomind://config":
         result = _api_get("/api/config")
-        text = json.dumps(result, indent=2, default=str) if uri == "echomind://config" else json.dumps({"status": "ok", "note": "See /api/config for details"}, indent=2)
-        return {"contents": [{"uri": uri, "mimeType": "application/json", "text": text}]}
+        return {"contents": [{"uri": uri, "mimeType": "application/json",
+                              "text": json.dumps(result, indent=2, default=str)}]}
     return {"contents": [{"uri": uri, "mimeType": "text/plain", "text": "Resource not found"}]}
 
 
 def handle_tool_call(name, arguments):
     if name == "echomind_retrieve":
+        # M-R7 fix: tag MCP-sourced traffic with an explicit platform instead
+        # of letting it fall through to None → "default", which made MCP data
+        # indistinguishable from and isolated from Hermes/HTTP data.
         result = _api_post("/api/memory/retrieve", {
             "user_id": arguments.get("user_id", "cli"),
             "query": arguments.get("query", ""),
+            "platform": arguments.get("platform", "mcp"),
             "max_results": arguments.get("max_results", 5),
             "project": arguments.get("project", "default"),
             "session_id": arguments.get("session_id", ""),
@@ -213,9 +227,11 @@ def handle_tool_call(name, arguments):
             "task_status": arguments.get("task_status", "completed"),
             "success": arguments.get("success", True),
             "experience_summary": exp,
+            "platform": arguments.get("platform", "mcp"),
             "project": arguments.get("project", "default"),
             "session_id": arguments.get("session_id", ""),
             "profile": arguments.get("profile", "default"),
+            "correction": arguments.get("correction", False),
         })
         if "error" in result:
             return {"content": [{"type": "text", "text": f"Error storing: {result['error']}"}]}
@@ -310,7 +326,7 @@ def handle_mcp_request(msg: dict) -> dict:
         return {"jsonrpc": "2.0", "id": msg_id, "result": {
             "protocolVersion": "2024-11-05",
             "capabilities": {"tools": {}, "resources": {}},
-            "serverInfo": {"name": "echomind-mcp", "version": "1.2.8"},
+            "serverInfo": {"name": "echomind-mcp", "version": "1.2.9"},
         }}
     elif method == "tools/list":
         return {"jsonrpc": "2.0", "id": msg_id, "result": handle_tools_list()}

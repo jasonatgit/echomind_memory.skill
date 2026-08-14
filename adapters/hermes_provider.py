@@ -814,23 +814,38 @@ class EchomindMemoryProvider:
             return json.dumps(user_data, indent=2, ensure_ascii=False, default=str)
 
     def _format_prefetch_context(self, result: Dict) -> str:
-        """Format retrieval results as context injection"""
+        """Format retrieval results as compact markdown context injection.
+
+        Token-efficient: max 5 memories, one-liner profile, <memory-context> wrapper.
+        Compatible with Hermes v0.20+ build_memory_context_block.
+        """
         memories = result.get("retrieved_memories", [])
         if not memories:
             return ""
 
-        lines = ["[EchoMind — Relevant memories]"]
-        for mem in memories[:5]:
-            source_label = mem.source.replace("_", " ").title()
-            lines.append(f"[{source_label}] {mem.content[:200]}")
+        lines = ["<memory-context>"]
 
-        # Append user preferences
+        # One-liner user profile
         user_data = result.get("user", {})
-        prefs = user_data.get("preferences", {})
-        if prefs:
-            pref_items = ", ".join(f"{k}={v}" for k, v in list(prefs.items())[:5])
-            lines.append(f"[User Prefs] {pref_items}")
+        prefs = user_data.get("preferences", {}) if isinstance(user_data, dict) else {}
+        pref_tags = []
+        for k in ("response_style", "code_style", "language"):
+            v = prefs.get(k)
+            if v:
+                pref_tags.append(v)
+        if pref_tags:
+            lines.append(f"**User** ({self._user_id}): {', '.join(pref_tags[:3])}")
 
+        # Memory table — compact, 5 items max
+        if memories:
+            lines.append("")
+            for mem in memories[:5]:
+                source = mem.source.replace("_", " ").title()
+                content = mem.content[:120].replace("\n", " ").replace("|", "\\|")
+                trust = getattr(mem, 'trust_score', None) or 0.5
+                lines.append(f"- [{source}][trust={trust:.2f}] {content}")
+
+        lines.append("</memory-context>")
         return "\n".join(lines)
 
     def _format_search_result(self, result: Dict) -> str:
