@@ -186,7 +186,18 @@ class EchomindMemoryProvider:
         if self._agent:
             pending = getattr(self._agent, "_pending_reflection", False)
             if pending:
-                self._agent._trigger_auto_reflection(self._user_id)
+                # C-M1/P14: scope to this session's profile and attribute the
+                # reflection to the hermes platform.
+                self._agent._trigger_auto_reflection(
+                    self._user_id, profile=self._profile, platform=PLATFORM)
+            # C-H1/P3: _trigger_auto_reflection spawns a daemon thread; wait for
+            # it to finish before disable_persistence() closes the DB, or the
+            # reflection is deterministically dropped (get_recent_episodic and
+            # save_reflection are both gated on _persistence_enabled). Timeout
+            # bounds the wait so a hung LLM call can't block exit forever.
+            t = getattr(self._agent, "_reflection_thread", None)
+            if t is not None and t.is_alive():
+                t.join(timeout=30)
             self._agent.disable_persistence()
         logger.info("EchoMind Memory shutdown")
 
@@ -653,7 +664,10 @@ class EchomindMemoryProvider:
         if not pending:
             return
         self._agent.clear_pending_reflection()
-        self._agent._trigger_auto_reflection(self._user_id)
+        # C-M1/P14: keep the reflection scoped to this session's profile and
+        # attributed to the actual platform rather than the hardcoded "http".
+        self._agent._trigger_auto_reflection(
+            self._user_id, profile=self._profile, platform=PLATFORM)
 
     def on_memory_write(
         self, action: str, target: str, content: str, metadata: Optional[Dict] = None
@@ -749,17 +763,40 @@ class EchomindMemoryProvider:
         ]
 
     def save_config(self, values: Dict[str, Any], hermes_home: str) -> None:
-        """Write non-secret config to EchoMind's echomind_config.yaml."""
-        config_dir = Path(hermes_home) / "echomind"
-        config_dir.mkdir(parents=True, exist_ok=True)
-        config_file = config_dir / "echomind_config.yaml"
+        """Write config to the file EchoMind's server ACTUALLY loads.
+
+        C-M2/P15: previously this wrote flat keys (`api_key`, `db_path`) to
+        {hermes_home}/echomind/echomind_config.yaml, but ConfigManager only
+        searches ./echomind_config.yaml, ~/.echomind/echomind_config.yaml and
+        $ECHOMIND_CONFIG — so the wizard's saved API key was dead config and
+        HTTP auth never got enabled. Now we write server.api_key into the real
+        search path (same resolution as config_manager._resolve_config_path),
+        merging into the existing file instead of clobbering it.
+        """
+        import os
+        # Mirror config_manager._resolve_config_path() so we hit the same file
+        # the server actually reads.
+        cfg_path = os.environ.get("ECHOMIND_CONFIG")
+        if cfg_path:
+            config_file = Path(os.path.expanduser(cfg_path))
+        else:
+            config_file = Path(os.path.expanduser("~/.echomind/echomind_config.yaml"))
         try:
             import yaml
             existing = {}
             if config_file.exists():
                 with open(config_file, encoding="utf-8") as f:
                     existing = yaml.safe_load(f) or {}
-            existing.update(values)
+            server = dict(existing.get("server") or {})
+            if not isinstance(server, dict):
+                server = {}
+            # Wizard returns flat keys: map api_key -> server.api_key
+            if "api_key" in values:
+                server["api_key"] = values["api_key"]
+            existing["server"] = server
+            # db_path lives under the storage/db section, not flat
+            if values.get("db_path"):
+                existing.setdefault("storage", {})["db_path"] = values["db_path"]
             with open(config_file, "w", encoding="utf-8") as f:
                 yaml.dump(existing, f, default_flow_style=False)
             logger.info("EchoMind config saved to %s", config_file)

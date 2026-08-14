@@ -95,6 +95,10 @@ class MainMemoryAgent:
         self._pending_reflection = False
         self._store_lock = threading.Lock()
         self._research_kw_cache = None
+        # C-H1/P3: track the in-flight auto-reflection thread so shutdown can
+        # join() it before closing the DB (a daemon thread left behind races
+        # disable_persistence() and silently drops the reflection).
+        self._reflection_thread = None
 
         ref_config = self.cfg.get_section("reflection")
         self.reflective = ReflectiveAgent(self.db, self, config=ref_config)
@@ -132,6 +136,11 @@ class MainMemoryAgent:
         for t in all_data.get("tasks", []):
             task = TaskMemory(
                 user_id=t["user_id"], project=t.get("project","default"),
+                # A1/P7 fix: restore the task's profile on reload. Without it,
+                # a non-default-profile task would be born as "default" here,
+                # silently breaking task-level profile isolation (research and
+                # knowledge rows DO restore profile; tasks were the odd one out).
+                profile=t.get("profile","default"),
                 session_id=t.get("session_id",""),
                 session_title=t.get("session_title",""),
                 task_id=t.get("id", ""),
@@ -177,6 +186,11 @@ class MainMemoryAgent:
         for k in all_data.get("knowledge", []):
             metadata = dict(k.get("metadata", {}))
             metadata.setdefault("project", k.get("project", "default"))
+            # P8/A-M1 fix: carry the knowledge row's profile into in-memory
+            # metadata so knowledge_agent.search's profile filter applies to
+            # reloaded entries too (metadata.setdefault reads metadata first,
+            # so any migration-era profile already stored wins).
+            metadata.setdefault("profile", k.get("profile", "default"))
             metadata.setdefault("session_id", k.get("session_id", ""))
             metadata.setdefault("session_title", k.get("session_title", ""))
             metadata.setdefault("tags", k.get("tags", []))
@@ -250,16 +264,31 @@ class MainMemoryAgent:
                 if isinstance(prefs, dict) and 'rl_weights' in prefs:
                     raw = prefs['rl_weights']
                     if isinstance(raw, str):
-                        import json
-                        saved_weights = json.loads(raw)
-                    else:
+                        try:
+                            import json
+                            raw = json.loads(raw)
+                        except (json.JSONDecodeError, TypeError):
+                            raw = None
+                    # A-M2/P16 fix: guard against a non-dict / corrupted value
+                    # (e.g. a list from a bad merge). The eager indexing below
+                    # (weights["relevance"], etc.) would otherwise crash
+                    # retrieve_for_task. Only accept a dict of numbers.
+                    if isinstance(raw, dict) and all(
+                        isinstance(key, str) and isinstance(val, (int, float))
+                        for key, val in raw.items()
+                    ):
                         saved_weights = raw
-                    logger.info("RL weights restored from preferences JSON for %s", u.user_id)
+                        logger.info("RL weights restored from preferences JSON for %s", u.user_id)
+                    else:
+                        logger.warning("RL weights in preferences JSON for %s are invalid (type=%s); ignoring",
+                                       u.user_id, type(raw).__name__)
                     break
         if saved_weights:
-            self.rl_optimizer.weights = saved_weights
-            self.rl_optimizer.ema_weights = saved_weights.copy()
-            logger.info(f"RL weights restored: {saved_weights}")
+            # Route through load_weights_for_user so missing/partial dimensions
+            # are schema-completed (B-M1/P9) instead of crashing later in
+            # _compute_importance's eager weights["..."] indexing.
+            self.rl_optimizer.load_weights_for_user(saved_weights)
+            logger.info(f"RL weights restored: {self.rl_optimizer.get_current_weights()}")
 
         # P1-1: Initialize memory states for loaded records
         self._update_memory_states()
@@ -284,18 +313,31 @@ class MainMemoryAgent:
         self._pending_reflection_event = threading.Event()
         self._pending_reflection = False
 
-    def _trigger_auto_reflection(self, user_id: str):
+    def _trigger_auto_reflection(self, user_id: str, profile: str = None,
+                                 platform: str = "http",
+                                 batch_size: int = None):
         """Schedule auto-reflection in background thread (non-blocking).
-        Hermes path triggers via on_session_end hook instead."""
+
+        C-M1/P14: accepts profile and platform so the Hermes path can scope the
+        episodic records to the active profile and attribute the reflection to
+        "hermes" instead of the hardcoded "http". Non-Hermes callers keep the
+        original "http" behavior.
+
+        M2/P11: accepts the already-drawn batch_size from the trigger path.
+        Previously _run re-drew random.uniform(config_range) on its own, so a
+        small second draw could fall under min_records and deterministically
+        drop a reflection that the trigger had already decided to fire.
+        """
         import threading
         agent = self
 
         def _run():
             try:
-                batch_size = agent.reflective.config.get("batch_size", 8)
+                batch_size = batch_size if batch_size is not None else agent.reflective.config.get("batch_size", 8)
                 if isinstance(batch_size, (list, tuple)):
                     batch_size = int(random.uniform(batch_size[0], batch_size[1]))
-                records = agent.get_recent_episodic(user_id, count=batch_size)
+                records = agent.get_recent_episodic(user_id, count=batch_size,
+                                                    profile=profile)
                 min_records = agent.reflective.config.get("min_records", 6)
                 if len(records) < min_records:
                     return
@@ -303,16 +345,20 @@ class MainMemoryAgent:
                 llm = get_llm_client()
                 if llm and llm.available:
                     result = agent.reflective.reflect_with_llm(
-                        records, user_id, "http", llm.chat)
+                        records, user_id, platform, llm.chat)
                     if result:
                         logger.info(
                             "Auto-reflection: %d insights (confidence=%.2f)",
                             len(result.key_insights), result.confidence)
+                        meta = {"source": "auto_reflection",
+                                "record_count": len(records)}
+                        if profile:
+                            meta["profile"] = profile
                         if agent._persistence_enabled:
                             agent.db.save_reflection({
                                 "id": f"auto:{user_id}:{int(datetime.now(timezone.utc).timestamp())}",
                                 "user_id": user_id,
-                                "platform": "http",
+                                "platform": platform,
                                 "source_episodic_ids": [r.get("id", "") for r in records],
                                 "reflection": {
                                     "key_insights": result.key_insights,
@@ -323,12 +369,19 @@ class MainMemoryAgent:
                                     "forget_suggestions": result.forget_suggestions,
                                     "confidence": result.confidence,
                                 },
-                                "meta": {"source": "auto_reflection", "record_count": len(records)},
+                                "meta": meta,
                             })
+                        else:
+                            logger.warning(
+                                "Auto-reflection result dropped because persistence was "
+                                "disabled before the background thread ran (user=%s).",
+                                user_id)
             except Exception as e:
                 logger.debug("Auto-reflection skipped: %s", e)
 
-        threading.Thread(target=_run, daemon=True).start()
+        t = threading.Thread(target=_run, daemon=True)
+        self._reflection_thread = t
+        t.start()
 
     @staticmethod
     def _flatten_domain_keywords(domain_entry) -> list:
@@ -1089,6 +1142,11 @@ profile=profile, language=lang)
                                 "project": project, "session_id": session_id or "",
                                 "session_title": session_title, "tags": task_tags,
                                 "category": research_domain,
+                                # P8/A-M1 fix: tag in-memory knowledge with its profile
+                                # so knowledge_agent.search's profile filter isn't a
+                                # silent no-op until a reload. This mirrors the DB row,
+                                # closing the cross-profile in-memory leak.
+                                "profile": profile,
                             }, entry_id=f"{user_id}:{task_id}")
                     if exp_data:
                         # Deterministic id from summary hash — matches experience_agent._summary_index,
@@ -1189,7 +1247,9 @@ profile=profile, language=lang, experience_id=exp_id)
                 if platform == "hermes":
                     self._pending_reflection = True
                 else:
-                    self._trigger_auto_reflection(user_id)
+                    # M2/P11: pass the DRAWN batch_size so _trigger_auto_reflection
+                    # does not re-draw and possibly under-fetch below min_records.
+                    self._trigger_auto_reflection(user_id, batch_size=batch_size)
 
     def _get_adaptive_batch(self, user_id: str) -> int:
         """Compute adaptive reflection batch size based on user activity.

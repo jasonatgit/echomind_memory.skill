@@ -12,13 +12,38 @@ import urllib.request
 import urllib.error
 
 ECHOMIND_URL = "http://127.0.0.1:8005"
-_API_KEY = os.environ.get("ECHOMIND_API_KEY", "") or os.environ.get("ECHOMIND_API_TOKEN", "")
+
+
+def _resolve_api_key() -> str:
+    """Resolve the API key using the SAME precedence as the HTTP server.
+
+    C-H2/P4: previously the gateway read only the ECHOMIND_API_KEY env var at
+    import time, while the server (http_api.verify_api_key) reads live from the
+    config manager's server.api_key. A user who configured server.api_key in
+    echomind_config.yaml but never exported the env var got 403s on every MCP
+    tool. Now the config source wins (matching the server), with env as the
+    fallback for the stdio-gateway-in-a-different-process case.
+
+    It is resolved lazily per request (not cached at import) so hot config
+    reloads behave the same way the server's verify_api_key does.
+    """
+    try:
+        from core.config_manager import get_config_manager
+        cfg_key = get_config_manager().get_section("server").get("api_key", "")
+        if cfg_key:
+            return cfg_key
+    except Exception:
+        # ConfigManager may not be importable/usable in a bare stdio context;
+        # fall through to env.
+        pass
+    return os.environ.get("ECHOMIND_API_KEY", "") or os.environ.get("ECHOMIND_API_TOKEN", "")
 
 
 def _headers(extra=None) -> dict:
     h = {"Content-Type": "application/json"}
-    if _API_KEY:
-        h["X-API-Key"] = _API_KEY
+    key = _resolve_api_key()
+    if key:
+        h["X-API-Key"] = key
     if extra:
         h.update(extra)
     return h

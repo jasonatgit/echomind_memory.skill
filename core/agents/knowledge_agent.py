@@ -80,8 +80,16 @@ class KnowledgeMemoryAgent:
                     entry_tags = []
                 if not any(t in entry_tags for t in tags):
                     continue
-            if domain and (entry.metadata.get("category") or entry.metadata.get("domain")) != domain:
-                continue
+
+            # M3/P12: the previous hard domain filter dropped cross-domain but
+            # relevant knowledge before it could be scored. retrieve_for_task()
+            # calls this with the (often "general") research_domain, so any
+            # domain-mismatched knowledge was silently excluded despite the
+            # "always retrieve knowledge" intent. The scoring layer already
+            # applies a soft domain_boost for same-domain items, so here we
+            # fold domain match into relevance instead of dropping the entry.
+            entry_domain = entry.metadata.get("category") or entry.metadata.get("domain") or ""
+            domain_match = bool(domain) and domain != "general" and entry_domain == domain
 
             # Keyword match scoring
             meta_text = " ".join(
@@ -102,6 +110,8 @@ class KnowledgeMemoryAgent:
                 relevance = min(0.5 + 0.1 * matched, 0.95)
                 if query.lower() in entry.content.lower():
                     relevance = max(relevance, 0.85)
+            if domain_match:
+                relevance = min(relevance + 0.1, 0.98)
 
             results.append({"id": entry.id, "content": entry.content,
                             "metadata": entry.metadata, "relevance": relevance,

@@ -71,6 +71,13 @@ class RLWeightOptimizer:
             self.weights[k] = float(softmax_vals[i])
         self.ema_weights = self.weights.copy()
         self.feedback_buffer: List[FeedbackRecord] = []
+        # B-H1/P6: per-user feedback buckets. The optimizer is a process-wide
+        # singleton shared across users; a single shared buffer let one user's
+        # feedback flush against another user's just-loaded weights (wrong-user
+        # weight updates). Buckets isolate each user. self.feedback_buffer is
+        # kept as a convenience alias mirroring the latest bucket so any code /
+        # tests that read it still see data.
+        self.feedback_buffers: Dict[str, List[FeedbackRecord]] = {}
         self.learning_rate = learning_rate
         self.base_lr = learning_rate
         self.lr_min = 0.005
@@ -275,27 +282,44 @@ class RLWeightOptimizer:
             lr_mult = max(0.3, safe_ratio ** 2) if safe_ratio < 0.8 else 1.0
             feedback.metadata["lr_multiplier"] = lr_mult
 
-        self.feedback_buffer.append(feedback)
+        # B-H1/P6: buffer per user so one user's feedback never flushes against
+        # another user's loaded weights. record_feedback() reloads this user's
+        # weights immediately before add_feedback(), so when a flush triggers,
+        # self.weights is exactly the feedback's owner — applying only that
+        # user's bucket is then correct.
+        uid = feedback.user_id or "default"
+        bucket = self.feedback_buffers.setdefault(uid, [])
+        bucket.append(feedback)
+        self.feedback_buffer = bucket  # keep the legacy alias in sync
         _update_threshold = min(10, self.max_buffer_size)
-        if len(self.feedback_buffer) >= _update_threshold:
-            self._update_weights()
-            self.feedback_buffer = []
-        if len(self.feedback_buffer) > self.max_buffer_size:
-            self.feedback_buffer.pop(0)
+        if len(bucket) >= _update_threshold:
+            self._update_weights(user_id=uid)
+            del self.feedback_buffers[uid]
+            self.feedback_buffer = self.feedback_buffers.setdefault(uid, [])
+        if len(bucket) > self.max_buffer_size:
+            bucket.pop(0)
 
-    def _update_weights(self):
+    def _update_weights(self, user_id: str = None):
+        # B-H1/P6: only flush the given user's buffered records. With user_id
+        # omitted (direct callers / tests), fall back to every buffered record.
+        if user_id is not None:
+            buffer = self.feedback_buffers.get(user_id, [])
+        else:
+            buffer = [fb for fb_list in self.feedback_buffers.values()
+                      for fb in fb_list] or self.feedback_buffer
+
         # Snapshot pre-update weights for divergence tracking
         self.snapshot_policy()
 
         total_reward = 0
-        n = len(self.feedback_buffer)
+        n = len(buffer)
 
         current_lr = self._get_lr()
         self.update_counter += 1
 
         weight_keys = self._WEIGHT_KEYS
         baseline = self._compute_baseline()
-        for fb in self.feedback_buffer:
+        for fb in buffer:
             raw_reward = 1 if fb.user_feedback == "positive" else -1
             advantage = raw_reward - baseline
             lr_mult = fb.metadata.get("lr_multiplier", 1.0)
@@ -350,13 +374,24 @@ class RLWeightOptimizer:
         keeping the previous user's weights — otherwise a user with no saved
         weights inherits the last-loaded user's weights, leaking per-user
         isolation.  Called before retrieve_for_task.
+
+        A non-empty but PARTIAL dict (missing one or more of the 5 dimensions)
+        is completed against _default_weights() first. Previously a partial
+        dict was copied verbatim and every retrieve_for_task would raise
+        KeyError on the missing dimension (B-M1).
         """
         if not weights:
             self.weights = self._default_weights()
             self.ema_weights = self.weights.copy()
             return
-        self.weights = weights.copy()
-        self.ema_weights = weights.copy()
+        # Schema-complete any missing / non-numeric dimensions.
+        defaults = self._default_weights()
+        completed = {}
+        for k in self._WEIGHT_KEYS:
+            v = weights.get(k)
+            completed[k] = float(v) if isinstance(v, (int, float)) else defaults[k]
+        self.weights = completed
+        self.ema_weights = completed.copy()
 
     def _default_weights(self) -> Dict[str, float]:
         """Deterministic default weights from _WEIGHT_SPEC range midpoints,

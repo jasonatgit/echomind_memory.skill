@@ -76,10 +76,14 @@ class ExperienceMemoryAgent:
                            tags: List[str] = None,
                            min_success_rate: float = 0.7, limit: int = 3,
                            profile: str = None) -> List[Dict]:
-        # Use inverted index to quickly locate candidates
+        # Use inverted index to quickly locate candidates.
+        # When user_id is given, ALWAYS restrict to that user's entries (even
+        # if they have none yet -> empty set), otherwise the "no index match"
+        # fallback to all entries leaks another user's experiences into this
+        # user's candidate pool (memory.md export / memory.md profile privacy).
         candidate_ids = set(self.store.keys())
-        if user_id and user_id in self._user_index:
-            candidate_ids &= self._user_index[user_id]
+        if user_id:
+            candidate_ids &= self._user_index.get(user_id, set())
         if task_type and task_type in self._type_index:
             candidate_ids &= self._type_index[task_type]
 
@@ -108,8 +112,25 @@ class ExperienceMemoryAgent:
             # export) silently produced nothing. Treat empty context as "match
             # all candidates" so callers can enumerate the user's experiences.
             q_tokens = adaptive_tokenize(task_context) if task_context else []
-            n_take = 10 if detect_language(task_context) == "zh" else 5
-            if not q_tokens or any(k in entry.summary.lower() for k in q_tokens[:n_take]):
+            lang = detect_language(task_context) if task_context else "en"
+            n_take = 10 if lang == "zh" else 5
+            if not q_tokens:
+                # V8-2 fix (preserved): an empty context means "enumerate all
+                # candidates" (memory.md export path).
+                matched = True
+            else:
+                # M4/P13: the zh tokenizer emits OVERLAPPING 2-3 char n-grams, so
+                # a single bigram substring match (e.g. a common 2-char word)
+                # matches nearly every summary → recall≈all, precision≈0. Require
+                # 2 distinct n-grams to hit for zh; keep the looser "any word"
+                # semantics for English/single-token queries. We count distinct
+                # matching tokens (not occurrences) to avoid over-weighting one
+                # repeated bigram.
+                probe_tokens = [k for k in q_tokens[:n_take] if k]
+                entry_lower = entry.summary.lower()
+                matches = {k for k in probe_tokens if k in entry_lower}
+                matched = len(matches) >= 2 if (lang == "zh" and len(probe_tokens) > 1) else bool(matches)
+            if matched:
                 similar.append({
                     "id": entry.id, "summary": entry.summary,
                     "steps": entry.steps_sequence, "success": entry.success,

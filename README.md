@@ -50,6 +50,9 @@
 | **Epistemic Knowledge Classification** | Every knowledge entry carries an epistemic_mode (user_provided / reasoned / fuzzy / referenced) — distinguishes real user facts from LLM-generated inference, resolved automatically at write time (zero LLM cost) |
 | **Self-Reflection Score & Diagnostics** | Self-assessment via 4-criterion maturity model (situated-awareness, architectural-congruence, analysis-from-architecture, incorporation-and-expansion); real-time system health injected into agent context |
 | **Knowledge Provenance Tracking** | Provenance chain (origin_agent, origin_session_id, origin_turn) stored in knowledge_evolution for memory-supply-chain auditing |
+| **Markdown Memory Dossier** | `export_memory_to_markdown()` generates a complete 9-section .md document (health / profile / knowledge partitioned by epistemic mode / experience / task / context / research / reflection / self-reflection score); zero new dependencies |
+| **Compact Injection Layer** | `<memory-context>` compact Markdown block for LLM context injection (Hermes v0.20+ compatible) |
+| **Hermes v0.20+ Adaptation** | Root `register(ctx)` entry point + `plugin.yaml` `kind: exclusive` — compatible with Hermes v0.13–v0.20 |
 
 ### Retrieval & Optimization (RL-Enhanced Self-Learning)
 | Capability | Description |
@@ -92,7 +95,7 @@ When a query involves the following *domain keywords* or related *semantics*, th
 
 | Framework | Integration Method | Reliability |
 |------|----------|--------|
-| **Hermes-Agent** | MemoryProvider Plugin (automatic, v0.13.0–v0.17.0) | ★★★★★ 100% |
+| **Hermes-Agent** | MemoryProvider Plugin (automatic, v0.13.0–v0.20.0) | ★★★★★ 100% |
 | **OpenClaw** | `skill.yaml` + HTTP API tool invocation | ★★★★☆ LLM-decision |
 | **OpenCode** | CLI + HTTP API or MCP stdio | ★★★★☆ LLM-decision |
 | **Claude Code** | MCP stdio or HTTP API | ★★★★☆ LLM-decision |
@@ -106,6 +109,8 @@ When a query involves the following *domain keywords* or related *semantics*, th
 
 | Date | Title |
 |:-----|:------|
+| 2026-08 | 🧠[EchoMind: Markdown Rendering: Turning AI Memory from a "Black Box" into a Readable Document](blog/echomind-markdown-rendering-article-en.md) |
+| 2026-08 | 🎯[ 在"模型军备竞赛"的火线上，老梁的DSH 的插件化是一场豪赌还是一次押对？](blog/dsh-evolution-analysis.md) |
 | 2026-08 | [EchoMind：Autoreflection-Teaching AI Memory to Think About Itself](blog/echomind-autoreflection-article-en.md) |
 | 2026-07 | [Echomind: Self-Reflective Agent Part 1 — Reflection Engine and Memory Lifecycle](blog/echomind-reflective-agent-part1-article-en.md) |
 | 2026-07 | [Echomind: Self-Reflective Agent Part 2 — Knowledge Evolution and Memory Governance](blog/echomind-reflective-agent-part2-article-en.md) |
@@ -120,6 +125,7 @@ When a query involves the following *domain keywords* or related *semantics*, th
 
 | Version | Highlights |
 |:--------|:-----------|
+| v1.2.9 | *Markdown memory archive (9-section .md), Hermes v0.20 adaptation, cognitive_pos lifecycle.* |
 | v1.2.8 | *Self-reflection absorption : epistemic classification, provenance tracking, architectural self-diagnosis. * |
 | v1.2.7 | *Deep code review: 42 bug fixes + 48 regression tests.* |
 | v1.2.3 | *RL advantage baseline, RCW per-source weighting, knowledge diversity, profile export.* |

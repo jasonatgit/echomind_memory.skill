@@ -1176,13 +1176,17 @@ class SqliteStore:
             placeholders = ",".join("?" * len(sids))
             exp_rows = self._conn.execute(
                 f"SELECT session_id, summary FROM experience_memory "
-                f"WHERE user_id=? AND session_id IN ({placeholders})",
+                f"WHERE user_id=? AND session_id IN ({placeholders}) "
+                f"ORDER BY created_at DESC, id ASC",
                 [user_id] + sids,
             ).fetchall()
             for er in exp_rows:
-                # keep the latest summary for a session (table is ordered by
-                # created_at; last write wins as we overwrite the map)
-                exp_by_sid[er["session_id"]] = er["summary"]
+                # P10 fix: previous code had no ORDER BY, so which row "won" the
+                # map overwrite was unspecified (whichever SQLite returned last).
+                # With explicit DESC ordering, the first row per (user, session)
+                # is the most recent; keep it with first-wins semantics so the
+                # reflection engine is guaranteed the freshest summary.
+                exp_by_sid.setdefault(er["session_id"], er["summary"])
         for rec in records:
             sid = rec.get("session_id", "")
             if sid and sid in exp_by_sid:
@@ -1213,7 +1217,13 @@ class SqliteStore:
         if not table:
             raise ValueError(f"Unknown memory type: {memory_type}")
         id_col = "id"
-        if memory_type == "context":
+        if memory_type == "user":
+            # user_memory's key is (user_id, profile) — there is NO "id" column.
+            # Routing user deletes through `id` would raise
+            # "no such column: id". Match all profiles for the user; callers
+            # that need a single profile should use delete_user_memories(profile=).
+            id_col = "user_id"
+        elif memory_type == "context":
             id_col = "session_id"
         elif memory_type == "transcript":
             id_col = "session_id"

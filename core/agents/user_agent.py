@@ -66,7 +66,26 @@ class UserMemoryAgent:
         mem = self.store[store_key]
         if key in ["preferences", "habits"]:
             if isinstance(value, dict):
-                getattr(mem, key).update(value)
+                # A-H1 fix: keep in-memory structure consistent with what's
+                # persisted. DB save_user() stores preferences in a platform-aware
+                # "_default"-nested format (see sqlite_store._merge_platform_prefs).
+                # A flat .update() here would write new keys at the top level of
+                # that nested dict, where _extract_platform_prefs() discards them
+                # -> newly inferred prefs silently lost. Mirror _merge_platform_prefs
+                # so the in-memory dict stays in the same nested shape.
+                if key == "preferences" and isinstance(mem.preferences, dict):
+                    existing = mem.preferences
+                    # Handle legacy flat in-memory store (pre-v3): normalize once
+                    if "_default" not in existing:
+                        non_default = {k: v for k, v in existing.items()
+                                       if k != "_default"}
+                        existing = {"_default": non_default} if non_default else {"_default": {}}
+                        mem.preferences = existing
+                    existing["_default"].update(value)
+                    if platform and platform != "_default":
+                        existing.setdefault(platform, {}).update(value)
+                else:
+                    getattr(mem, key).update(value)
             else:
                 logger.warning("update(%s) expects dict, got %s", key, type(value).__name__)
                 return False
