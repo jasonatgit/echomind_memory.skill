@@ -416,6 +416,11 @@ class SqliteStore:
                 CREATE INDEX IF NOT EXISTS idx_research_user ON research_papers(user_id);
                 CREATE INDEX IF NOT EXISTS idx_notes_user ON research_notes(user_id);
                 CREATE INDEX IF NOT EXISTS idx_session_transcripts_user ON session_transcripts(user_id);
+                -- P6-A: missing join/lookup indexes (idempotent)
+                CREATE INDEX IF NOT EXISTS idx_knowledge_content ON knowledge_memory(content);
+                CREATE INDEX IF NOT EXISTS idx_task_user_created ON task_memory(user_id, created_at);
+                CREATE INDEX IF NOT EXISTS idx_experience_user_created ON experience_memory(user_id, created_at);
+                CREATE INDEX IF NOT EXISTS idx_reflections_user ON reflections(user_id, created_at);
             """)
             self._maybe_commit()
             self._migrate_existing_tables()
