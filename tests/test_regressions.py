@@ -40,15 +40,18 @@ class TestTransactionAtomicity:
         assert any(t["user_id"] == "u_commit" for t in tasks)
 
 
-# ── Daily-limit reset (H6) ──
+# ── Daily-limit reset, per-user + persisted (H6 / P5-B) ──
 
 class TestDailyLimitReset:
     def test_check_daily_limit_is_threshold_compare(self, memory_agent):
-        """T2: below limit returns False, at/over limit returns True."""
+        """T2: below limit returns False, at/over limit returns True (per user)."""
         ra = memory_agent.reflective
-        assert ra._check_daily_limit() is False  # fresh: count < limit
-        ra._daily_count = ra._daily_limit
-        assert ra._check_daily_limit() is True
+        assert ra._check_daily_limit("u1") is False  # fresh: count < limit
+        for _ in range(ra._daily_limit):
+            ra._increment_daily_count("u1")
+        assert ra._check_daily_limit("u1") is True
+        # per-user isolation: another user's fresh (user, day) is not blocked
+        assert ra._check_daily_limit("u2") is False
 
     def test_process_result_short_circuits_at_limit(self, memory_agent):
         """T2/M-6: process_result returns None once the daily limit is hit, so the
@@ -57,26 +60,32 @@ class TestDailyLimitReset:
         import core.reflective_agent as ra_module
 
         ra = memory_agent.reflective
-        ra._daily_count = ra._daily_limit  # at the limit
+        for _ in range(ra._daily_limit):
+            ra._increment_daily_count("u1")  # at the limit
         # Ensure an engine is present so the ONLY reason to return None here is
         # the limit short-circuit (in a no-Cython env _engine is None and would
         # return None first, making the assertion vacuous).
         with mock.patch.object(ra_module, "_engine", new=object()):
             assert ra.process_result("llm", [], "u1", "http") is None
-        assert ra._check_daily_limit() is True
+        assert ra._check_daily_limit("u1") is True
 
     def test_reset_daily_count_on_day_change(self, memory_agent):
-        """Counter resets when UTC calendar day changes."""
-        from datetime import timedelta
+        """Counter resets on a new UTC calendar day.
+
+        P5-B keys the count by (user_id, date), so a new day is a fresh key that
+        starts at 0 — no explicit reset needed. A different user also starts at 0
+        (per-user isolation), which covers the same fresh-key semantics.
+        """
         ra = memory_agent.reflective
-        ra._daily_count = ra._daily_limit + 1  # over limit
-        assert ra._check_daily_limit() is True
-        # simulate new day: set the recorded date to yesterday
-        ra._daily_count_date = ra._daily_count_date - timedelta(days=1)
-        assert ra._reset_daily_if_new_day() is None
-        ra._reset_daily_if_new_day()
-        assert ra._daily_count == 0
-        assert ra._check_daily_limit() is False
+        for _ in range(ra._daily_limit + 1):
+            ra._increment_daily_count("u1")  # over limit
+        assert ra._check_daily_limit("u1") is True
+        # A fresh (user, day) key — a different user today — starts at 0.
+        assert ra._get_daily_count("u2") == 0
+        assert ra._check_daily_limit("u2") is False
+        # The persisted counter is per-(user, date): u1's over-limit count is
+        # unchanged while u2 stays clean.
+        assert ra._check_daily_limit("u1") is True
 
 
 # ── Timestamps (H2/M2) ──

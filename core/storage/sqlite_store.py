@@ -400,6 +400,16 @@ class SqliteStore:
                     updated_at TEXT DEFAULT (datetime('now'))
                 );
 
+                -- 10. Reflection daily counters: per-(user, date) reflection quota
+                -- consumed by the daily limit. Persisted so the limit survives
+                -- process restarts and is isolated per user (P5-B).
+                CREATE TABLE IF NOT EXISTS reflection_daily_count (
+                    user_id TEXT NOT NULL,
+                    date TEXT NOT NULL,
+                    count INTEGER NOT NULL DEFAULT 0,
+                    PRIMARY KEY (user_id, date)
+                );
+
                 -- index
                 CREATE INDEX IF NOT EXISTS idx_task_user ON task_memory(user_id);
                 CREATE INDEX IF NOT EXISTS idx_task_project ON task_memory(project);
@@ -1156,6 +1166,39 @@ class SqliteStore:
                 ),
             )
             self._maybe_commit()
+
+    # ── Daily reflection quota (P5-B): per-(user, date) counters ──
+
+    @with_retry_on_busy()
+    @_require_conn
+    def get_daily_reflection_count(self, user_id: str, date: str) -> int:
+        """Return how many reflections this user has consumed on the given UTC
+        date (ISO yyyy-mm-dd). Missing row → 0."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT count FROM reflection_daily_count WHERE user_id=? AND date=?",
+                (user_id, date),
+            ).fetchone()
+            return int(row["count"]) if row else 0
+
+    @with_retry_on_busy()
+    @_require_conn
+    def increment_daily_reflection_count(self, user_id: str, date: str) -> int:
+        """Atomically increment and return the user's reflection count for the
+        given UTC date. The row is created on first use within the day."""
+        with self._lock:
+            self._conn.execute(
+                """INSERT INTO reflection_daily_count (user_id, date, count)
+                   VALUES (?, ?, 1)
+                   ON CONFLICT(user_id, date) DO UPDATE SET count = count + 1""",
+                (user_id, date),
+            )
+            self._maybe_commit()
+            row = self._conn.execute(
+                "SELECT count FROM reflection_daily_count WHERE user_id=? AND date=?",
+                (user_id, date),
+            ).fetchone()
+            return int(row["count"]) if row else 1
 
     @_require_conn
     def get_recent_episodic(self, user_id: str, count: int = 8,
