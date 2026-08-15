@@ -64,11 +64,11 @@ class RLWeightOptimizer:
                 self.weights[key] = random.uniform(float(cfg_val[0]), float(cfg_val[1]))
             else:
                 self.weights[key] = float(cfg_val)
-        init_vals = np.array([self.weights.get(k, 0.0) for k in self._WEIGHT_KEYS])
-        exp_vals = np.exp(init_vals - np.max(init_vals))
-        softmax_vals = exp_vals / np.sum(exp_vals)
-        for i, k in enumerate(self._WEIGHT_KEYS):
-            self.weights[k] = float(softmax_vals[i])
+        # P3-B root fix: previously the midpoints above were softmax-normalized
+        # here, which shrank the dynamic range and drove relevance below its
+        # _WEIGHT_SPEC lower bound (0.2429 < 0.30). The midpoints already sum to
+        # 1.0 and sit inside their ranges, so no softmax is applied. Explicitly
+        # provided scalar weights are honored as-is.
         self.ema_weights = self.weights.copy()
         self.feedback_buffer: List[FeedbackRecord] = []
         # B-H1/P6: per-user feedback buckets. The optimizer is a process-wide
@@ -394,13 +394,17 @@ class RLWeightOptimizer:
         self.ema_weights = completed.copy()
 
     def _default_weights(self) -> Dict[str, float]:
-        """Deterministic default weights from _WEIGHT_SPEC range midpoints,
-        softmax-normalized (matches the invariant used by __init__/_update_weights)."""
-        mids = [(spec["range"][0] + spec["range"][1]) / 2.0 for spec in self._WEIGHT_SPEC.values()]
-        arr = np.array(mids, dtype=float)
-        exp = np.exp(arr - np.max(arr))
-        soft = exp / np.sum(exp)
-        return {k: float(soft[i]) for i, k in enumerate(self._WEIGHT_KEYS)}
+        """Deterministic default weights from _WEIGHT_SPEC range midpoints.
+
+        P3-B root fix: previously these were softmax-normalized, which shrank
+        the dynamic range and pushed relevance (midpoint 0.40) down to 0.2429 —
+        below its own _WEIGHT_SPEC lower bound of 0.30 (range invariant broken
+        for every fresh user). The midpoints already sum to 1.0 (0.40+0.20+
+        0.15+0.15+0.10) and each sits inside its range, so no extra softmax is
+        needed (and it actively violated the spec).
+        """
+        return {k: (spec["range"][0] + spec["range"][1]) / 2.0
+                for k, spec in self._WEIGHT_SPEC.items()}
 
     def get_current_weights(self) -> Dict[str, float]:
         return self.ema_weights.copy()
@@ -462,10 +466,18 @@ class RLWeightOptimizer:
             self.weights[k] = max(lo, min(hi, self.weights[k]))
 
         # Restore the sum-to-1 invariant that _update_weights maintains.
+        # P3-B fix: the previous order clamped first (above) then linearly
+        # normalized `/= total`, which re-scales every dimension and can push a
+        # clamped weight back outside its _WEIGHT_SPEC range (reproduced:
+        # relevance dropped to 0.292 < 0.30). Normalize, then clamp again so the
+        # range invariant holds after normalization.
         total = sum(self.weights[k] for k in self._WEIGHT_KEYS)
         if total > 0:
             for k in self._WEIGHT_KEYS:
                 self.weights[k] /= total
+            for k in self._WEIGHT_KEYS:
+                lo, hi = self._WEIGHT_SPEC[k]["range"]
+                self.weights[k] = max(lo, min(hi, self.weights[k]))
 
         # EMA smooth (no softmax — it would cancel the differential decay)
         for k in self._WEIGHT_KEYS:
