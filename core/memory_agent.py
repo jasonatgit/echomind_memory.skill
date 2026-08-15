@@ -1616,11 +1616,31 @@ profile=profile, language=lang, experience_id=exp_id)
 
     @staticmethod
     def _jaccard_similarity(text1: str, text2: str) -> float:
-        """Jaccard similarity on word tokens — fast, zero-LLM approx."""
+        """Jaccard similarity on tokens — fast, zero-LLM approx.
+
+        P8 fix: the previous `text.lower().split()` was whitespace-based, so
+        for CJK text (no spaces) it produced a single giant token per string
+        and Jaccard≈0 — silently disabling knowledge-evolution detection for
+        Chinese. Now tokenize via lang_utils (which handles EN words and ZH
+        char n-grams) and, for CJK, additionally union in character bigrams
+        so short overlapping phrases still score non-zero.
+        """
         if not text1 or not text2:
             return 0.0
-        set1 = set(text1.lower().split())
-        set2 = set(text2.lower().split())
+        from .lang_utils import tokenize as _tok, detect_language as _det
+
+        def _tokens(t: str) -> set:
+            lang = _det(t)
+            toks = set(_tok(t, lang)) if t.strip() else set()
+            if lang == "zh":
+                import re as _re
+                segs = _re.findall(r"[\u4e00-\u9fff]+", t.lower())
+                big = {s[i:i+2] for s in segs for i in range(len(s) - 1) if len(s) >= 2}
+                toks |= big
+            return toks
+
+        set1 = _tokens(text1)
+        set2 = _tokens(text2)
         inter = len(set1 & set2)
         union = len(set1 | set2)
         return inter / union if union > 0 else 0.0
