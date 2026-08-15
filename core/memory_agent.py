@@ -47,6 +47,12 @@ class MainMemoryAgent:
     _SCORE_USER_PREF_BOOST = 0.2
     _SCORE_USER_HABITS_MULT = 0.8
     _SCORE_EXPERIENCE_BASE = 0.6
+    # P4: frequency normalization cap — experience task frequency is unbounded
+    # and multiplied by weights["frequency"], letting a hot task dominate
+    # arbitrarily. Normalize log1p(freq)/log1p(cap) to [0,1] (config-overridable,
+    # default 20 uses: freq 20 ↦ log1p(20)/log1p(20)=1.0; no config key needed,
+    # cfg.get falls back to this class default).
+    _SCORE_EXPERIENCE_FREQ_MAX = 20
     _SCORE_TASK_PROGRESS = 0.9
     _SCORE_TASK_HISTORY = 0.6
     _SCORE_CONTEXT_BASE = 0.7
@@ -656,7 +662,15 @@ class MainMemoryAgent:
                     if freshness < self._FRESHNESS_ARCHIVE_THRESHOLD:
                         continue
                     recency_mult = self.cfg.get("retrieval", "recency_multiplier", 0.5)
-                    score = (self._SCORE_EXPERIENCE_BASE * weights["relevance"] + mem["frequency"] * weights["frequency"] + recency_mult * weights["recency"]) * freshness
+                    # P4: unify experience relevance (use find_similar_tasks'
+                    # relevance instead of the constant _SCORE_EXPERIENCE_BASE,
+                    # which ignored it) and normalize raw frequency via log1p so
+                    # a hot task can't dominate the score unboundedly.
+                    import math
+                    exp_rel = mem.get("relevance", self._SCORE_EXPERIENCE_BASE)
+                    freq_cap = self.cfg.get("retrieval", "experience_freq_max", self._SCORE_EXPERIENCE_FREQ_MAX)
+                    freq_n = math.log1p(mem.get("frequency", 0)) / max(1.0, math.log1p(freq_cap))
+                    score = (exp_rel * weights["relevance"] + freq_n * weights["frequency"] + recency_mult * weights["recency"]) * freshness
                     task_status = mem.get("metadata", {}).get("task_status", "")
                     if task_status == "failed": score *= self._SCORE_FAILED_MULT
                     elif task_status == "completed": score *= self._SCORE_COMPLETED_MULT

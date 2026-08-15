@@ -153,5 +153,8 @@ class ExperienceMemoryAgent:
                     "created_at": entry.created_at.isoformat() if entry.created_at else "",
                     "last_access_at": entry.last_access_at.isoformat() if hasattr(entry, 'last_access_at') and entry.last_access_at else "",
                 })
-        similar.sort(key=lambda x: x["frequency"], reverse=True)
+        # P4: rank by relevance (which already folds in frequency via
+        # min(0.9, 0.3+0.1*freq)) instead of raw frequency, so a "related but
+        # lower-frequency" task isn't starved by an unrelated hot task.
+        similar.sort(key=lambda x: x["relevance"], reverse=True)
         return similar[:limit]
