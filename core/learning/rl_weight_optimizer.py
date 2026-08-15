@@ -28,6 +28,12 @@ class RLWeightOptimizer:
         "trust_score":       {"range": [0.05, 0.15], "default": [0.05, 0.15]},
     }
     _WEIGHT_KEYS = ["relevance", "recency", "frequency", "explicit_feedback", "trust_score"]
+    # P3-A: normalization invariants differ per method. _update_weights
+    # renormalizes via softmax; decay_all uses linear (sum=1) normalization
+    # because softmax would cancel its differential decay. These tags make the
+    # convention explicit so a future change doesn't silently mix the two.
+    _WEIGHT_INVARIANT_UPDATE = "softmax"
+    _WEIGHT_INVARIANT_DECAY = "linear"
     _TASK_FEATURE_COUNT = 5
     # RCW mapping: which source types influence each weight dimension.
     _WEIGHT_SOURCE_MAP = {
@@ -94,6 +100,10 @@ class RLWeightOptimizer:
                                "task_history", "research", "context"]
         self.policy_snapshots: List[Dict] = []
         self.policy_snapshot_every = 100
+        # P3-A: periodic anti-divergence pull-back. Tracks the last feedback
+        # count at which decay_all() was wired into _update_weights, so the
+        # pull-back runs once per snapshot window rather than on every flush.
+        self._last_decay_fb = 0
         self.kpop_threshold = kpop_threshold
         self.kpop_max_extra = kpop_max_extra
 
@@ -355,6 +365,23 @@ class RLWeightOptimizer:
             )
 
         self._cumulative_feedback_count += n
+
+        # P3-A: periodic anti-divergence pull-back. Once per snapshot window
+        # (every policy_snapshot_every feedbacks) and only when we have a
+        # prior snapshot to compare against, run decay_all(). It is internally
+        # gated on divergence vs the snapshot (kpop_threshold) so a policy that
+        # is holding steady decays ~nothing; this only reins in genuine drift.
+        if (
+            len(self.policy_snapshots) >= 2
+            and self._cumulative_feedback_count - self._last_decay_fb
+            >= self.policy_snapshot_every
+        ):
+            try:
+                self.decay_all()
+                self._last_decay_fb = self._cumulative_feedback_count
+            except Exception:
+                logger.exception("[RL] periodic decay_all failed")
+
         self.history.append({
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "feedback_count": n,
