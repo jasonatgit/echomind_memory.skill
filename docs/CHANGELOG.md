@@ -1,5 +1,21 @@
 # EchoMind Changelog
 
+## v1.2.10 — Algorithm Optimization Pass (2026-08-15)
+
+Algorithmic pass closing the OSS reflection loop and hardening the RL learning path with per-user isolation.
+
+| Area | Change |
+|------|--------|
+| **Reflection loop (OSS)** | `_reflective_fallback.py` implements the 4 `_merge_*`/`_save_reflection` stubs + consumes `_process_reflection` output (P1-A); Pro `.pyx` adds the positive `_reinforce_weights` arm symmetric to `decay_all`, plus a few-shot prompt-build bug fix (P1-B) |
+| **RL credit assignment** | `_update_weights` credits only dimensions whose mapped sources actually appeared in the feedback (P2-B) — previously softmax + M-4 neutral fallback diluted every positive feedback and no dimension's share ever rose |
+| **Normalization invariants** | Declared `_WEIGHT_INVARIANT_UPDATE/DECAY = "linear"` + wired periodic anti-divergence `decay_all` into `_update_weights` (P3-A); `decay_all` normalize-then-clamp order fixed (range invariant) |
+| **Daily limit per-user + durable** | Daily reflection limit is now per `(user_id, date)` and persisted to SQLite (`reflection_daily_count`), surviving restarts (P5-B) |
+| **RL meta-state per-user** | LR/exploration schedule, history, divergence snapshots, cumulative counters keyed per user — one user's feedback no longer advances another's trajectory (P5-A) |
+| **Storage indexes** | Added idempotent join/lookup indexes (knowledge content, task/experience by user+created, reflections by user+created) (P6-A) |
+
+**Tests:** 80 passed (including new daily-limit, meta-state isolation, reflection-loop regression tests); 2 pre-existing collection errors out of scope.
+
+---
 ## v1.2.9 — Markdown Rendering & Hermes v0.20 Adaptation (2026-08-12)
 
 | Feature | Description |

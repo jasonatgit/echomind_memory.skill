@@ -1,5 +1,21 @@
 # EchoMind 更新日志
 
+## v1.2.10 — 算法优化轮 (2026-08-15)
+
+算法优化轮：补齐 OSS 反思闭环，并强化 RL 学习路径的按用户隔离。
+
+| 领域 | 改动 |
+|------|------|
+| **反思闭环 (OSS)** | `_reflective_fallback.py` 实现 4 个 `_merge_*`/`_save_reflection` 桩并消费 `_process_reflection` 产物 (P1-A)；Pro `.pyx` 新增与 `decay_all` 对称的正向 `_reinforce_weights` 臂，并修复 few-shot 提示词构建 bug (P1-B) |
+| **RL 信用分配** | `_update_weights` 只对 mapped 源真实出现的维度给予方向性增量 (P2-B)——此前 softmax + M-4 中性回退会稀释每次正向反馈，任何维度份额都无法有效抬升 |
+| **归一化不变量** | 声明 `_WEIGHT_INVARIANT_UPDATE/DECAY = "linear"` 并把周期性反发散 `decay_all` 接入 `_update_weights` (P3-A)；修复 `decay_all` 先归一化后 clamp 的顺序（range 不变量） |
+| **日限额 per-user + 持久化** | 反思日限改为按 `(user_id, 日期)` 计并持久化到 SQLite（`reflection_daily_count`），重启后仍生效 (P5-B) |
+| **RL meta-state per-user** | LR/探索调度、history、发散快照、累计计数全部按用户键控——一个用户的反馈不再推进另一个用户的学习轨迹 (P5-A) |
+| **存储索引** | 补幂等连接/查找索引（knowledge 内容、task/experience 按 user+created、reflections 按 user+created）(P6-A) |
+
+**测试：** 80 通过（含新增日限、meta-state 隔离、反思闭环回归测试）；2 个既有收集错误不在范围内。
+
+---
 ## v1.2.9 — Markdown 呈现与 Hermes v0.20 适配 (2026-08-12)
 
 | 功能 | 说明 |

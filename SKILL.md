@@ -1,6 +1,6 @@
 ---
 name: echomind-memory
-version: "1.2.9"
+version: "1.2.10"
 description: EchoMind Memory — AI 持久记忆系统。支持 Hermes、OpenCode、OpenClaw、Claude Code 等多平台。6 种记忆类型 + reflective agent + self-reflection (epistemic mode, provenance, self-diagnosis)。
 category: software-development
 platforms:
