@@ -562,7 +562,7 @@ class MainMemoryAgent:
         # Load per-user RL weights for isolated scoring
         if self._persistence_enabled:
             user_weights = self.db.load_rl_weights(user_id, profile=profile)
-            self.rl_optimizer.load_weights_for_user(user_weights)
+            self.rl_optimizer.load_weights_for_user(user_weights, user_id=user_id)
 
         scored = self._compute_importance(retrieved, task_context, user_id, platform, features)
         # P0-2: Group-by-domain sampling — ensure knowledge diversity in top-8
@@ -585,7 +585,7 @@ class MainMemoryAgent:
             "content_language": prefs.get("language", ""),
             "preferred_depth": prefs.get("depth", ""),
             "preferred_tone": prefs.get("tone", ""),
-            "success_rate_estimate": round(self._estimate_success_rate(), 3),
+            "success_rate_estimate": round(self._estimate_success_rate(user_id=user_id), 3),
             "rl_state": {
                 "relevance_weight": round(cw.get("relevance", 0.5), 3),
                 "recency_weight": round(cw.get("recency", 0.5), 3),
@@ -1442,13 +1442,13 @@ profile=profile, language=lang, experience_id=exp_id)
             history = history[-max_history:]
         self.user_agent.replace_history(user_id, history, profile=profile)
 
-    def _estimate_success_rate(self, window: int = 50) -> float:
-        """Estimate recent success rate from RL history.
+    def _estimate_success_rate(self, window: int = 50, user_id: str = None) -> float:
+        """Estimate recent success rate from RL history (per-user, P5-A).
 
         Maps avg_reward (range -1..+1) to 0..1 success rate.
         Returns 0.5 neutral when no history available.
         """
-        history = self.rl_optimizer.history[-window:]
+        history = self.rl_optimizer.get_history(user_id=user_id)[-window:]
         if not history:
             return 0.5
         return sum(0.5 + h["avg_reward"] / 2 for h in history) / len(history)
@@ -1470,7 +1470,7 @@ profile=profile, language=lang, experience_id=exp_id)
         # update and persist the wrong user's weights.
         if self._persistence_enabled:
             user_weights = self.db.load_rl_weights(user_id, profile=profile)
-            self.rl_optimizer.load_weights_for_user(user_weights)
+            self.rl_optimizer.load_weights_for_user(user_weights, user_id=user_id)
         cw = self.rl_optimizer.get_current_weights()
         feedback_record = FeedbackRecord(
             user_id=user_id, task_id=task_id,

@@ -91,23 +91,101 @@ class RLWeightOptimizer:
         self.lr_min = 0.005
         self.lr_max_steps = 1000
         self.decay_factor = decay_factor
-        self.update_counter = 0
         self.max_buffer_size = max_buffer_size
-        self.history: List[Dict] = []
-        self._cumulative_feedback_count = 0
+        # P5-A: per-user learning meta-state. The temporal RL state — LR/
+        # exploration schedule position, cumulative feedback count, the
+        # periodic-decay marker, the learning history and the divergence
+        # snapshots — was a single set of scalars/lists shared across ALL
+        # users (the optimizer is a process-wide singleton). One user's
+        # feedback stream therefore advanced every other user's LR schedule,
+        # exploration phase and snapshot window. Keying them by user keeps each
+        # user's learning trajectory isolated.
+        #
+        # _active_user_id is the cursor for "whose weights are currently
+        # loaded". It is set whenever load_weights_for_user() or
+        # _update_weights() knows a user, so the public scalar/list attributes
+        # below route to that user — keeping the no-user_id public API
+        # (decay_all, snapshot_policy, get_history) and the reflection path
+        # working unchanged on the current user's state.
+        self._meta: Dict[str, dict] = {}
+        self._history_map: Dict[str, List[Dict]] = {}
+        self._policy_snapshots_map: Dict[str, List[Dict]] = {}
+        self._active_user_id = "default"
         self.epsilon_start = 0.1
         self.epsilon_end = 0.01
-        self.epsilon_step = 0
         self._source_order = ["user", "knowledge", "experience", "task_progress",
                                "task_history", "research", "context"]
-        self.policy_snapshots: List[Dict] = []
         self.policy_snapshot_every = 100
-        # P3-A: periodic anti-divergence pull-back. Tracks the last feedback
-        # count at which decay_all() was wired into _update_weights, so the
-        # pull-back runs once per snapshot window rather than on every flush.
-        self._last_decay_fb = 0
         self.kpop_threshold = kpop_threshold
         self.kpop_max_extra = kpop_max_extra
+
+    # ── P5-A: per-user meta-state accessors ──────────────────────────
+
+    def _meta_for(self, user_id: str) -> dict:
+        """Per-user temporal RL meta-state, lazily initialized."""
+        uid = user_id or self._active_user_id
+        m = self._meta.get(uid)
+        if m is None:
+            m = {
+                "update_counter": 0,
+                "epsilon_step": 0,
+                "cumulative_feedback_count": 0,
+                "last_decay_fb": 0,
+            }
+            self._meta[uid] = m
+        return m
+
+    def _history_for(self, user_id: str) -> List[Dict]:
+        uid = user_id or self._active_user_id
+        if self._history_map.get(uid) is None:
+            self._history_map[uid] = []
+        return self._history_map[uid]
+
+    def _snapshots_for(self, user_id: str) -> List[Dict]:
+        uid = user_id or self._active_user_id
+        if self._policy_snapshots_map.get(uid) is None:
+            self._policy_snapshots_map[uid] = []
+        return self._policy_snapshots_map[uid]
+
+    @property
+    def update_counter(self) -> int:
+        return self._meta_for(self._active_user_id)["update_counter"]
+
+    @update_counter.setter
+    def update_counter(self, v: int):
+        self._meta_for(self._active_user_id)["update_counter"] = int(v)
+
+    @property
+    def epsilon_step(self) -> int:
+        return self._meta_for(self._active_user_id)["epsilon_step"]
+
+    @epsilon_step.setter
+    def epsilon_step(self, v: int):
+        self._meta_for(self._active_user_id)["epsilon_step"] = int(v)
+
+    @property
+    def _cumulative_feedback_count(self) -> int:
+        return self._meta_for(self._active_user_id)["cumulative_feedback_count"]
+
+    @_cumulative_feedback_count.setter
+    def _cumulative_feedback_count(self, v: int):
+        self._meta_for(self._active_user_id)["cumulative_feedback_count"] = int(v)
+
+    @property
+    def _last_decay_fb(self) -> int:
+        return self._meta_for(self._active_user_id)["last_decay_fb"]
+
+    @_last_decay_fb.setter
+    def _last_decay_fb(self, v: int):
+        self._meta_for(self._active_user_id)["last_decay_fb"] = int(v)
+
+    @property
+    def history(self) -> List[Dict]:
+        return self._history_for(self._active_user_id)
+
+    @property
+    def policy_snapshots(self) -> List[Dict]:
+        return self._snapshots_for(self._active_user_id)
 
     def snapshot_policy(self):
         """Record pre-update policy snapshot for KPop divergence tracking."""
@@ -366,6 +444,11 @@ class RLWeightOptimizer:
             buffer = [fb for fb_list in self.feedback_buffers.values()
                       for fb in fb_list] or self.feedback_buffer
 
+        # P5-A: route all meta-state (LR/exploration schedule, history,
+        # snapshots, cumulative counters) to this user so the update advances
+        # only the current user's learning trajectory.
+        self._active_user_id = user_id or "default"
+
         # Snapshot pre-update weights for divergence tracking
         self.snapshot_policy()
 
@@ -462,7 +545,8 @@ class RLWeightOptimizer:
         if len(self.history) > 100:
             self.history.pop(0)
 
-    def load_weights_for_user(self, weights: Dict[str, float] = None):
+    def load_weights_for_user(self, weights: Dict[str, float] = None,
+                              user_id: str = None):
         """Load per-user weights into the optimizer.
 
         If weights is None or empty, reset to deterministic defaults built from
@@ -475,7 +559,13 @@ class RLWeightOptimizer:
         is completed against _default_weights() first. Previously a partial
         dict was copied verbatim and every retrieve_for_task would raise
         KeyError on the missing dimension (B-M1).
+
+        P5-A: when user_id is given (the caller knows whose weights these are),
+        it becomes the active user, so the read-through meta-state (LR/
+        exploration schedule, history, snapshots) follows this user.
         """
+        if user_id is not None:
+            self._active_user_id = user_id or "default"
         if not weights:
             self.weights = self._default_weights()
             self.ema_weights = self.weights.copy()
@@ -583,5 +673,6 @@ class RLWeightOptimizer:
             )
         logger.info(f"[RL] decay_all: base_factor={effective_base:.3f} (div={divergence:.2f}, extra={extra:.3f})")
 
-    def get_history(self) -> List[Dict]:
-        return self.history.copy()
+    def get_history(self, user_id: str = None) -> List[Dict]:
+        """Learning history for a user (defaults to the active user)."""
+        return [h.copy() for h in self._history_for(user_id or self._active_user_id)]

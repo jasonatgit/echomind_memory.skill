@@ -161,3 +161,40 @@ def test_predict_score_range():
     state = opt.extract_state({}, [{"source": "knowledge", "relevance": 0.5}] * 8)
     score = opt.predict_score(state)
     assert np.isfinite(score)
+
+
+# ── P5-A: per-user learning meta-state isolation ───────────────────
+
+def test_meta_state_isolated_per_user():
+    """One user's feedback may advance only their own LR/exploration schedule,
+    history and snapshots — never the other user's (process-wide) counter."""
+    opt = _optimizer()
+    # _feedback() stamps user_id="u1", so these 10 feedbacks drive user u1.
+    for _ in range(10):
+        opt.add_feedback(_feedback("positive"))
+    # u1 did one full flush → 1 update; u2 (untouched) must be pristine.
+    assert opt._meta_for("u1")["update_counter"] == 1
+    assert len(opt._history_for("u1")) == 1
+    assert opt._meta_for("u2")["update_counter"] == 0
+    assert opt._meta_for("u2")["epsilon_step"] == 0
+    assert opt._history_for("u2") == []
+    assert opt._snapshots_for("u2") == []
+    # u1's state is untouched while inspecting u2.
+    assert opt._meta_for("u1")["update_counter"] == 1
+
+
+def test_public_meta_attrs_follow_active_user():
+    """The read-through scalars/lists (update_counter, history, ...) reflect
+    whichever user's weights are currently loaded."""
+    opt = _optimizer()
+    for _ in range(10):
+        opt.add_feedback(_feedback("positive"))  # user_id="u1"
+    opt.load_weights_for_user({}, user_id="u2")
+    assert opt.update_counter == 0  # pristine u2
+    assert opt.history == []
+    opt.load_weights_for_user({}, user_id="u1")
+    assert opt.update_counter == 1  # u1's advanced counter
+    assert len(opt.history) == 1
+    # get_history is user-scoped too.
+    assert opt.get_history(user_id="u2") == []
+    assert len(opt.get_history(user_id="u1")) == 1
