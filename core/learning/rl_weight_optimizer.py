@@ -28,11 +28,13 @@ class RLWeightOptimizer:
         "trust_score":       {"range": [0.05, 0.15], "default": [0.05, 0.15]},
     }
     _WEIGHT_KEYS = ["relevance", "recency", "frequency", "explicit_feedback", "trust_score"]
-    # P3-A: normalization invariants differ per method. _update_weights
-    # renormalizes via softmax; decay_all uses linear (sum=1) normalization
-    # because softmax would cancel its differential decay. These tags make the
-    # convention explicit so a future change doesn't silently mix the two.
-    _WEIGHT_INVARIANT_UPDATE = "softmax"
+    # P3-A/P2-B: both _update_weights and decay_all now use the same linear
+    # (sum=1) + clamp normalization convention, aligned with the absolute
+    # _WEIGHT_SPEC range semantics. This tag makes the shared invariant
+    # explicit; softmax is intentionally NOT used because it compresses an
+    # already-high dimension (the old divergence between the two methods / the
+    # failure of a mapped dimension to rise above its default).
+    _WEIGHT_INVARIANT_UPDATE = "linear"
     _WEIGHT_INVARIANT_DECAY = "linear"
     _TASK_FEATURE_COUNT = 5
     # RCW mapping: which source types influence each weight dimension.
@@ -177,21 +179,67 @@ class RLWeightOptimizer:
         total = sum(source_scores.values()) + 1e-8
         normalized = {s: v / total for s, v in source_scores.items()}
 
+        return self._credit_assignment(fb)[0]
+
+    def _credit_assignment(self, fb: FeedbackRecord):
+        """Return (rcw, present_set) for correct credit assignment (P2-B).
+
+        rcw:        {weight_key: multiplier} non-negative (same as
+                    _compute_rcw_advantages — M-4 keeps every dimension > 0 so a
+                    dimension is never frozen at a permanently-zero delta).
+        present_set: dimensions whose mapped source(s) ACTUALLY appeared in the
+                    feedback's memories. _update_weights credits only these
+                    dimensions with the feedback's directional delta; a
+                    dimension whose sources are absent does NOT ride along on a
+                    positive feedback (previously every dimension got a positive
+                    delta via the M-4 neutral fallback, so after normalization
+                    the mapped dimension's relative share never rose — the RL
+                    weights never truly drove the ranking they were trained on).
+        """
+        source_scores = {}
+        source_counts = {}
+        for mem in fb.retrieved_memories[:8]:
+            source = mem.get("source", "context")
+            rel = mem.get("relevance", 0.5)
+            meta = mem.get("metadata", {})
+            if isinstance(meta, dict) and "trust_score" in meta:
+                trust = meta["trust_score"]
+            elif "trust_score" in mem:
+                trust = mem["trust_score"]
+            else:
+                trust = 0.5
+            source_scores.setdefault(source, 0.0)
+            source_scores[source] += rel * trust
+            source_counts.setdefault(source, 0)
+            source_counts[source] += 1
+        present_sources = set(source_scores.keys())
+        if not source_scores:
+            return {k: 1.0 for k in self._WEIGHT_KEYS}, set()
+
+        for s in source_scores:
+            source_scores[s] /= max(1, source_counts[s])
+        total = sum(source_scores.values()) + 1e-8
+        normalized = {s: v / total for s, v in source_scores.items()}
+
         result = {}
+        present_set = set()
         for wk in self._WEIGHT_KEYS:
             mapped = self._WEIGHT_SOURCE_MAP.get(wk, [])
             if not mapped:
                 result[wk] = 1.0
                 continue
+            if present_sources.intersection(mapped):
+                present_set.add(wk)
             values = [normalized.get(s, 0.0) for s in mapped]
             avg = sum(values) / len(values)
             # M-4 fix: if no mapped source for this weight dimension appeared in
             # the feedback's memories, fall back to a neutral multiplier (1.0)
             # instead of 0.0. A 0.0 would make delta = lr*(advantage - pred)*0 = 0
-            # and permanently freeze that dimension (e.g. explicit_feedback has
-            # no "user" memory in the batch).
+            # and permanently freeze that dimension. The present_set above is what
+            # gates the directional delta in _update_weights; keeping rcw > 0 here
+            # preserves the M-4 contract.
             result[wk] = avg if avg > 0 else 1.0
-        return result
+        return result, present_set
 
     @staticmethod
     def _build_feedback_features(fb: FeedbackRecord) -> dict:
@@ -342,9 +390,21 @@ class RLWeightOptimizer:
             )
 
             pred_score = self.predict_score(state)
-            rcw_map = self._compute_rcw_advantages(fb)
+            rcw_map, present_set = self._credit_assignment(fb)
             for weight_key in weight_keys:
                 if weight_key not in self.weights:
+                    continue
+                # P2-B: credit assignment — only dimensions whose mapped
+                # source(s) actually appeared in this feedback receive the
+                # directional delta. A positive feedback on knowledge therefore
+                # raises relevance/trust and leaves user-unmapped dims alone, so
+                # after normalization the mapped dimension's share genuinely
+                # rises (previously every dim got a positive delta via the M-4
+                # neutral fallback, and no dimension ever rose above its
+                # default — the weights never drove the ranking they were
+                # trained on). Unpresent dims still move via decay_all /
+                # _maybe_explore, so they are not frozen.
+                if weight_key not in present_set:
                     continue
                 rcw = rcw_map.get(weight_key, 1.0)
                 delta = effective_lr * (advantage - pred_score) * rcw
@@ -352,11 +412,20 @@ class RLWeightOptimizer:
 
         self._maybe_explore()
 
-        values = np.array([self.weights.get(k, 0.0) for k in weight_keys])
-        exp_values = np.exp(values - np.max(values))
-        softmax_values = exp_values / np.sum(exp_values)
-        for i, k in enumerate(weight_keys):
-            self.weights[k] = float(softmax_values[i])
+        # P2-B: normalize with the same linear sum=1 convention as decay_all and
+        # the absolute _WEIGHT_SPEC semantics, instead of softmax. softmax's
+        # compression kept an already-high dimension (e.g. relevance default
+        # 0.40) from ever rising above its default — every positive feedback
+        # was diluted by the softmax re-distribution, so the RL weights never
+        # drove the ranking they were trained on. Linear normalization + clamp
+        # preserves the learnt direction within each dimension's spec range.
+        total = sum(self.weights.get(k, 0.0) for k in weight_keys)
+        if total > 0:
+            for k in weight_keys:
+                self.weights[k] /= total
+            for k in weight_keys:
+                lo, hi = self._WEIGHT_SPEC[k]["range"]
+                self.weights[k] = max(lo, min(hi, self.weights[k]))
 
         for k in weight_keys:
             self.ema_weights[k] = (
