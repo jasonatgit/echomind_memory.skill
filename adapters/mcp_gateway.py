@@ -14,12 +14,8 @@ if _pkg_dir not in sys.path:
     sys.path.insert(0, os.path.dirname(_pkg_dir))
 from adapters.mcp_common import handle_mcp_request
 
-# Support both env var names for backward compatibility
-_API_KEY = os.environ.get("ECHOMIND_API_KEY", "") or os.environ.get("ECHOMIND_API_TOKEN", "")
-
-# Override mcp_common's API key check at module level
-import adapters.mcp_common as _mc
-_mc._API_KEY = _API_KEY
+# Support both env var names for backward compatibility. The API key is read
+# inside mcp_common via _resolve_api_key(); nothing needs to be injected here.
 
 
 def main():

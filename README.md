@@ -14,7 +14,7 @@
 🌐 **中文版:** [README.zh-CN.md](README.zh-CN.md)
 
 
-> A long-term memory engine supporting the Hermes Agent, OpenClaw, OpenCode, and Claude Code agents.
+> A long-term memory engine supporting the Hermes Agent, OpenClaw, OpenCode, DeepSeek Haeness(DSH) and Claude Code agents.
 
 > Stop your AI from "forgetting" — remember your preferences, style, research methods; self-reflect and self-evolve.
 
@@ -99,6 +99,7 @@ When a query involves the following *domain keywords* or related *semantics*, th
 | **OpenClaw** | `skill.yaml` + HTTP API tool invocation | ★★★★☆ LLM-decision |
 | **OpenCode** | CLI + HTTP API or MCP stdio | ★★★★☆ LLM-decision |
 | **Claude Code** | MCP stdio or HTTP API | ★★★★☆ LLM-decision |
+| **DeepSeek Haeness(DSH)** | MCP stdio or HTTP API | ★★★★☆ LLM-decision |
 
 
 ---
@@ -125,6 +126,7 @@ When a query involves the following *domain keywords* or related *semantics*, th
 
 | Version | Highlights |
 |:--------|:-----------|
+| v1.2.10 | *Reflection loop closure, real RL credit assignment, per-user meta-state and daily limit, storage indexes.* |
 | v1.2.9 | *Markdown memory archive (9-section .md), Hermes v0.20 adaptation, cognitive_pos lifecycle.* |
 | v1.2.8 | *Self-reflection absorption : epistemic classification, provenance tracking, architectural self-diagnosis. * |
 | v1.2.7 | *Deep code review: 42 bug fixes + 48 regression tests.* |
@@ -314,4 +316,80 @@ EchoMind exposes 7 MCP tools:
 Yes. MCP stdio is compatible with any MCP host (Claude Desktop, Cursor, Cline, etc.). Remote HTTP MCP uses the Streamable HTTP transport, which is an MCP community standard.
 
 </details>
+
+## 🔌 Use EchoMind as DSH's Permanent Memory Engine via MCP
+
+DeepSeek Harness (DSH) is DeepSeek's agent framework. EchoMind ships a standard MCP gateway (stdio + Streamable HTTP) that can be consumed by DSH via its official bridge plugin `@deepseek-ai/dsh-mcp-client`, serving as DSH's permanent memory engine. **No EchoMind code changes are required.**
+
+Once connected, EchoMind's 7 MCP tools are exposed to the DSH agent as `mcp__echomind__<tool>`: `echomind_retrieve`, `echomind_store`, `echomind_search`, `echomind_feedback` (drives RL self-optimization), `echomind_reflect`, `echomind_delete`, and `echomind_health`.
+
+> The actual path to `mcp_gateway.py` depends on how EchoMind is installed (e.g. `~/.hermes/skills/echomind-memory/` for Hermes, or your `pip` location). Replace `<ECHOMIND_DIR>` below with your install path.
+
+### Option 1: Enable temporarily (for testing)
+
+Create `echomind.cordis.yml`:
+
+```yaml
+- insert:
+    - id: memory-echomind
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: echomind
+        transport: stdio
+        command: python3
+        args: ['<ECHOMIND_DIR>/adapters/mcp_gateway.py']
+        cwd: !!js process.cwd()
+```
+
+Start DSH with the patch:
+
+```bash
+dsh web --patch "$PWD/echomind.cordis.yml"
+```
+
+> The exact command depends on your DSH install and profile (`dsh web` / `dsh headless` / bare `dsh`).
+
+### Option 2: Persist into a DSH profile (recommended)
+
+Write the `insert` block into DSH's actual patch file:
+
+```bash
+# Per-profile (<name> → e.g. web / headless)
+$DSH_HOME/profiles/<name>/cordis.patch.yml
+
+# Or machine-wide (all profiles)
+$DSH_HOME/cordis.patch.yml
+```
+
+**Append** to the file—do not overwrite it, as it may already contain other user patches.
+
+> ⚠️ DSH's stdio bridge strips credential-looking environment variables. To use API-key auth, pass `ECHOMIND_API_KEY` explicitly in `config.env`.
+
+### Option 3: Remote HTTP mode (optional)
+
+If the EchoMind HTTP service is already running (`python main.py`, port 8005):
+
+```yaml
+- insert:
+    - id: memory-echomind
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: echomind
+        transport: streamable-http
+        url: http://127.0.0.1:8005/mcp
+```
+
+> ⚠️ HTTP MCP mode requires the EchoMind HTTP service to be running (`python main.py`). stdio mode is unaffected.
+
+### Usage tip (reliability)
+
+DSH's MCP bridge exposes tools only—it does not mount lifecycle hooks, so EchoMind cannot auto-inject memory per turn on the DSH side. Add a hint to DSH's agent/system prompt:
+
+> When the user asks you to remember something, call `echomind_store`. When historical information may be relevant, call `echomind_search` / `echomind_retrieve` and use the results.
+
+### Verification
+
+1. Start DSH and confirm `mcp__echomind__echomind_health` etc. are registered (tool discovery is async—wait a moment).
+2. In session A, have the model call `echomind_store` to record a uniquely-tagged memory and confirm success.
+3. Open a new session B (without copying A), ask for that memory, and confirm the model calls `echomind_search`/`echomind_retrieve` and returns the right value.
 

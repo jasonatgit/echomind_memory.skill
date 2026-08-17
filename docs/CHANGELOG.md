@@ -1,5 +1,34 @@
 # EchoMind Changelog
 
+## v1.2.10 — Algorithm Optimization Pass (2026-08-15)
+
+Algorithmic pass closing the reflection loop and hardening the RL learning path with per-user isolation.
+
+| Area | Change |
+|------|--------|
+| **Reflection loop** | `_reflective_fallback.py` implements the 4 `_merge_*`/`_save_reflection` stubs + consumes `_process_reflection` output (P1-A); adds the positive `_reinforce_weights` arm symmetric to `decay_all`, plus a few-shot prompt-build bug fix (P1-B) |
+| **RL credit assignment** | `_update_weights` credits only dimensions whose mapped sources actually appeared in the feedback (P2-B) — previously softmax + M-4 neutral fallback diluted every positive feedback and no dimension's share ever rose |
+| **Normalization invariants** | Declared `_WEIGHT_INVARIANT_UPDATE/DECAY = "linear"` + wired periodic anti-divergence `decay_all` into `_update_weights` (P3-A); `decay_all` normalize-then-clamp order fixed (range invariant) |
+| **Daily limit per-user + durable** | Daily reflection limit is now per `(user_id, date)` and persisted to SQLite (`reflection_daily_count`), surviving restarts (P5-B) |
+| **RL meta-state per-user** | LR/exploration schedule, history, divergence snapshots, cumulative counters keyed per user — one user's feedback no longer advances another's trajectory (P5-A) |
+| **Storage indexes** | Added idempotent join/lookup indexes (knowledge content, task/experience by user+created, reflections by user+created) (P6-A) |
+
+**Tests:** 102 passed (including new daily-limit, meta-state isolation, reflection-loop, RL projection, stable-ID, storage, and freshness regression tests).
+
+**Follow-up audit round (post-release fixes):**
+- **HIGH-1**: `/api/reflect` passes `user_id` to `_check_daily_limit`, so hitting the daily limit returns 429 instead of a TypeError-500 (restores the limit/parse-failure status distinction).
+- **Daily-limit authority (MED-2)**: on every read the count is re-read from the store (not seeded once per instance), so HTTP + Hermes sharing one DB no longer each run their counter to the limit (2×..N× overshoot). Regression test for cross-instance visibility.
+- **RL empty-credit no-op (MED-3)**: a feedback with empty `retrieved_memories` (empty `present_set`) credits no dimension and no longer advances the exploration schedule it never earned.
+- **RL threading (MED-5)**: load/decay/flush serialize on a per-optimizer lock.
+- **Single-writer reflection persist (MED-6)**: removed the duplicate `_run` `auto:` save; the fallback `_process_reflection` is the single writer, symmetric with the native engine.
+- **Reflection id uniqueness (MED-7)**: id now uses `time.time_ns()` — no same-second PK collide/overwrite.
+- **Mixed-language tokenization (MED-8)**: CJK bigrams are extracted regardless of overall language detection, so mixed zh/en strings (and kana/hangul) no longer drop all hanzi from the Jaccard used for knowledge evolution.
+- **Experience relevance vs frequency (MED-9)**: `find_similar_tasks` relevance is now query-token coverage, not a disguised frequency function — frequency is no longer double-counted.
+- **Preference platform passthrough (MED-10)**: reflection-derived preferences land in the platform-specific bucket, not only `_default`.
+- **Low-confidence discard (P1-A #9)**: below-threshold fallback reflection returns `None` (neither persists nor consumes quota), matching the native engine.
+- **Polish**: prune stale daily-count cache keys (#7); drop the redundant `task_memory(user_id)` index (#10); hoist module-level imports (O1); fold dead `_compute_rcw_advantages` wrapper + correct clamp/decay comments (F8/F4/F5).
+
+---
 ## v1.2.9 — Markdown Rendering & Hermes v0.20 Adaptation (2026-08-12)
 
 | Feature | Description |

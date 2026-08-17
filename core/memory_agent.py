@@ -1,6 +1,7 @@
 # echomind_memory.skill/memory_agent.py
 
 import json
+import math
 import threading
 import uuid
 import random
@@ -37,7 +38,7 @@ class MemoryRecord(BaseModel):
 
 
 from .learning.rl_weight_optimizer import RLWeightOptimizer
-from .storage.sqlite_store import SqliteStore
+from .storage.sqlite_store import SqliteStore, stable_memory_key
 from .lang_utils import detect_language, get_features, get_inference_keywords, tokenize as adaptive_tokenize
 
 
@@ -47,6 +48,12 @@ class MainMemoryAgent:
     _SCORE_USER_PREF_BOOST = 0.2
     _SCORE_USER_HABITS_MULT = 0.8
     _SCORE_EXPERIENCE_BASE = 0.6
+    # P4: frequency normalization cap — experience task frequency is unbounded
+    # and multiplied by weights["frequency"], letting a hot task dominate
+    # arbitrarily. Normalize log1p(freq)/log1p(cap) to [0,1] (config-overridable,
+    # default 20 uses: freq 20 ↦ log1p(20)/log1p(20)=1.0; no config key needed,
+    # cfg.get falls back to this class default).
+    _SCORE_EXPERIENCE_FREQ_MAX = 20
     _SCORE_TASK_PROGRESS = 0.9
     _SCORE_TASK_HISTORY = 0.6
     _SCORE_CONTEXT_BASE = 0.7
@@ -251,11 +258,18 @@ class MainMemoryAgent:
 
         # 8. RL Weight restoration — use first user found (deterministic, not "last found")
         saved_weights = self.db.load_rl_weights("default")
+        # P5-A audit (MED-4): remember WHICH user's weights were restored so we
+        # can set the optimizer's active-user cursor to match. Previously the
+        # weights (possibly a specific user's) were loaded while _active_user_id
+        # stayed "default", leaving the read-through meta-state out of sync with
+        # the loaded weights until the first explicit per-user reload.
+        saved_user = "default"
         if not saved_weights and loaded.get("users", 0) > 0 and self.user_agent.store:
             for store_key, u in list(self.user_agent.store.items()):
                 w = self.db.load_rl_weights(u.user_id, profile=u.profile)
                 if w:
                     saved_weights = w
+                    saved_user = u.user_id
                     break  # Use first found, not last
         # If no user-specific weights found, try loading from user preferences JSON
         if not saved_weights and loaded.get("users", 0) > 0:
@@ -278,6 +292,7 @@ class MainMemoryAgent:
                         for key, val in raw.items()
                     ):
                         saved_weights = raw
+                        saved_user = u.user_id
                         logger.info("RL weights restored from preferences JSON for %s", u.user_id)
                     else:
                         logger.warning("RL weights in preferences JSON for %s are invalid (type=%s); ignoring",
@@ -287,7 +302,7 @@ class MainMemoryAgent:
             # Route through load_weights_for_user so missing/partial dimensions
             # are schema-completed (B-M1/P9) instead of crashing later in
             # _compute_importance's eager weights["..."] indexing.
-            self.rl_optimizer.load_weights_for_user(saved_weights)
+            self.rl_optimizer.load_weights_for_user(saved_weights, user_id=saved_user)
             logger.info(f"RL weights restored: {self.rl_optimizer.get_current_weights()}")
 
         # P1-1: Initialize memory states for loaded records
@@ -347,35 +362,19 @@ class MainMemoryAgent:
                     result = agent.reflective.reflect_with_llm(
                         records, user_id, platform, llm.chat)
                     if result:
+                        # Audit (MED-6): the reflection record is ALREADY persisted
+                        # by _process_reflection (reached via reflect_with_llm ->
+                        # _reflect_records) in both the fallback and native engines,
+                        # on both the auto and the HTTP two-phase paths. The previous
+                        # duplicate db.save_reflection(auto:...) emitted a SECOND row
+                        # per auto-reflection with identical content (and a
+                        # second-granularity id). Removing it leaves _process_reflection
+                        # as the single writer — which also stops persisting
+                        # low-confidence results (they return without persisting).
                         logger.info(
-                            "Auto-reflection: %d insights (confidence=%.2f)",
+                            "Auto-reflection: %d insights (confidence=%.2f) — "
+                            "record persisted by _process_reflection",
                             len(result.key_insights), result.confidence)
-                        meta = {"source": "auto_reflection",
-                                "record_count": len(records)}
-                        if profile:
-                            meta["profile"] = profile
-                        if agent._persistence_enabled:
-                            agent.db.save_reflection({
-                                "id": f"auto:{user_id}:{int(datetime.now(timezone.utc).timestamp())}",
-                                "user_id": user_id,
-                                "platform": platform,
-                                "source_episodic_ids": [r.get("id", "") for r in records],
-                                "reflection": {
-                                    "key_insights": result.key_insights,
-                                    "user_preferences": result.user_preferences,
-                                    "procedural_rules": result.procedural_rules,
-                                    "new_knowledge": result.new_knowledge,
-                                    "importance_scores": result.importance_scores,
-                                    "forget_suggestions": result.forget_suggestions,
-                                    "confidence": result.confidence,
-                                },
-                                "meta": meta,
-                            })
-                        else:
-                            logger.warning(
-                                "Auto-reflection result dropped because persistence was "
-                                "disabled before the background thread ran (user=%s).",
-                                user_id)
             except Exception as e:
                 logger.debug("Auto-reflection skipped: %s", e)
 
@@ -452,10 +451,23 @@ class MainMemoryAgent:
                 return domain_id
 
         # Phase 2: LLM semantic fallback (only when keyword match fails)
+        # D4 fix: cache the LLM result per normalized text key so repeated
+        # in-session retrievals with the same query don't synchronously call the
+        # LLM on the hot retrieve path (blocking + token cost). The cache is
+        # bounded to avoid unbounded growth.
+        _cache = self.__dict__.setdefault("_llm_domain_cache", {})
+        cache_key = hashlib.md5(t.encode("utf-8")).hexdigest() if isinstance(t, str) else ""
+        if cache_key and cache_key in _cache:
+            return _cache[cache_key]
         try:
             llm = self._get_llm_client()
             if llm is not None and llm.available:
-                return self._llm_detect_domain(llm, text, domain_keywords, lang or "en")
+                result = self._llm_detect_domain(llm, text, domain_keywords, lang or "en")
+                if cache_key:
+                    if len(_cache) >= 512:
+                        _cache.pop(next(iter(_cache)))
+                    _cache[cache_key] = result
+                return result
         except Exception:
             logger.debug("LLM domain detection unavailable, falling back to keyword match")
             pass
@@ -526,7 +538,7 @@ class MainMemoryAgent:
             profile=profile)
         if features["has_history"]:
             if task_id:
-                composite_id = f"{user_id}:{task_id}"
+                composite_id = stable_memory_key(user_id, task_id)
                 tp = self.task_agent.get_task_progress(composite_id)
                 # L-1 fix: carry task_id/user_id so the freshness updater can
                 # refresh task_memory.last_access_at (get_task_progress alone
@@ -556,7 +568,7 @@ class MainMemoryAgent:
         # Load per-user RL weights for isolated scoring
         if self._persistence_enabled:
             user_weights = self.db.load_rl_weights(user_id, profile=profile)
-            self.rl_optimizer.load_weights_for_user(user_weights)
+            self.rl_optimizer.load_weights_for_user(user_weights, user_id=user_id)
 
         scored = self._compute_importance(retrieved, task_context, user_id, platform, features)
         # P0-2: Group-by-domain sampling — ensure knowledge diversity in top-8
@@ -579,7 +591,7 @@ class MainMemoryAgent:
             "content_language": prefs.get("language", ""),
             "preferred_depth": prefs.get("depth", ""),
             "preferred_tone": prefs.get("tone", ""),
-            "success_rate_estimate": round(self._estimate_success_rate(), 3),
+            "success_rate_estimate": round(self._estimate_success_rate(user_id=user_id), 3),
             "rl_state": {
                 "relevance_weight": round(cw.get("relevance", 0.5), 3),
                 "recency_weight": round(cw.get("recency", 0.5), 3),
@@ -656,7 +668,19 @@ class MainMemoryAgent:
                     if freshness < self._FRESHNESS_ARCHIVE_THRESHOLD:
                         continue
                     recency_mult = self.cfg.get("retrieval", "recency_multiplier", 0.5)
-                    score = (self._SCORE_EXPERIENCE_BASE * weights["relevance"] + mem["frequency"] * weights["frequency"] + recency_mult * weights["recency"]) * freshness
+                    # P4: unify experience relevance (use find_similar_tasks'
+                    # relevance instead of the constant _SCORE_EXPERIENCE_BASE,
+                    # which ignored it) and normalize raw frequency via log1p so
+                    # a hot task can't dominate the score unboundedly.
+                    exp_rel = mem.get("relevance", self._SCORE_EXPERIENCE_BASE)
+                    freq_cap = self.cfg.get("retrieval", "experience_freq_max", self._SCORE_EXPERIENCE_FREQ_MAX)
+                    # Audit (R5): clamp to [0,1] so the "cap" really caps. The
+                    # previous form only re-scaled by log1p(cap) without clamping,
+                    # so frequency > cap produced freq_n > 1.0 (e.g. freq=100 →
+                    # ~1.52) and the hot task dominated the score far beyond the
+                    # documented "freq 20 ↦ 1.0" saturation.
+                    freq_n = min(1.0, math.log1p(mem.get("frequency", 0)) / max(1.0, math.log1p(freq_cap)))
+                    score = (exp_rel * weights["relevance"] + freq_n * weights["frequency"] + recency_mult * weights["recency"]) * freshness
                     task_status = mem.get("metadata", {}).get("task_status", "")
                     if task_status == "failed": score *= self._SCORE_FAILED_MULT
                     elif task_status == "completed": score *= self._SCORE_COMPLETED_MULT
@@ -735,7 +759,6 @@ class MainMemoryAgent:
         than arithmetic mean. Only active for clusters of size >= 2 where
         within-cluster variance exceeds threshold.
         """
-        import math
         clusters = {}
         for mem in scored:
             sid = ""
@@ -850,11 +873,15 @@ class MainMemoryAgent:
         dt = self._parse_db_ts(date_str)
         if dt is None:
             return 1.0
-        days = (datetime.now(timezone.utc) - dt).days
+        # D3 fix: compute fractional days (seconds / 86400) instead of the
+        # integer `.days` attribute. Records stored seconds/minutes ago were
+        # previously all "0 days" → freshness pinned at 1.0, so the Ebbinghaus
+        # decay did not begin until a full calendar day elapsed.
+        days = (datetime.now(timezone.utc) - dt).total_seconds() / 86400.0
         if days < 0:
             return 1.0
         half_life = self.cfg.get("retrieval", "decay_half_life", default=self._DECAY_HALF_LIFE)
-        return 2.0 ** (-days / max(half_life, 1))
+        return 2.0 ** (-days / max(float(half_life), 0.01))
 
     def _update_memory_states(self, user_id: str = ""):
         """Scan recent memories and update states based on Ebbinghaus freshness.
@@ -972,9 +999,12 @@ class MainMemoryAgent:
                 if source == "context":
                     id_col = "session_id"
                 elif source in ("task_history", "task_progress") and rec.get("task_id"):
-                    # task_memory rows are keyed by composite user:task_id
-                    # (L-1: task_progress added so its last_access_at refreshes)
-                    rec_id = f"{rec.get('user_id') or user_id}:{rec.get('task_id')}"
+                    # task_memory rows are keyed by stable_memory_key (B5/B6),
+                    # so reconstruct that key — the old "user:task" join would
+                    # no longer match the hashed id and the update was silently
+                    # swallowed by the except below.
+                    rec_id = stable_memory_key(
+                        rec.get("user_id") or user_id, rec.get("task_id"))
                 try:
                     with self.db._lock:
                         self.db._conn.execute(
@@ -1090,7 +1120,7 @@ profile=profile, language=lang)
                     chinese_chars = len(re.findall(r'[\u4e00-\u9fff]', all_text))
                     token_est = int(chinese_chars * 1.5 + (len(all_text) - chinese_chars) / 4)
                     self.db.save_context(
-                        session_id=f"{user_id}:{task_id}",
+                        session_id=stable_memory_key(user_id, task_id),
                         user_id=user_id,
                         messages=context,
                         token_count=token_est,
@@ -1126,7 +1156,7 @@ profile=profile, language=lang)
                         kb_metadata["cognitive_pos"] = "nok"
                         if not existing_kb:
                             self.db.save_knowledge(
-                                knowledge_id=f"{user_id}:{task_id}",
+                                knowledge_id=stable_memory_key(user_id, task_id),
                                 domain=research_domain,
                                 content=knowledge_content,
                                 metadata=kb_metadata,
@@ -1147,7 +1177,7 @@ profile=profile, language=lang)
                                 # silent no-op until a reload. This mirrors the DB row,
                                 # closing the cross-profile in-memory leak.
                                 "profile": profile,
-                            }, entry_id=f"{user_id}:{task_id}")
+                            }, entry_id=stable_memory_key(user_id, task_id))
                     if exp_data:
                         # Deterministic id from summary hash — matches experience_agent._summary_index,
                         # so DB ON CONFLICT dedups consistently with in-memory (fixes reload duplication)
@@ -1165,7 +1195,7 @@ profile=profile, language=lang, experience_id=exp_id)
                 if self._persistence_enabled:
                     current_w = self.rl_optimizer.get_current_weights()
                     weight_reason = json.dumps({"weights": current_w})
-                    task_pk = f"{user_id}:{task_id}"
+                    task_pk = stable_memory_key(user_id, task_id)
                     self.db.save_memory_state("user", user_id, "active", reason=weight_reason, source="store")
                     self.db.save_memory_state("task", task_pk, "active", reason=weight_reason, source="store")
                     self.db.save_memory_state("context", task_pk, "active", reason=weight_reason, source="store")
@@ -1270,7 +1300,6 @@ profile=profile, language=lang, experience_id=exp_id)
         except Exception:
             pass
         # Adaptive calculation
-        import math
         sessions = 0
         if self._persistence_enabled:
             try:
@@ -1428,13 +1457,13 @@ profile=profile, language=lang, experience_id=exp_id)
             history = history[-max_history:]
         self.user_agent.replace_history(user_id, history, profile=profile)
 
-    def _estimate_success_rate(self, window: int = 50) -> float:
-        """Estimate recent success rate from RL history.
+    def _estimate_success_rate(self, window: int = 50, user_id: str = None) -> float:
+        """Estimate recent success rate from RL history (per-user, P5-A).
 
         Maps avg_reward (range -1..+1) to 0..1 success rate.
         Returns 0.5 neutral when no history available.
         """
-        history = self.rl_optimizer.history[-window:]
+        history = self.rl_optimizer.get_history(user_id=user_id)[-window:]
         if not history:
             return 0.5
         return sum(0.5 + h["avg_reward"] / 2 for h in history) / len(history)
@@ -1456,7 +1485,7 @@ profile=profile, language=lang, experience_id=exp_id)
         # update and persist the wrong user's weights.
         if self._persistence_enabled:
             user_weights = self.db.load_rl_weights(user_id, profile=profile)
-            self.rl_optimizer.load_weights_for_user(user_weights)
+            self.rl_optimizer.load_weights_for_user(user_weights, user_id=user_id)
         cw = self.rl_optimizer.get_current_weights()
         feedback_record = FeedbackRecord(
             user_id=user_id, task_id=task_id,
@@ -1616,11 +1645,38 @@ profile=profile, language=lang, experience_id=exp_id)
 
     @staticmethod
     def _jaccard_similarity(text1: str, text2: str) -> float:
-        """Jaccard similarity on word tokens — fast, zero-LLM approx."""
+        """Jaccard similarity on tokens — fast, zero-LLM approx.
+
+        P8 fix: the previous `text.lower().split()` was whitespace-based, so
+        for CJK text (no spaces) it produced a single giant token per string
+        and Jaccard≈0 — silently disabling knowledge-evolution detection for
+        Chinese. Now tokenize via lang_utils (which handles EN words and ZH
+        char n-grams) and, for CJK, additionally union in character bigrams
+        so short overlapping phrases still score non-zero.
+        """
         if not text1 or not text2:
             return 0.0
-        set1 = set(text1.lower().split())
-        set2 = set(text2.lower().split())
+        from .lang_utils import tokenize as _tok, detect_language as _det
+
+        def _tokens(t: str) -> set:
+            lang = _det(t)
+            toks = set(_tok(t, lang)) if t.strip() else set()
+            # Audit (MED-8/R2): CJK bigrams must be added REGARDLESS of the
+            # overall language detection. The previous guard `if lang == "zh"`
+            # silently dropped all hanzi in a mixed zh/en string whose EN bytes
+            # dominated (detect_language -> "en"), re-introducing the P8 bug it
+            # was meant to fix; ja (kana) and ko (hangul) never got bigrams at
+            # all. Extracting character bigrams from any CJK/kana/hangul
+            # segment is a strict superset of the old behaviour \u2014 it only adds
+            # tokens, never removes them. R2 additionally fixed by covering
+            # \u3040-\u30ff (kana) and \uac00-\ud7af (hangul).
+            segs = re.findall(r"[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]+", t.lower())
+            big = {s[i:i+2] for s in segs for i in range(len(s) - 1) if len(s) >= 2}
+            toks |= big
+            return toks
+
+        set1 = _tokens(text1)
+        set2 = _tokens(text2)
         inter = len(set1 & set2)
         union = len(set1 | set2)
         return inter / union if union > 0 else 0.0

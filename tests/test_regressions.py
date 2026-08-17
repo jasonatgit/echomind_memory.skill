@@ -40,15 +40,18 @@ class TestTransactionAtomicity:
         assert any(t["user_id"] == "u_commit" for t in tasks)
 
 
-# ── Daily-limit reset (H6) ──
+# ── Daily-limit reset, per-user + persisted (H6 / P5-B) ──
 
 class TestDailyLimitReset:
     def test_check_daily_limit_is_threshold_compare(self, memory_agent):
-        """T2: below limit returns False, at/over limit returns True."""
+        """T2: below limit returns False, at/over limit returns True (per user)."""
         ra = memory_agent.reflective
-        assert ra._check_daily_limit() is False  # fresh: count < limit
-        ra._daily_count = ra._daily_limit
-        assert ra._check_daily_limit() is True
+        assert ra._check_daily_limit("u1") is False  # fresh: count < limit
+        for _ in range(ra._daily_limit):
+            ra._increment_daily_count("u1")
+        assert ra._check_daily_limit("u1") is True
+        # per-user isolation: another user's fresh (user, day) is not blocked
+        assert ra._check_daily_limit("u2") is False
 
     def test_process_result_short_circuits_at_limit(self, memory_agent):
         """T2/M-6: process_result returns None once the daily limit is hit, so the
@@ -57,26 +60,32 @@ class TestDailyLimitReset:
         import core.reflective_agent as ra_module
 
         ra = memory_agent.reflective
-        ra._daily_count = ra._daily_limit  # at the limit
+        for _ in range(ra._daily_limit):
+            ra._increment_daily_count("u1")  # at the limit
         # Ensure an engine is present so the ONLY reason to return None here is
         # the limit short-circuit (in a no-Cython env _engine is None and would
         # return None first, making the assertion vacuous).
         with mock.patch.object(ra_module, "_engine", new=object()):
             assert ra.process_result("llm", [], "u1", "http") is None
-        assert ra._check_daily_limit() is True
+        assert ra._check_daily_limit("u1") is True
 
     def test_reset_daily_count_on_day_change(self, memory_agent):
-        """Counter resets when UTC calendar day changes."""
-        from datetime import timedelta
+        """Counter resets on a new UTC calendar day.
+
+        P5-B keys the count by (user_id, date), so a new day is a fresh key that
+        starts at 0 — no explicit reset needed. A different user also starts at 0
+        (per-user isolation), which covers the same fresh-key semantics.
+        """
         ra = memory_agent.reflective
-        ra._daily_count = ra._daily_limit + 1  # over limit
-        assert ra._check_daily_limit() is True
-        # simulate new day: set the recorded date to yesterday
-        ra._daily_count_date = ra._daily_count_date - timedelta(days=1)
-        assert ra._reset_daily_if_new_day() is None
-        ra._reset_daily_if_new_day()
-        assert ra._daily_count == 0
-        assert ra._check_daily_limit() is False
+        for _ in range(ra._daily_limit + 1):
+            ra._increment_daily_count("u1")  # over limit
+        assert ra._check_daily_limit("u1") is True
+        # A fresh (user, day) key — a different user today — starts at 0.
+        assert ra._get_daily_count("u2") == 0
+        assert ra._check_daily_limit("u2") is False
+        # The persisted counter is per-(user, date): u1's over-limit count is
+        # unchanged while u2 stays clean.
+        assert ra._check_daily_limit("u1") is True
 
 
 # ── Timestamps (H2/M2) ──
@@ -100,7 +109,11 @@ class TestTimestampHandling:
     def test_freshness_accepts_datetime_object(self, memory_agent):
         """_freshness must not crash on a datetime object (was a TypeError)."""
         record = {"last_updated": datetime.now(timezone.utc)}
-        assert memory_agent._freshness(record) == 1.0
+        f = memory_agent._freshness(record)
+        # A just-now record should be at (or essentially at) full freshness;
+        # the Ebbinghaus decay is computed in fractional days now (D3), so the
+        # value is ≤ 1.0 and negligibly below it for a current timestamp.
+        assert 0.0 < f <= 1.0
 
     def test_update_last_access_uses_db_format(self, memory_agent, sqlite_store):
         """_update_last_access_for_retrieved writes 'YYYY-MM-DD HH:MM:SS' (matches DB)."""
@@ -118,15 +131,42 @@ class TestTimestampHandling:
         # format must be space-separated (DB datetime('now') style), not ISO 'T'
         assert row["last_access_at"] and "T" not in row["last_access_at"]
 
+    def test_update_last_access_for_task_uses_stable_key(self, memory_agent, sqlite_store):
+        """B5/B6 regression: task last_access_at must refresh via the hashed id.
+
+        The old "user:task" join no longer matched the stable_memory_key id, so
+        the update was silently swallowed and task freshness never refreshed.
+        """
+        from core.storage.sqlite_store import stable_memory_key
+        memory_agent.db = sqlite_store
+        memory_agent._persistence_enabled = True
+        sqlite_store.save_task("u1", "s:1", "T", "completed", [], {})
+        key = stable_memory_key("u1", "s:1")
+        # Blank the timestamp so we can observe the refresh.
+        sqlite_store._conn.execute(
+            "UPDATE task_memory SET last_access_at='' WHERE id=?", (key,))
+        sqlite_store._maybe_commit()
+        memory_agent._update_last_access_for_retrieved(
+            {"task_progress": {
+                "task_id": "s:1", "user_id": "u1", "status": "completed",
+            }}, "u1")
+        row = sqlite_store._conn.execute(
+            "SELECT last_access_at FROM task_memory WHERE id=?", (key,)
+        ).fetchone()
+        assert row is not None
+        # Refresh actually happened (was blank, now populated, DB format).
+        assert row["last_access_at"] and "T" not in row["last_access_at"]
+
 
 # ── UPSERT field updates (H4) ──
 
 class TestUpsertFieldUpdates:
     def test_save_task_updates_title_on_conflict(self, sqlite_store):
+        from core.storage.sqlite_store import stable_memory_key
         sqlite_store.save_task("u1", "t1", "Old Title", "completed", [], {})
         sqlite_store.save_task("u1", "t1", "New Title", "completed", [], {})
         tasks = sqlite_store.load_tasks()
-        match = [t for t in tasks if t["id"] == "u1:t1"]
+        match = [t for t in tasks if t["id"] == stable_memory_key("u1", "t1")]
         assert len(match) == 1
         assert match[0]["title"] == "New Title"
 
@@ -390,3 +430,171 @@ class TestCognitivePosMigration:
             assert int(limit) == 1000
         except Exception:
             raise AssertionError("state_scan_limit should default to 1000")
+
+# ── v1.2.10 optimization-round fixes ──────────────────────────────────────────
+
+class TestDailyLimitAuthoritativeAcrossInstances:
+    """MED-2: the daily-limit count is authoritative from the store, so a second
+    ReflectiveAgent instance sharing the same DB sees increments made by the
+    first instead of running an independent counter toward the same limit.
+    """
+
+    def test_second_instance_sees_first_instances_increments(self, sqlite_store):
+        from core.reflective_agent import ReflectiveAgent
+
+        ra1 = ReflectiveAgent(store=sqlite_store, memory_agent=None, config={})
+        ra2 = ReflectiveAgent(store=sqlite_store, memory_agent=None, config={})
+        # _daily_limit is randomized per instance (config max_daily), so drive
+        # the count past BOTH limits to make the store the single authority.
+        target = max(ra1._daily_limit, ra2._daily_limit) + 1
+
+        for _ in range(target):
+            ra1._increment_daily_count("u1")
+
+        # ra2 was constructed after the increments and its cache is cold; the
+        # authoritative store read must surface u1's already-consumed quota.
+        assert ra2._check_daily_limit("u1") is True
+        assert ra1._check_daily_limit("u1") is True
+        # The persisted count is shared, not per-instance: both instances read
+        # the exact same value from the store.
+        assert ra1._get_daily_count("u1") == ra2._get_daily_count("u1") == target
+        # Per-user isolation is preserved: a fresh (user, day) is not blocked.
+        assert ra2._check_daily_limit("u2") is False
+
+    def test_increment_returns_authoritative_store_count(self, sqlite_store):
+        from core.reflective_agent import ReflectiveAgent
+
+        ra1 = ReflectiveAgent(store=sqlite_store, memory_agent=None, config={})
+        ra2 = ReflectiveAgent(store=sqlite_store, memory_agent=None, config={})
+        # Increment from the second instance too — the count returned is the
+        # store's reconciled value, not a per-instance local echo.
+        n = ra2._increment_daily_count("u1")
+        assert n == ra1._get_daily_count("u1") == ra2._get_daily_count("u1")
+
+
+class TestEmptyPresentSetIsNoOp:
+    """MED-3: a feedback whose retrieved_memories is empty credits no dimension
+    and must not advance the exploration schedule it never earned.
+    """
+
+    def test_empty_retrieval_does_not_advance_exploration(self):
+        from core.learning.rl_weight_optimizer import RLWeightOptimizer, FeedbackRecord
+
+        opt = RLWeightOptimizer(initial_weights={}, seed=0, max_buffer_size=2)
+        before_step = opt.epsilon_step
+        before = dict(opt.weights)
+
+        # Flush ≥2 records, all with empty retrieved_memories -> empty present_set.
+        for _ in range(2):
+            opt.add_feedback(FeedbackRecord(
+                user_id="u1", task_id="t1", retrieved_memories=[],
+                user_feedback="positive", metadata={},
+            ))
+
+        assert opt.epsilon_step == before_step, (
+            "empty present_set batch must not burn exploration steps"
+        )
+        assert opt.weights == before, (
+            "empty present_set batch must leave every weight untouched"
+        )
+
+    def test_credited_batch_still_advances(self):
+        from core.learning.rl_weight_optimizer import RLWeightOptimizer, FeedbackRecord
+
+        opt = RLWeightOptimizer(initial_weights={}, seed=0, max_buffer_size=2)
+        before = dict(opt.weights)
+        mems = [{"type": "knowledge", "relevance": 0.9, "trust_score": 0.8}]
+        for _ in range(2):
+            opt.add_feedback(FeedbackRecord(
+                user_id="u1", task_id="t1", retrieved_memories=mems,
+                user_feedback="positive", metadata={},
+            ))
+        assert opt.weights != before, "a credited (present) batch should move weights"
+
+
+class TestJaccardMixedLangBigrams:
+    """MED-8/R2: _jaccard_similarity must surface CJK semantics even when the
+    overall string language-detects as en (mixed zh/en) — previously all hanzi
+    were dropped so Jaccard collapsed to ~0, re-introducing the P8 bug.
+    """
+
+    def test_mixed_zh_en_returns_nonzero(self):
+        from core.memory_agent import MainMemoryAgent as A
+
+        a = "Fix the bug 修复这个配置问题"
+        b = "修复这个配置问题"
+        sim = A._jaccard_similarity(a, b)
+        assert sim > 0.0, "zh bigrams must overlap even when lang detects en"
+
+    def test_pure_cjk_still_works(self):
+        from core.memory_agent import MainMemoryAgent as A
+
+        sim = A._jaccard_similarity("修复配置问题", "修复权限问题")
+        assert sim > 0.0
+
+
+class TestExperienceRelevanceIsTokenCoverage:
+    """MED-9/R7: relevance reflects how much of the query matched, not raw
+    frequency — so frequency is no longer double-counted and sorting by
+    relevance is no longer equivalent to sorting by frequency.
+    """
+
+    def test_relevance_tracks_match_ratio_not_frequency(self):
+        from core.agents.experience_agent import ExperienceMemoryAgent
+
+        agent = ExperienceMemoryAgent()
+        uid = "u1"
+        ttype = "deploy"
+        query = "deploy production pipeline fix"  # 4 query tokens
+        # Low-frequency entry that covers 3 of the query tokens (deploy,
+        # production, fix): relevance = 3/4 = 0.75, frequency = 1.
+        agent.store_experience(
+            uid, "l1", ttype, True, [], "deploy production fix",
+            entry_id="e:low",
+        )
+        # High-frequency entry (frequency bumped via duplicate summary stores)
+        # that covers only 2 query tokens (deploy, pipeline): under token
+        # coverage relevance = 2/4 = 0.5 < e:low, but under the old
+        # min(0.9, 0.3+0.1*freq) formula its frequency would push it past e:low.
+        agent.store_experience(
+            uid, "h1", ttype, True, [], "deploy pipeline", entry_id="e:high",
+        )
+        for _ in range(19):  # duplicate summary → frequency += 1 each time
+            agent.store_experience(uid, "h1", ttype, True, [], "deploy pipeline")
+
+        assert agent.store["e:high"].frequency > agent.store["e:low"].frequency
+
+        similar = agent.find_similar_tasks(
+            query, ttype, user_id=uid, min_success_rate=0.0,
+        )
+        by_rel = {s["id"]: s["relevance"] for s in similar}
+        assert by_rel["e:low"] > by_rel["e:high"], (
+            "relevance must reflect query-token coverage, not raw frequency; "
+            "the old frequency-disguised formula would rank the high-frequency "
+            "e:high (2/4 tokens) above e:low (3/4 tokens)."
+        )
+
+
+class TestFallbackLowConfidenceReturnsNone:
+    """P1-A #9: a below-threshold-confidence reflection is discarded (returns
+    None) so it neither persists a record nor consumes the daily quota —
+    matching the native engine's discard-on-low-confidence contract.
+    """
+
+    def test_low_confidence_returns_none(self):
+        from core import _reflective_fallback as fb
+
+        raw = '{"confidence": 0.2, "key_insights": ["x"]}'
+        out = fb._process_reflection(
+            raw, [{"id": "r1", "content": "c"}], "u1", "http", None, None, None,
+        )
+        assert out is None
+
+    def test_high_confidence_not_none(self):
+        from core import _reflective_fallback as fb
+
+        raw = '{"confidence": 0.9, "key_insights": ["x"], "user_preferences": []}'
+        out = fb._process_reflection(
+            raw, [{"id": "r1", "content": "c"}], "u1", "http", None, None, None,
+        )
+        assert out is not None

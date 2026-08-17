@@ -32,24 +32,70 @@ class ReflectiveAgent:
 
             cfg = get_config_manager()
             self.config = cfg.get_section("reflection")
-        self._daily_count = 0
         self._last_reflection: Optional[datetime] = None
-        self._daily_count_date = datetime.now(timezone.utc).date()
-        # Fix daily limit once at init (was previously re-randomized on every call)
+        # P5-B: daily reflection quota is tracked per (user_id, UTC date) and
+        # persisted to SQLite so it survives restarts and is isolated per user.
+        # `_daily_count_map` is a per-process cache of the store's rows; the
+        # fallback in-memory path keeps the limit enforced even when a store is
+        # not connected (favored over a global scalar shared across all users).
+        self._daily_count_map: Dict[Tuple[str, str], int] = {}
+        # B10 fix: resolve the daily limit deterministically (midpoint) instead
+        # of per-instance random. The old random.uniform gave HTTP vs Hermes
+        # processes different limits for the same config, so a user could hit
+        # different effective quotas depending on which entrypoint triggered
+        # reflection. A deterministic midpoint keeps the [lo, hi] tuning knob
+        # while making the limit identical across all instances.
         max_daily = self.config.get("max_daily", [5, 20])
-        if isinstance(max_daily, (list, tuple)):
-            import random as _rng
-            self._daily_limit = int(_rng.uniform(max_daily[0], max_daily[1]))
+        if isinstance(max_daily, (list, tuple)) and len(max_daily) == 2:
+            self._daily_limit = int((max_daily[0] + max_daily[1]) // 2)
         else:
             self._daily_limit = int(max_daily)
 
-    def _reset_daily_if_new_day(self):
-        """Reset the daily reflection counter when the UTC calendar day changes.
-        Prevents the 'daily' limit from becoming a process-lifetime cap."""
-        today = datetime.now(timezone.utc).date()
-        if today != self._daily_count_date:
-            self._daily_count = 0
-            self._daily_count_date = today
+    def _today(self) -> str:
+        """Current UTC calendar day as ISO yyyy-mm-dd (the daily-limit unit)."""
+        return datetime.now(timezone.utc).date().isoformat()
+
+    def _get_daily_count(self, user_id: str) -> int:
+        """Authoritative per-(user, today) reflection count.
+
+        When a store is connected the count is ALWAYS re-read from it (audit
+        MED-2). The previous version cached per (user, day) once and never
+        re-synced, so a `ReflectiveAgent` instance was blind to increments made
+        by other instances/processes sharing the DB (HTTP + Hermes running
+        together) — each instance independently ran its counter up to the limit,
+        overshooting the quota by a multiple. The in-memory `_daily_count_map`
+        is now only the no-store (or read-failure) fallback path.
+        """
+        today = self._today()
+        if self.store is not None:
+            try:
+                count = self.store.get_daily_reflection_count(user_id, today)
+                self._daily_count_map[(user_id, today)] = count
+                return count
+            except Exception:
+                pass  # fall back to the in-process cache below
+        # No store connected, or the authoritative read failed: use the cache.
+        return self._daily_count_map.get((user_id, today), 0)
+
+    def _increment_daily_count(self, user_id: str) -> int:
+        """Consume one unit of this user's daily quota and persist it."""
+        today = self._today()
+        count = self._get_daily_count(user_id) + 1
+        # Audit (#7): prune stale (past-day) cache keys so the map stays bounded
+        # to at most today's entries in a long-running process. Increments are
+        # rare (one per reflection), so the sweep is negligible.
+        for k in [k for k in self._daily_count_map if k[1] != today]:
+            del self._daily_count_map[k]
+        self._daily_count_map[(user_id, today)] = count
+        if self.store is not None:
+            try:
+                # Return the store's authoritative value (reconciles any
+                # concurrent increments; audit MED-2). The cache is keyed solely
+                # for the no-store fallback.
+                return self.store.increment_daily_reflection_count(user_id, today)
+            except Exception:
+                pass
+        return count
 
     # ── Engine status detection ──
 
@@ -105,10 +151,9 @@ class ReflectiveAgent:
 
     # ── Hermes auto path: engine calls LLM internally ──
 
-    def _check_daily_limit(self) -> bool:
-        """Return True if daily reflection limit reached."""
-        self._reset_daily_if_new_day()
-        return self._daily_count >= self._daily_limit
+    def _check_daily_limit(self, user_id: str) -> bool:
+        """Return True if this user's daily reflection limit is reached."""
+        return self._get_daily_count(user_id) >= self._daily_limit
 
     def reflect_with_llm(
         self,
@@ -124,7 +169,7 @@ class ReflectiveAgent:
         """
         if _engine is None:
             return None
-        if self._check_daily_limit():
+        if self._check_daily_limit(user_id):
             return None
         result = _engine._reflect_records(
             records,
@@ -136,7 +181,7 @@ class ReflectiveAgent:
             self.memory,
         )
         if result is not None and not isinstance(result, tuple):
-            self._daily_count += 1
+            self._increment_daily_count(user_id)
             self._last_reflection = datetime.now(timezone.utc)
         # Unify return type to ReflectionOutput (never return raw dict/str)
         if isinstance(result, dict):
@@ -164,7 +209,7 @@ class ReflectiveAgent:
         """Parse and merge LLM response back into memory."""
         if _engine is None:
             return None
-        if self._check_daily_limit():
+        if self._check_daily_limit(user_id):
             return None
         result = _engine._process_reflection(
             raw_response,
@@ -176,7 +221,7 @@ class ReflectiveAgent:
             self.memory,
         )
         if result is not None:
-            self._daily_count += 1
+            self._increment_daily_count(user_id)
             self._last_reflection = datetime.now(timezone.utc)
             if isinstance(result, dict):
                 from .models.reflection import ReflectionOutput

@@ -25,6 +25,7 @@ def main():
             task_context=f"code style: {user_mem.get('preferences', {}).get('code_style', 'standard')}",
             task_type="code_review",
             min_success_rate=0.6,
+            user_id=user_id,
         )
 
         result = {

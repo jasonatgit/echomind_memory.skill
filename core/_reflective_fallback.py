@@ -170,6 +170,13 @@ def _process_reflection(
 
     When called without a valid LLM response, returns an empty valid result
     so the caller does not receive None (which triggers HTTP 400).
+
+    When the parsed output's confidence meets the configured minimum, the
+    reflection is "consumed": insights/knowledge/rules back to the knowledge
+    store, preferences to the user store, RL decay for forget areas, and the
+    record persisted. The dict is still returned so the caller can coerce it
+    to ReflectionOutput (the two-phase HTTP caller produces its own prompt /
+    process_result instead of calling this directly).
     """
     if not raw_response:
         # No LLM response → return empty valid result, not None
@@ -183,8 +190,70 @@ def _process_reflection(
             "confidence": 0.3,
             "source": "empty",
         }
-    # Try to parse as JSON; if it fails, return raw string as-is
-    return _parse_result(raw_response)
+    # Parse as JSON; falls back to raw string on failure.
+    output = _parse_result(raw_response)
+    if not isinstance(output, dict):
+        return output
+
+    min_conf = 0.65
+    try:
+        if config is not None:
+            min_conf = config.get("min_confidence", min_conf)
+    except Exception:
+        pass
+    confidence = output.get("confidence", 0.0)
+    if confidence < min_conf:
+        logger.debug(
+            f"Reflection confidence {confidence} < {min_conf}, not consuming"
+        )
+        # Audit (#9): return None so a low-confidence reflection neither
+        # persists nor consumes the daily quota. The native engine returns None
+        # here (discard), so returning the raw output made the fallback
+        # inconsistent — it counted (and the old code surfaced) reflections the
+        # native would drop. Returning None keeps both engines aligned with the
+        # "confidence < threshold auto-discards" contract.
+        return None
+
+    # Consume the reflection into the memory stores.
+    if memory_agent is not None:
+        knowledge_agent = getattr(memory_agent, "knowledge_agent", None)
+        if knowledge_agent is not None:
+            _merge_semantic(output, knowledge_agent)
+            _merge_procedural(output, knowledge_agent)
+        user_agent = getattr(memory_agent, "user_agent", None)
+        if user_agent is not None:
+            _merge_user_preferences(output, user_id, platform, user_agent)
+        _update_rl_weights(output, memory_agent)
+
+    # Persist a reflection record (gated by the persistence flag).
+    import time as _time
+    # Audit (MED-7): the id must be unique per reflection. Second-granularity
+    # int(time.time()) let two same-user reflections in the same second collide
+    # on the reflections PK, so the second INSERT OR REPLACE silently overwrote
+    # the first. time.time_ns() (sub-nanosecond-resolution wall clock) makes
+    # same-process same-second collisions practically impossible, matching the
+    # native engine's uuid-based uniqueness without changing the id prefix.
+    record = {
+        "id": f"reflection:{user_id}:{_time.time_ns()}",
+        "user_id": user_id,
+        "platform": platform,
+        "source_episodic_ids": [r.get("id", f"rec_{i}") for i, r in enumerate(records)],
+        "reflection": {
+            "key_insights": output.get("key_insights", []),
+            "user_preferences": output.get("user_preferences", []),
+            "procedural_rules": output.get("procedural_rules", []),
+            "new_knowledge": output.get("new_knowledge", []),
+            "importance_scores": output.get("importance_scores", {}),
+            "forget_suggestions": output.get("forget_suggestions", []),
+            "confidence": confidence,
+        },
+        "meta": {"source": output.get("source", "reflection")},
+    }
+    if store is not None:
+        _save_reflection(record, store, memory_agent)
+
+    logger.info(f"Reflection consumed for {user_id}/{platform} (conf={confidence})")
+    return output
 
 
 def _prepare_reflection_context(records):
@@ -215,20 +284,111 @@ def _prepare_reflection_context(records):
 
 
 def _merge_semantic(output, knowledge_agent):
-    pass
+    """P1-A: write reflection insights/new knowledge back to the knowledge store.
+
+    Consumes the output dict schema (output.key_insights / output.new_knowledge).
+    Guarded per item so a bad entry never aborts the whole merge.
+    """
+    if not isinstance(output, dict):
+        return
+    for insight in output.get("key_insights") or []:
+        try:
+            knowledge_agent.add_document(
+                content=insight,
+                metadata={"domain": "insight", "source": "reflection"},
+            )
+        except Exception as e:
+            logger.warning(f"Failed to store reflection insight: {e}")
+    for item in output.get("new_knowledge") or []:
+        try:
+            knowledge_agent.add_document(
+                content=item,
+                metadata={"domain": "knowledge", "source": "reflection"},
+            )
+        except Exception as e:
+            logger.warning(f"Failed to store reflection knowledge: {e}")
 
 
 def _merge_procedural(output, knowledge_agent):
-    pass
+    """P1-A: write reflection procedural rules back to the knowledge store."""
+    if not isinstance(output, dict):
+        return
+    for rule in output.get("procedural_rules") or []:
+        try:
+            knowledge_agent.add_document(
+                content=rule,
+                metadata={"domain": "procedural", "source": "reflection"},
+            )
+        except Exception as e:
+            logger.warning(f"Failed to store reflection rule: {e}")
 
 
 def _merge_user_preferences(output, user_id, platform, user_agent):
-    pass
+    """P1-A: write reflection-derived user preferences back to the user store.
+
+    Supports both "key=value" entries (parsed into a nested dict) and bare
+    keys (stored as True).
+    """
+    if not isinstance(output, dict):
+        return
+    prefs_list = output.get("user_preferences") or []
+    if not prefs_list:
+        return
+    prefs = {}
+    for p in prefs_list:
+        if not isinstance(p, str) or not p.strip():
+            continue
+        if "=" in p:
+            k, v = p.split("=", 1)
+            prefs[k.strip()] = v.strip()
+        else:
+            prefs[p.strip()] = True
+    if not prefs:
+        return
+    try:
+        # Audit (MED-10): pass platform through so reflection-derived
+        # preferences land in the platform-specific bucket, not _default only.
+        # user_agent.update() nests into both _default and the named platform
+        # when platform is given, matching the store's per-platform contract.
+        user_agent.update(user_id, "preferences", prefs, source="reflection",
+                          platform=platform)
+        logger.info(f"Updated {len(prefs)} reflection preferences for {user_id}/{platform}")
+    except Exception as e:
+        logger.warning(f"Failed to update reflection preferences: {e}")
 
 
 def _update_rl_weights(output, memory_agent):
-    pass
+    """P1-A: deprioritize forget-suggestion areas from the reflection via decay_all.
+
+    A single decay_all call regardless of suggestion count, so N suggestions
+    don't compound exponential decay (0.95^N).
+    """
+    if not isinstance(output, dict) or not hasattr(memory_agent, "rl_optimizer"):
+        return
+    suggestions = output.get("forget_suggestions") or []
+    if suggestions and hasattr(memory_agent.rl_optimizer, "decay_all"):
+        try:
+            memory_agent.rl_optimizer.decay_all()
+            logger.info(
+                f"RL weights decayed based on {len(suggestions)} reflection forget suggestion(s)"
+            )
+        except Exception as e:
+            logger.warning(f"Failed to update RL weights: {e}")
 
 
-def _save_reflection(record, store, memory_agent):
-    pass
+def _save_reflection(record, store, memory_agent=None):
+    """P1-A: persist a completed reflection record (respecting the persistence gate).
+
+    Gate on the persistence flag when a memory agent is available
+    (memory_agent.is_persistence_enabled()); when no agent is passed, fall
+    through to the store so a caller that only has a store can still persist.
+    """
+    if not isinstance(record, dict) or store is None:
+        return
+    if memory_agent is not None and hasattr(memory_agent, "is_persistence_enabled"):
+        if not memory_agent.is_persistence_enabled():
+            return
+    try:
+        store.save_reflection(record)
+    except Exception as e:
+        logger.warning(f"Failed to save reflection: {e}")

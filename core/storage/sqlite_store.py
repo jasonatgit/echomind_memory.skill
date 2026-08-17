@@ -2,6 +2,7 @@
 # Fix: WAL Enable + write lock + threading import + datetime import
 
 import functools
+import hashlib
 import json
 import logging
 import os
@@ -14,12 +15,30 @@ from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
+
+def stable_memory_key(user_id: str, task_id: str) -> str:
+    """Deterministic, delimiter-safe composite key for task-scoped records.
+
+    B5/B6 fix: task_id itself can contain ':' (e.g. Hermes "{session}:turn{n}"),
+    so the old f"{user_id}:{task_id}" made the primary key ambiguous and
+    impossible to split reliably — breaking delete/state lookups. This hashes
+    the pair with a NUL separator so the key is unambiguous and stable across
+    every call site (task_memory.id, context_memory.session_id,
+    knowledge_memory.id, memory_states.memory_id).
+    """
+    digest = hashlib.sha256(f"{user_id}\x00{task_id}".encode("utf-8")).hexdigest()
+    return f"t:{digest[:24]}"
+
+
 DB_DIR = Path.home() / ".echomind"
 DB_PATH = DB_DIR / "memory.db"
 
 # load_* methods use this default LIMIT to prevent unbounded memory growth
-# on databases with very large record counts (>10,000).
-_LOAD_LIMIT = 1000
+# on databases with very large record counts. B8 fix: align with the agents'
+# MAX_ITEMS (5000) so a truncation here does not silently drop records the
+# in-memory store is expected to hold; memory for 5000 rows is bounded and
+# acceptable, and the previous 1000 caused silent, unrecoverable drift.
+_LOAD_LIMIT = 5000
 
 # Text columns that should never be None when loaded from DB
 # (ALTER TABLE ADD COLUMN leaves NULL in existing rows even with DEFAULT)
@@ -400,8 +419,17 @@ class SqliteStore:
                     updated_at TEXT DEFAULT (datetime('now'))
                 );
 
+                -- 10. Reflection daily counters: per-(user, date) reflection quota
+                -- consumed by the daily limit. Persisted so the limit survives
+                -- process restarts and is isolated per user (P5-B).
+                CREATE TABLE IF NOT EXISTS reflection_daily_count (
+                    user_id TEXT NOT NULL,
+                    date TEXT NOT NULL,
+                    count INTEGER NOT NULL DEFAULT 0,
+                    PRIMARY KEY (user_id, date)
+                );
+
                 -- index
-                CREATE INDEX IF NOT EXISTS idx_task_user ON task_memory(user_id);
                 CREATE INDEX IF NOT EXISTS idx_task_project ON task_memory(project);
                 CREATE INDEX IF NOT EXISTS idx_task_updated ON task_memory(updated_at);
                 CREATE INDEX IF NOT EXISTS idx_task_session ON task_memory(session_id);
@@ -416,6 +444,11 @@ class SqliteStore:
                 CREATE INDEX IF NOT EXISTS idx_research_user ON research_papers(user_id);
                 CREATE INDEX IF NOT EXISTS idx_notes_user ON research_notes(user_id);
                 CREATE INDEX IF NOT EXISTS idx_session_transcripts_user ON session_transcripts(user_id);
+                -- P6-A: missing join/lookup indexes (idempotent)
+                CREATE INDEX IF NOT EXISTS idx_knowledge_content ON knowledge_memory(content);
+                CREATE INDEX IF NOT EXISTS idx_task_user_created ON task_memory(user_id, created_at);
+                CREATE INDEX IF NOT EXISTS idx_experience_user_created ON experience_memory(user_id, created_at);
+                CREATE INDEX IF NOT EXISTS idx_reflections_user ON reflections(user_id, created_at);
             """)
             self._maybe_commit()
             self._migrate_existing_tables()
@@ -480,6 +513,15 @@ class SqliteStore:
                         except sqlite3.OperationalError as e:
                             err = str(e).lower()
                             if "duplicate column" in err or "already exists" in err:
+                                # B9: an idempotent DDL already applied in a
+                                # prior (possibly partial) run. Log rather than
+                                # advance silently so a half-applied migration
+                                # is observable; the remaining stmts still run,
+                                # and user_version is only bumped after the whole
+                                # migration's stmts complete.
+                                logger.warning(
+                                    "Migration v%d skip (already applied): %s",
+                                    version, err)
                                 continue
                             raise
                     self._conn.execute(f"PRAGMA user_version = {version}")
@@ -829,7 +871,7 @@ class SqliteStore:
                   session_title: str = "", tags: List = None,
                   profile: str = "default", language: str = ""):
         with self._lock:
-            task_pk = f"{user_id}:{task_id}"
+            task_pk = stable_memory_key(user_id, task_id)
             self._conn.execute("""
                 INSERT INTO task_memory (id, user_id, title, status, steps, metadata,
                     project, profile, session_id, session_title, tags, language, updated_at, last_access_at)
@@ -915,11 +957,17 @@ class SqliteStore:
                        session_title: str = "", tags: List = None,
                        profile: str = "default", language: str = ""):
         with self._lock:
+            _acc = 0
+            _m = metadata or {}
+            if isinstance(_m, dict):
+                _raw_acc = _m.get("access_count", 0)
+                if isinstance(_raw_acc, (int, float)):
+                    _acc = int(_raw_acc)
             self._conn.execute("""
                 INSERT INTO knowledge_memory (id, domain, content, metadata, trust_score,
                     entry_type, prerequisites, output_template, user_id, project, profile,
-                    session_id, session_title, tags, language, updated_at, last_access_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+                    session_id, session_title, tags, language, access_count, updated_at, last_access_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
                 ON CONFLICT(id) DO UPDATE SET
                     content=excluded.content, metadata=excluded.metadata,
                     trust_score=excluded.trust_score, domain=excluded.domain,
@@ -929,12 +977,13 @@ class SqliteStore:
                     entry_type=excluded.entry_type,
                     prerequisites=excluded.prerequisites,
                     output_template=excluded.output_template,
+                    access_count=knowledge_memory.access_count + 1,
                     updated_at=datetime('now'),
                     last_access_at=datetime('now')
             """, (knowledge_id, domain, content, json.dumps(metadata or {}), trust_score,
                   entry_type, json.dumps(prerequisites or []), output_template,
                   user_id, project, profile, session_id, session_title,
-                  json.dumps(tags or []), language))
+                  json.dumps(tags or []), language, _acc))
             self._maybe_commit()
 
     @with_retry_on_busy()
@@ -1152,6 +1201,39 @@ class SqliteStore:
             )
             self._maybe_commit()
 
+    # ── Daily reflection quota (P5-B): per-(user, date) counters ──
+
+    @with_retry_on_busy()
+    @_require_conn
+    def get_daily_reflection_count(self, user_id: str, date: str) -> int:
+        """Return how many reflections this user has consumed on the given UTC
+        date (ISO yyyy-mm-dd). Missing row → 0."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT count FROM reflection_daily_count WHERE user_id=? AND date=?",
+                (user_id, date),
+            ).fetchone()
+            return int(row["count"]) if row else 0
+
+    @with_retry_on_busy()
+    @_require_conn
+    def increment_daily_reflection_count(self, user_id: str, date: str) -> int:
+        """Atomically increment and return the user's reflection count for the
+        given UTC date. The row is created on first use within the day."""
+        with self._lock:
+            self._conn.execute(
+                """INSERT INTO reflection_daily_count (user_id, date, count)
+                   VALUES (?, ?, 1)
+                   ON CONFLICT(user_id, date) DO UPDATE SET count = count + 1""",
+                (user_id, date),
+            )
+            self._maybe_commit()
+            row = self._conn.execute(
+                "SELECT count FROM reflection_daily_count WHERE user_id=? AND date=?",
+                (user_id, date),
+            ).fetchone()
+            return int(row["count"]) if row else 1
+
     @_require_conn
     def get_recent_episodic(self, user_id: str, count: int = 8,
                             profile: str = None) -> List[Dict]:
@@ -1236,6 +1318,23 @@ class SqliteStore:
 
     @with_retry_on_busy()
     @_require_conn
+    def delete_task(self, user_id: str, task_id: str) -> bool:
+        """Delete a task by (user_id, task_id), reconstructing the stable key.
+
+        B5/B6 closure: callers that know the pair no longer need to reproduce
+        the (delimiter-ambiguous) composite id — this resolves the key the same
+        way save_task/create_task do, so the row is always addressable.
+        """
+        with self._lock:
+            cursor = self._conn.execute(
+                "DELETE FROM task_memory WHERE id=?",
+                (stable_memory_key(user_id, task_id),),
+            )
+            self._maybe_commit()
+            return cursor.rowcount > 0
+
+    @with_retry_on_busy()
+    @_require_conn
     def delete_user_memories(self, user_id: str, profile: str = None) -> Dict[str, int]:
         """Delete all memory records for a user. Returns counts per table."""
         results = {}
@@ -1263,7 +1362,9 @@ class SqliteStore:
         Uses last_access_at if available, falls back to updated_at/created_at
         for legacy records created before the last_access_at field was added.
         """
-        # Fallback timestamp columns per table (for records with empty last_access_at)
+        # Fallback timestamp columns per table (used when last_access_at is
+        # absent or empty). Every table in MEMORY_TABLES must have an entry so
+        # the delete never references a non-existent column.
         _FALLBACK_TS = {
             "user_memory": "last_updated",
             "task_memory": "updated_at",
@@ -1271,6 +1372,9 @@ class SqliteStore:
             "knowledge_memory": "updated_at",
             "research_papers": "created_at",
             "experience_memory": "created_at",
+            "research_notes": "updated_at",
+            "reflections": "created_at",
+            "session_transcripts": "updated_at",
         }
         results = {}
         with self._lock:
@@ -1280,21 +1384,37 @@ class SqliteStore:
                 table = self.MEMORY_TABLES.get(key)
                 if not table:
                     continue
+                # Discover actual columns present: some tables only have a
+                # fallback timestamp column (no last_access_at), so we cannot
+                # write a fixed CASE expression.
+                cols = {r["name"] for r in self._conn.execute(
+                    f"PRAGMA table_info({table})").fetchall()}
                 fallback = _FALLBACK_TS.get(table, "")
-                if fallback:
+                has_ts = fallback in cols
+                if "last_access_at" in cols and has_ts:
                     cursor = self._conn.execute(
                         f"DELETE FROM {table} WHERE "
                         f"(CASE WHEN last_access_at = '' THEN {fallback} ELSE last_access_at END) "
                         f"< datetime('now', ?)",
                         (f"-{days} days",),
                     )
-                else:
-                    # No fallback column — only delete records with a valid last_access_at
+                elif "last_access_at" in cols:
                     cursor = self._conn.execute(
                         f"DELETE FROM {table} WHERE last_access_at != '' AND "
                         f"last_access_at < datetime('now', ?)",
                         (f"-{days} days",),
                     )
+                elif has_ts:
+                    cursor = self._conn.execute(
+                        f"DELETE FROM {table} WHERE {fallback} < datetime('now', ?)",
+                        (f"-{days} days",),
+                    )
+                else:
+                    logger.warning(
+                        "delete_expired: table %s has no last_access_at or "
+                        "fallback timestamp column; skipping", table)
+                    results[key] = 0
+                    continue
                 results[key] = cursor.rowcount
             self._maybe_commit()
         return results

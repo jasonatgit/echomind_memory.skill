@@ -300,7 +300,9 @@ def api_reflect(req: ReflectRequest, auth=Depends(verify_api_key)):
                 # M-6 fix: process_result returns None both for a genuine parse
                 # failure AND for hitting the daily reflection limit. Distinguish
                 # them so callers get 429 (limit) not a misleading 400 (parse).
-                if memory_agent.reflective._check_daily_limit():
+                # P5-B made the limit per-user; pass req.user_id so the 429 path
+                # doesn't TypeError (audit HIGH-1).
+                if memory_agent.reflective._check_daily_limit(req.user_id):
                     raise HTTPException(
                         status_code=429,
                         detail="Daily reflection limit reached; try again tomorrow",

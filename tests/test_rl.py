@@ -161,3 +161,84 @@ def test_predict_score_range():
     state = opt.extract_state({}, [{"source": "knowledge", "relevance": 0.5}] * 8)
     score = opt.predict_score(state)
     assert np.isfinite(score)
+
+
+# ── P5-A: per-user learning meta-state isolation ───────────────────
+
+def test_meta_state_isolated_per_user():
+    """One user's feedback may advance only their own LR/exploration schedule,
+    history and snapshots — never the other user's (process-wide) counter."""
+    opt = _optimizer()
+    # _feedback() stamps user_id="u1", so these 10 feedbacks drive user u1.
+    for _ in range(10):
+        opt.add_feedback(_feedback("positive"))
+    # u1 did one full flush → 1 update; u2 (untouched) must be pristine.
+    assert opt._meta_for("u1")["update_counter"] == 1
+    assert len(opt._history_for("u1")) == 1
+    assert opt._meta_for("u2")["update_counter"] == 0
+    assert opt._meta_for("u2")["epsilon_step"] == 0
+    assert opt._history_for("u2") == []
+    assert opt._snapshots_for("u2") == []
+    # u1's state is untouched while inspecting u2.
+    assert opt._meta_for("u1")["update_counter"] == 1
+
+
+def test_public_meta_attrs_follow_active_user():
+    """The read-through scalars/lists (update_counter, history, ...) reflect
+    whichever user's weights are currently loaded."""
+    opt = _optimizer()
+    for _ in range(10):
+        opt.add_feedback(_feedback("positive"))  # user_id="u1"
+    opt.load_weights_for_user({}, user_id="u2")
+    assert opt.update_counter == 0  # pristine u2
+    assert opt.history == []
+    opt.load_weights_for_user({}, user_id="u1")
+    assert opt.update_counter == 1  # u1's advanced counter
+    assert len(opt.history) == 1
+    # get_history is user-scoped too.
+    assert opt.get_history(user_id="u2") == []
+    assert len(opt.get_history(user_id="u1")) == 1
+
+
+# ── B4: simplex projection fixes the sum≠1 + box violation ──────────
+
+def test_simplex_projection_sum_equals_one_and_in_range():
+    """_project_simplex must yield sum==1 with every dimension in its range."""
+    opt = _optimizer()
+    # Perturb weights far out of the feasible region.
+    opt.weights = {
+        "relevance": 0.9,
+        "recency": 0.05,
+        "frequency": 0.5,
+        "explicit_feedback": 0.01,
+        "trust_score": 0.8,
+    }
+    projected = opt._project_simplex(update_weights=True)
+    s = sum(projected.values())
+    assert abs(s - 1.0) < 1e-6, f"sum={s} (projected={projected})"
+    for k, spec in opt._WEIGHT_SPEC.items():
+        lo, hi = spec["range"]
+        assert lo - 1e-6 <= projected[k] <= hi + 1e-6, (
+            f"{k}={projected[k]} outside [{lo},{hi}]")
+
+
+def test_update_weights_preserves_sum_after_simplex():
+    """After a feedback flush, weights must sum to 1 and stay in range."""
+    opt = _optimizer()
+    mems = [{"source": "knowledge", "relevance": 0.9,
+             "metadata": {"trust_score": 0.9}}] * 4
+    for _ in range(10):
+        opt.add_feedback(_feedback("positive", mems[:]))
+    s = sum(opt.weights.values())
+    assert abs(s - 1.0) < 1e-6, f"sum={s}"
+    for k, spec in opt._WEIGHT_SPEC.items():
+        lo, hi = spec["range"]
+        assert lo - 1e-6 <= opt.weights[k] <= hi + 1e-6
+
+
+def test_predict_score_in_reward_domain():
+    """predict_score must live in (-1, 1) so it is comparable to advantage."""
+    opt = _optimizer()
+    state = opt.extract_state({}, [{"source": "knowledge", "relevance": 0.5}] * 8)
+    score = opt.predict_score(state)
+    assert -1.0 < score < 1.0, f"predict_score={score} out of (-1,1)"

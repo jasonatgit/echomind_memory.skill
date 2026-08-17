@@ -1,5 +1,34 @@
 # EchoMind 更新日志
 
+## v1.2.10 — 算法优化轮 (2026-08-15)
+
+算法优化轮：补齐反思闭环，并强化 RL 学习路径的按用户隔离。
+
+| 领域 | 改动 |
+|------|------|
+| **反思闭环** | `_reflective_fallback.py` 实现 4 个 `_merge_*`/`_save_reflection` 桩并消费 `_process_reflection` 产物 (P1-A)；新增与 `decay_all` 对称的正向 `_reinforce_weights` 臂，并修复 few-shot 提示词构建 bug (P1-B) |
+| **RL 信用分配** | `_update_weights` 只对 mapped 源真实出现的维度给予方向性增量 (P2-B)——此前 softmax + M-4 中性回退会稀释每次正向反馈，任何维度份额都无法有效抬升 |
+| **归一化不变量** | 声明 `_WEIGHT_INVARIANT_UPDATE/DECAY = "linear"` 并把周期性反发散 `decay_all` 接入 `_update_weights` (P3-A)；修复 `decay_all` 先归一化后 clamp 的顺序（range 不变量） |
+| **日限额 per-user + 持久化** | 反思日限改为按 `(user_id, 日期)` 计并持久化到 SQLite（`reflection_daily_count`），重启后仍生效 (P5-B) |
+| **RL meta-state per-user** | LR/探索调度、history、发散快照、累计计数全部按用户键控——一个用户的反馈不再推进另一个用户的学习轨迹 (P5-A) |
+| **存储索引** | 补幂等连接/查找索引（knowledge 内容、task/experience 按 user+created、reflections 按 user+created）(P6-A) |
+
+**测试：** 102 通过（含新增日限、meta-state 隔离、反思闭环、RL 投影、稳定 ID、存储、新鲜度回归测试）。
+
+**补充审计轮（发布后修复）：**
+- **HIGH-1**：`/api/reflect` 将 `user_id` 传给 `_check_daily_limit`，命中日限时返回 429 而非 TypeError-500（恢复「日限/解析失败」状态区分）。
+- **日限权威读取 (MED-2)**：计数改为每次从 store 重新读取（不再每实例 seed 一次），HTTP 与 Hermes 共享同一 DB 时不再各自跑满限额（2×~N× 超发）。新增跨实例可见性回归测试。
+- **RL 空信用 no-op (MED-3)**：`retrieved_memories` 为空（空 `present_set`）的反馈不信用任何维度，也不再推进实际未挣得的探索调度。
+- **RL 线程安全 (MED-5)**：load/decay/flush 由 per-optimizer 锁串行化。
+- **反思单点持久化 (MED-6)**：删除 `_run` 重复 `auto:` 保存；fallback `_process_reflection` 为唯一写者，与 native 引擎对称。
+- **反思 id 唯一性 (MED-7)**：id 改用 `time.time_ns()`——不再有同秒 PK 撞车/覆盖。
+- **混合语言分词 (MED-8)**：无论整体语言检测结果都提取 CJK bigram，混合中英串（及 kana/hangul）不再在知识演化 Jaccard 中丢弃全部汉字。
+- **experience 相关性 vs 频率 (MED-9)**：`find_similar_tasks` 的相关性改为查询 token 覆盖率，不再是伪装的频率函数——frequency 不再被二次计入。
+- **偏好 platform 透传 (MED-10)**：反思产出的偏好落入平台专属 bucket，而非仅 `_default`。
+- **低置信度丢弃 (P1-A #9)**：低于阈值的 fallback 反思返回 `None`（既不持久化也不耗配额），与 native 引擎一致。
+- **打磨**：剪枝过期日限缓存键 (#7)；删除冗余 `task_memory(user_id)` 索引 (#10)；提升模块级 import (O1)；收拢死代码 `_compute_rcw_advantages` 包装并更正 clamp/decay 注释 (F8/F4/F5)。
+
+---
 ## v1.2.9 — Markdown 呈现与 Hermes v0.20 适配 (2026-08-12)
 
 | 功能 | 说明 |

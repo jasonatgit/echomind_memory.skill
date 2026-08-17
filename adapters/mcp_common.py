@@ -351,7 +351,7 @@ def handle_mcp_request(msg: dict) -> dict:
         return {"jsonrpc": "2.0", "id": msg_id, "result": {
             "protocolVersion": "2024-11-05",
             "capabilities": {"tools": {}, "resources": {}},
-            "serverInfo": {"name": "echomind-mcp", "version": "1.2.9"},
+            "serverInfo": {"name": "echomind-mcp", "version": "1.2.10"},
         }}
     elif method == "tools/list":
         return {"jsonrpc": "2.0", "id": msg_id, "result": handle_tools_list()}

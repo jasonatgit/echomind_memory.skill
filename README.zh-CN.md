@@ -14,7 +14,7 @@
 🌐 **English Version:** [README.md](README.md)
 
 
-> 支持 Hermes Agent、OpenClaw、OpenCode、Claude Code 等智能体的长期记忆引擎。
+> 支持 Hermes Agent、OpenClaw、OpenCode、Claude Code、 DeepSeek Haeness(DSH) 等智能体的长期记忆引擎。
 
 > 让你的 AI 不再"失忆"——记得你的偏好、风格、研究方法，自我反思自我进化。
 
@@ -98,6 +98,7 @@ EchoMind 记忆系统专门针对*科研方向*的记忆进行了优化，对查
 | **OpenClaw** | `skill.yaml` + HTTP API 工具调用 | ★★★★☆ LLM 决策 |
 | **OpenCode** | CLI + HTTP API 或 MCP stdio | ★★★★☆ LLM 决策 |
 | **Claude Code** | MCP stdio 或 HTTP API | ★★★★☆ LLM 决策 |
+| **DeepSeek Haeness(DSH)** | MCP stdio 或 HTTP API | ★★★★☆ LLM 决策 |
 
 
 ---
@@ -126,6 +127,7 @@ EchoMind 记忆系统专门针对*科研方向*的记忆进行了优化，对查
 
 | 版本 | 核心要点 |
 |:--------|:-----------|
+| v1.2.10 | *反思闭环、真实 RL 信用分配、按用户 meta-state 与日限额、存储索引。* |
 | v1.2.9 | *Markdown 记忆档案（9 节 .md）、Hermes v0.20 适配、认知位置生命周期。* |
 | v1.2.8 | *自我反思进化：认知状态分类、溯源追踪、架构自诊断。* |
 | v1.2.7 | *深度代码审查：42 项 bug 修复与 48 项回归测试。* |
@@ -314,3 +316,80 @@ EchoMind 提供 7 个 MCP 工具：
 是。MCP stdio 兼容任何 MCP 客户端（Claude Desktop、Cursor、Cline 等）。远程 HTTP MCP 使用 Streamable HTTP 传输协议，这是 MCP 社区标准协议。
 
 </details>
+
+## 🔌 DeepSeek Harness (DSH) 通过 MCP 调用 EchoMind 作为永久记忆引擎
+
+DeepSeek Harness (DSH) 是 DeepSeek 的 agent 框架。EchoMind 内置标准 MCP 网关（stdio + Streamable HTTP），可通过 DSH 的官方桥插件 `@deepseek-ai/dsh-mcp-client` 接入，作为 DSH 的永久记忆引擎。**无需修改 EchoMind 任何代码。**
+
+接入后，EchoMind 的 7 个 MCP 工具会以 `mcp__echomind__<tool>` 形式暴露给 DSH 的 agent：`echomind_retrieve`（检索）、`echomind_store`（存储）、`echomind_search`（搜索）、`echomind_feedback`（反馈，驱动 RL 自优化）、`echomind_reflect`（反思）、`echomind_delete`（删除）、`echomind_health`（健康检查）。
+
+> EchoMind 的 `mcp_gateway.py` 实际路径视安装方式而定（Hermes 安装为 `~/.hermes/skills/echomind-memory/`，独立安装以 `pip` 路径为准）。下文以 `<ECHOMIND_DIR>` 占位，请替换为实际目录。
+
+### 方式一：临时启用（测试用）
+
+创建 `echomind.cordis.yml`：
+
+```yaml
+- insert:
+    - id: memory-echomind
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: echomind
+        transport: stdio
+        command: python3
+        args: ['<ECHOMIND_DIR>/adapters/mcp_gateway.py']
+        cwd: !!js process.cwd()
+```
+
+启动 DSH 并临时加载：
+
+```bash
+dsh web --patch "$PWD/echomind.cordis.yml"
+```
+
+> 实际命令依你的 DSH 安装与 profile 而定（`dsh web` / `dsh headless` / 直接 `dsh`）。
+
+### 方式二：持久化到 DSH profile（推荐长期使用）
+
+将上面的 `insert` 块写入 DSH 的实际补丁文件：
+
+```bash
+# 每 profile（<name> 替换为实际 profile 名，如 web / headless）
+$DSH_HOME/profiles/<name>/cordis.patch.yml
+
+# 或机器级（所有 profile）
+$DSH_HOME/cordis.patch.yml
+```
+
+直接编辑该文件并**追加** `insert` 块即可，不要覆盖已有文件（它可能已含其他用户补丁）。
+
+> ⚠️ DSH 的 stdio 桥会剥离疑似凭证的环境变量。如需 API Key 认证，请显式在 `config.env` 传入 `ECHOMIND_API_KEY`，勿依赖 ambient 环境。
+
+### 方式三：远程 HTTP 模式（可选）
+
+若 EchoMind HTTP 服务已在运行（`python main.py`，端口 8005）：
+
+```yaml
+- insert:
+    - id: memory-echomind
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: echomind
+        transport: streamable-http
+        url: http://127.0.0.1:8005/mcp
+```
+
+> ⚠️ HTTP MCP 模式需 EchoMind HTTP 服务保持运行（`python main.py`）。stdio 模式不受影响。
+
+### 使用建议
+
+DSH 的 MCP 桥只暴露工具、不挂载生命周期钩子，因此 EchoMind 无法在 DSH 侧自动逐轮注入记忆。请在 DSH 的 agent/system prompt 中加入引导：
+
+> 当用户要求记录某事时，调用 `echomind_store`；当历史信息可能相关时，调用 `echomind_search` / `echomind_retrieve` 并引用结果。
+
+### 验证步骤
+
+1. 启动 DSH，确认 `mcp__echomind__echomind_health` 等工具已注册（工具发现是异步的，请稍候）。
+2. 在会话 A 中让模型调用 `echomind_store` 记录一条唯一标记的记忆，确认成功。
+3. 新建会话 B（不复制 A），询问该记忆，确认模型调用了 `echomind_search`/`echomind_retrieve` 并返回正确值。
+

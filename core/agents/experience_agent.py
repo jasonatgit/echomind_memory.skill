@@ -114,6 +114,7 @@ class ExperienceMemoryAgent:
             q_tokens = adaptive_tokenize(task_context) if task_context else []
             lang = detect_language(task_context) if task_context else "en"
             n_take = 10 if lang == "zh" else 5
+            match_ratio = 0.5  # default: no query (enumerate-all) → neutral relevance
             if not q_tokens:
                 # V8-2 fix (preserved): an empty context means "enumerate all
                 # candidates" (memory.md export path).
@@ -130,12 +131,26 @@ class ExperienceMemoryAgent:
                 entry_lower = entry.summary.lower()
                 matches = {k for k in probe_tokens if k in entry_lower}
                 matched = len(matches) >= 2 if (lang == "zh" and len(probe_tokens) > 1) else bool(matches)
+                # Audit (MED-9/R7): relevance should measure how much of the query
+                # matched, NOT be a disguised frequency function. It previously
+                # was min(0.9, 0.3+0.1*freq) — purely frequency-driven — so (a)
+                # frequency was double-counted in _compute_importance (once via
+                # relevance * weights["relevance"], once via freq_n *
+                # weights["frequency"]), degrading the meaning of the relevance
+                # weight, and (b) sorting by relevance was equivalent to sorting
+                # by raw frequency, so the "higher-frequency task isn't starved"
+                # comment described intent the code never implemented. Token
+                # coverage (matched query tokens / query tokens) is the real
+                # query-match signal; frequency stays counted only once (via
+                # freq_n in _compute_importance).
+                if probe_tokens:
+                    match_ratio = len(matches) / len(probe_tokens)
             if matched:
                 similar.append({
                     "id": entry.id, "summary": entry.summary,
                     "steps": entry.steps_sequence, "success": entry.success,
                     "frequency": entry.frequency,
-                    "relevance": min(0.9, 0.3 + 0.1 * entry.frequency),
+                    "relevance": min(0.9, match_ratio),
                     # M-R4 fix: expose a domain/category so _diversify_top_k's
                     # _item_domain() can classify experiences and apply
                     # domain-level diversity. ExperienceEntry has no dedicated
@@ -153,5 +168,11 @@ class ExperienceMemoryAgent:
                     "created_at": entry.created_at.isoformat() if entry.created_at else "",
                     "last_access_at": entry.last_access_at.isoformat() if hasattr(entry, 'last_access_at') and entry.last_access_at else "",
                 })
-        similar.sort(key=lambda x: x["frequency"], reverse=True)
+        # P4 + audit (MED-9/R7): rank by the genuine query-match relevance
+        # (token coverage), so a "related but lower-frequency" task outranks an
+        # unrelated hot task. Previously relevance was min(0.9, 0.3+0.1*freq) —
+        # a pure frequency function — making this sort equivalent to raw
+        # frequency and the anti-starvation intent unimplemented. It is now
+        # match-based; frequency is counted separately (freq_n) downstream.
+        similar.sort(key=lambda x: x["relevance"], reverse=True)
         return similar[:limit]

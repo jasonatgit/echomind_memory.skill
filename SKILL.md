@@ -1,6 +1,6 @@
 ---
 name: echomind-memory
-version: "1.2.9"
+version: "1.2.10"
 description: EchoMind Memory — AI 持久记忆系统。支持 Hermes、OpenCode、OpenClaw、Claude Code 等多平台。6 种记忆类型 + reflective agent + self-reflection (epistemic mode, provenance, self-diagnosis)。
 category: software-development
 platforms:
@@ -16,7 +16,7 @@ tags:
   - self-reflection
 ---
 
-# EchoMind Memory v1.2.2
+# EchoMind Memory v1.2.10
 
 ## 概述
 
@@ -35,7 +35,7 @@ EchoMind Memory 是一个纯 SQLite 的 AI 持久记忆系统，无需 PostgreSQ
 
 ### RL 自优化
 
-用户反馈（👍/👎）通过 RL 权重优化器调整检索重要性权重。权重持久化到 `user_memory.preferences.rl_weights`，重启后自动恢复。
+用户反馈（👍/👎）通过 RL 权重优化器调整检索重要性权重（relevance/recency/frequency/explicit_feedback/trust_score）。信用分配只对反馈中真实出现的记忆来源维度给予方向性增量，并按用户隔离学习状态（meta-state、历史、快照）。权重持久化到 `user_memory.preferences.rl_weights`，重启后自动恢复。
 
 ### Self-Reflective Agent (v1.1.0)
 
@@ -44,8 +44,8 @@ EchoMind Memory 是一个纯 SQLite 的 AI 持久记忆系统，无需 PostgreSQ
 - **触发**：每 N 次 store 自动标记 `_pending_reflection`
 - **Hermes**：`on_session_end` 自动调 `localhost:9119` → 用户已配 LLM → 零配置
 - **HTTP**：`POST /api/reflect` 端点，调用方自己的 LLM 处理 prompt
-- **输出**：key_insights → knowledge_memory / preferences → user_memory / rules → procedural
-- **安全**：confidence < 0.6 自动丢弃，失败静默降级
+- **输出**：key_insights → knowledge_memory / preferences → user_memory / rules → procedural；满足置信度阈值后消费写回各记忆 store，并按 (user, date) 持久化日限额
+- **安全**：confidence < 0.65 自动丢弃，失败静默降级
 
 ## 平台集成
 
@@ -163,7 +163,7 @@ echomind_config.yaml 内置 45 个知识领域，覆盖：运筹学、供应链�
 │   ├── reflective_agent.py ← Self-Reflective Agent (v1.1.0)
 │   ├── storage/
 │   │   ├── __init__.py
-│   │   └── sqlite_store.py ← 存储层 9 张表 (WAL)
+│   │   └── sqlite_store.py ← 存储层 14 张表 (WAL)
 │   ├── models/
 │   │   ├── context.py, task.py, user.py
 │   │   ├── knowledge.py, experience.py
@@ -184,7 +184,7 @@ echomind_config.yaml 内置 45 个知识领域，覆盖：运筹学、供应链�
 ### 依赖与数据库
 
 - **依赖**: `pydantic>=2.7`, `python-dotenv>=1.0`, `numpy>=1.26`, `PyYAML>=6.0`
-- **数据库**: `~/.echomind/memory.db`（可在 `echomind_config.yaml` 中修改），9 张表自动创建
+- **数据库**: `~/.echomind/memory.db`（可在 `echomind_config.yaml` 中修改），14 张表自动创建
 
 ### Hermes Agent（推荐 — 100% 自动存取）
 

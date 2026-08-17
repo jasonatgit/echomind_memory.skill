@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from typing import List, Dict, Optional
 
 from ..models.task import TaskMemory
+from ..storage.sqlite_store import stable_memory_key
 
 logger = logging.getLogger("MemoryAgent")
 
@@ -33,7 +34,7 @@ class TaskMemoryAgent:
             steps=steps, profile=profile, project=project,
             metadata={"task_type": task_type} if task_type else {},
         )
-        store_key = f"{user_id}:{task_id}"
+        store_key = stable_memory_key(user_id, task_id)
         self.store[store_key] = task
         self._evict_oldest()
         logger.info(f"Task created: {store_key}")

@@ -100,3 +100,45 @@ class TestStoreEndpoint:
         assert resp.status_code == 200
         data = resp.json()
         assert "status" in data
+
+
+class TestReflectDailyLimit:
+    """Regression for audit HIGH-1: the HTTP reflect endpoint must return 429
+    when the per-user daily limit is hit, not a 500 from a missing argument.
+
+    P5-B made _check_daily_limit(user_id) per-user; http_api.py previously
+    called it without args on the daily-limit path (api_reflect's output is
+    None branch), raising TypeError -> HTTP 500 instead of the intended 429.
+    """
+
+    def test_daily_limit_hit_returns_429_not_500(self, client, monkeypatch):
+        import adapters.http_api as http_api_mod
+
+        ra = http_api_mod.memory_agent.reflective
+        # Force the daily-limit path: process_result returns None (as it does
+        # on both limit-reached and parse-failure), and the limit check returns
+        # True. Set as instance attributes so the endpoint's calls hit these.
+        monkeypatch.setattr(ra, "process_result", lambda **kw: None)
+        monkeypatch.setattr(ra, "_check_daily_limit", lambda user_id: True)
+
+        resp = client.post("/api/reflect", json={
+            "user_id": "audit_u",
+            "llm_response": "{}",
+        })
+        # With the fix the limit branch raises HTTPException(429); the 500
+        # would previously fire from the missing-arg TypeError.
+        assert resp.status_code == 429
+
+    def test_parse_failure_returns_400(self, client, monkeypatch):
+        """M-6: when the limit is NOT hit, a parse failure stays a 400."""
+        import adapters.http_api as http_api_mod
+
+        ra = http_api_mod.memory_agent.reflective
+        monkeypatch.setattr(ra, "process_result", lambda **kw: None)
+        monkeypatch.setattr(ra, "_check_daily_limit", lambda user_id: False)
+
+        resp = client.post("/api/reflect", json={
+            "user_id": "audit_u",
+            "llm_response": "{}",
+        })
+        assert resp.status_code == 400
