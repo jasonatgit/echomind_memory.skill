@@ -317,7 +317,8 @@ EchoMind 提供 7 个 MCP 工具：
 
 </details>
 
-## 🔌 DeepSeek Harness (DSH) 通过 MCP 调用 EchoMind 作为永久记忆引擎
+<details>
+<summary><b>🔌 DeepSeek Harness (DSH) 通过 MCP 调用 EchoMind 作为永久记忆引擎</b></summary>
 
 DeepSeek Harness (DSH) 是 DeepSeek 的 agent 框架。EchoMind 内置标准 MCP 网关（stdio + Streamable HTTP），可通过 DSH 的官方桥插件 `@deepseek-ai/dsh-mcp-client` 接入，作为 DSH 的永久记忆引擎。**无需修改 EchoMind 任何代码。**
 
@@ -392,4 +393,4 @@ DSH 的 MCP 桥只暴露工具、不挂载生命周期钩子，因此 EchoMind �
 1. 启动 DSH，确认 `mcp__echomind__echomind_health` 等工具已注册（工具发现是异步的，请稍候）。
 2. 在会话 A 中让模型调用 `echomind_store` 记录一条唯一标记的记忆，确认成功。
 3. 新建会话 B（不复制 A），询问该记忆，确认模型调用了 `echomind_search`/`echomind_retrieve` 并返回正确值。
-
+</details>

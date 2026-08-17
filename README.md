@@ -317,7 +317,8 @@ Yes. MCP stdio is compatible with any MCP host (Claude Desktop, Cursor, Cline, e
 
 </details>
 
-## 🔌 Use EchoMind as DSH's Permanent Memory Engine via MCP
+<details>
+<summary><b> 🔌 Use EchoMind as DSH's Permanent Memory Engine via MCP</b></summary>
 
 DeepSeek Harness (DSH) is DeepSeek's agent framework. EchoMind ships a standard MCP gateway (stdio + Streamable HTTP) that can be consumed by DSH via its official bridge plugin `@deepseek-ai/dsh-mcp-client`, serving as DSH's permanent memory engine. **No EchoMind code changes are required.**
 
@@ -392,4 +393,4 @@ DSH's MCP bridge exposes tools only—it does not mount lifecycle hooks, so Echo
 1. Start DSH and confirm `mcp__echomind__echomind_health` etc. are registered (tool discovery is async—wait a moment).
 2. In session A, have the model call `echomind_store` to record a uniquely-tagged memory and confirm success.
 3. Open a new session B (without copying A), ask for that memory, and confirm the model calls `echomind_search`/`echomind_retrieve` and returns the right value.
-
+</details>
