@@ -110,6 +110,7 @@ When a query involves the following *domain keywords* or related *semantics*, th
 
 | Date | Title |
 |:-----|:------|
+| 2026-08 | 🎯[ EchoMind： 集成 DSH 为长期记忆服务（MCP）— 实施报告](blog/echomind-dsh-mcp-integration-report.md) |
 | 2026-08 | 🧠[EchoMind: Markdown Rendering: Turning AI Memory from a "Black Box" into a Readable Document](blog/echomind-markdown-rendering-article-en.md) |
 | 2026-08 | 🎯[ 在"模型军备竞赛"的火线上，老梁的DSH 的插件化是一场豪赌还是一次押对？](blog/dsh-evolution-analysis.md) |
 | 2026-08 | [EchoMind：Autoreflection-Teaching AI Memory to Think About Itself](blog/echomind-autoreflection-article-en.md) |
