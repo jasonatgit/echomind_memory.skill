@@ -6,6 +6,7 @@
 [![Hermes-Agent Ready](https://img.shields.io/badge/Hermes--Agent-Ready-blue)](https://github.com/Hermes-Agent)
 [![Claude Code Supported](https://img.shields.io/badge/Claude%20Code-Supported-orange)](https://claude.ai/code)
 [![OpenCode Compatible](https://img.shields.io/badge/OpenCode-Compatible-red)](https://github.com/open-code-ai)
+[![DeepSeek Harness](https://img.shields.io/badge/DSH-dsh--plugin-blueviolet)](https://github.com/deepseek-ai/deepseek-harness)
 
 
 # EchoMind Memory Engine —— Give Your AI Permanent Memory and Self-Evolution Capabilities
