@@ -14,6 +14,28 @@ import urllib.error
 ECHOMIND_URL = "http://127.0.0.1:8005"
 
 
+def _resolve_project(explicit: str) -> str:
+    """Resolve a non-default project scope for MCP traffic.
+
+    Precedence: explicit argument > config `default_project` (top-level key in
+    echomind_config.yaml, the same value the HTTP server uses) > "default".
+    DSH/Zcode streamable-http transports do not inject a working directory, so
+    an operator can pin a host-wide default project via the config; otherwise
+    the memory lands in the shared "default" namespace and cross-agent leakage
+    returns. "default" is only used when nothing else is configured.
+    """
+    if explicit and explicit != "default":
+        return explicit
+    try:
+        from core.config_manager import get_config_manager
+        cfg = get_config_manager().get_top_level("default_project", "default")
+        if cfg and cfg != "default":
+            return cfg
+    except Exception:
+        pass
+    return explicit or "default"
+
+
 def _resolve_api_key() -> str:
     """Resolve the API key using the SAME precedence as the HTTP server.
 
@@ -151,6 +173,7 @@ def handle_tools_list():
                     "task_id": {"type": "string"},
                     "feedback": {"type": "string", "enum": ["positive", "negative"]},
                     "memory_ids": {"type": "array", "items": {"type": "object"}},
+                    "profile": {"type": "string", "default": "default"},
                 },
                 "required": ["user_id", "task_id", "feedback"],
             },
@@ -226,7 +249,7 @@ def handle_tool_call(name, arguments):
             "query": arguments.get("query", ""),
             "platform": arguments.get("platform", "mcp"),
             "max_results": arguments.get("max_results", 5),
-            "project": arguments.get("project", "default"),
+            "project": _resolve_project(arguments.get("project", "default")),
             "session_id": arguments.get("session_id", ""),
             "profile": arguments.get("profile", "default"),
         })
@@ -253,7 +276,7 @@ def handle_tool_call(name, arguments):
             "success": arguments.get("success", True),
             "experience_summary": exp,
             "platform": arguments.get("platform", "mcp"),
-            "project": arguments.get("project", "default"),
+            "project": _resolve_project(arguments.get("project", "default")),
             "session_id": arguments.get("session_id", ""),
             "profile": arguments.get("profile", "default"),
             "correction": arguments.get("correction", False),
@@ -287,6 +310,7 @@ def handle_tool_call(name, arguments):
             "task_id": arguments.get("task_id", ""),
             "feedback": arguments.get("feedback", ""),
             "retrieved_memories": arguments.get("memory_ids", []),
+            "profile": arguments.get("profile", "default"),
         })
         if "error" in result:
             return {"content": [{"type": "text", "text": f"Error: {result['error']}"}]}

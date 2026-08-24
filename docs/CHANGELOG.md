@@ -1,5 +1,25 @@
 # EchoMind Changelog
 
+## v1.2.11 — Project Scoping & Hermes Persona Fix (2026-08-24)
+
+Fixes cross-agent memory contamination for the MCP (DSH/Zcode) and Hermes paths by making `project` a live scoping key and restoring Hermes profile (persona) isolation.
+
+| Area | Change |
+|------|--------|
+| **Project scoping** | `default_project` top-level config key now consumed at runtime (`ConfigManager.get_top_level`) and used by the MCP gateway to resolve the project when a client omits it — no longer a dead config key, and MCP traffic stops landing in the shared `"default"` namespace silently |
+| **Hermes persona isolation** | `initialize()` prefers the host-supplied `agent_identity` (the active Hermes profile/persona name) as the memory `profile`; `_derive_profile(hermes_home)` is now only a fallback, and `project` is no longer hardcoded to `"hermes"` |
+| **Diagnostics** | `retrieve_for_task`/`store` emit a warning when `project` is still `"default"` so unscoped writes are observable |
+| **Knowledge dedup** | knowledge primary key changed from task-scoped to content-scoped (`k:<content_hash>`), so `ON CONFLICT(id)` actually fires — fixing unbounded knowledge_memory growth and broken dedup |
+| **Preferences double-nesting** | `store()` persists the raw nested preferences instead of the flat `get(platform=)` expansion; `_merge_platform_prefs` adopts already-nested input wholesale, preventing `_default` pollution and double-nesting |
+| **Feedback profile passthrough** | `/api/memory/feedback` (HTTP and MCP) now passes `profile` through so RL weights are isolated per profile, closing the persona-level RL leak |
+| **Keyword entity fallback** | FALLBACK_CONFIG adds an `entities.technologies` section so keyword entity extraction has a source when no LLM is available (previously always empty) |
+
+**Note:** `platform` remains a soft-weight (same-platform ×1.0, cross-platform ×0.5) for the context source; knowledge/experience/task scoping is by `user_id + project + profile`. No schema migration in this release.
+
+> Known low-impact issues intentionally not fixed (deferred for a focused refactor): `session_id` is semantically split between context (stable key) and task/experience (raw id) but this does not affect retrieval; `sync_to_code_project` export is not filtered by project.
+
+---
+
 ## v1.2.10 — Algorithm Optimization Pass (2026-08-15)
 
 Algorithmic pass closing the reflection loop and hardening the RL learning path with per-user isolation.

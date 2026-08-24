@@ -135,7 +135,14 @@ FALLBACK_CONFIG = {
         "default": "general",
         "keywords": _load_bundled_keywords(),
     },
+    "entities": {
+        "technologies": [
+            "python", "docker", "postgresql", "react", "node.js",
+            "machine-learning", "microservices",
+        ],
+    },
     "language_profiles": _load_bundled_language_profiles(),
+    "default_project": "default",
 }
 
 
@@ -238,6 +245,24 @@ class ConfigManager:
         if isinstance(section_fb, dict):
             return section_fb.get(key, default)
 
+        return default
+
+    def get_top_level(self, key: str, default: Any = None) -> Any:
+        """Read a top-level (non-sectioned) config key, e.g. `default_project`.
+
+        Top-level keys live alongside sections in the YAML, so they are not
+        reachable via get(section, key). Precedence: runtime override (keyed as
+        the bare key) > YAML top-level value > FALLBACK_CONFIG top-level value >
+        default.
+        """
+        if key in self._runtime_overrides:
+            return self._runtime_overrides[key]
+        yaml_val = self._yaml_cache.get(key)
+        if yaml_val is not None:
+            return yaml_val
+        fb_val = FALLBACK_CONFIG.get(key)
+        if fb_val is not None:
+            return fb_val
         return default
 
     def get_section(self, section: str) -> dict:

@@ -782,6 +782,18 @@ class SqliteStore:
         if not isinstance(existing_prefs, dict):
             existing_prefs = {}
 
+        # B-1 fix: when platform_prefs is ALREADY the full nested structure
+        # (contains "_default"), it is the authoritative in-memory shape produced
+        # by store() passing the raw UserMemory.preferences. Adopt it wholesale
+        # instead of re-nesting it into a platform bucket (which would double-nest
+        # and pollute _default with platform-specific keys on every write).
+        if isinstance(platform_prefs, dict) and "_default" in platform_prefs:
+            result = dict(platform_prefs)
+            for k, v in existing_prefs.items():
+                if k == "rl_weights":
+                    result.setdefault("rl_weights", v)
+            return result
+
         merged = dict(existing_prefs)
 
         # Extract metadata keys that should stay at top level (not inside _default)

@@ -157,14 +157,29 @@ class EchomindMemoryProvider:
         self._skip_writes = False
         self._session_id = session_id
         self._user_id = kwargs.get("user_id", session_id)
-        self._profile = self._derive_profile(kwargs.get("hermes_home", ""))
-        self._agent_identity = kwargs.get("agent_identity", "")
+        # R3 fix: Hermes passes the active profile (分身) name via
+        # agent_identity (agent_init.py:1312 get_active_profile_name()).
+        # Prefer it as the memory-scoping profile so each Hermes persona is
+        # isolated; _derive_profile(hermes_home) only serves as a fallback for
+        # hosts that do not thread agent_identity (e.g. older Hermes versions,
+        # where the default profile lives directly under ~/.hermes with no
+        # "profiles" path segment and _derive_profile would return "default").
+        agent_identity = kwargs.get("agent_identity", "")
+        derived_profile = self._derive_profile(kwargs.get("hermes_home", ""))
+        self._profile = agent_identity or derived_profile or "default"
+        self._agent_identity = agent_identity
         self._agent_workspace = kwargs.get("agent_workspace", "default")
-        # Map agent_workspace to project_id for memory scoping
-        if self._agent_workspace and self._agent_workspace != "default":
+        # R3 fix: prefer an explicit project kwarg (real project path) when the
+        # host supplies one; only fall back to agent_workspace (host may hardcode
+        # "hermes") or "default". This lets Hermes share memory with DSH/Zcode by
+        # project instead of writing everything under a fixed "hermes" project.
+        explicit_project = kwargs.get("project", "")
+        if explicit_project and explicit_project != "default":
+            self._project_id = explicit_project
+        elif self._agent_workspace and self._agent_workspace != "default" and self._agent_workspace != "hermes":
             self._project_id = self._agent_workspace
         else:
-            self._project_id = kwargs.get("project", "default")
+            self._project_id = "default"
         self._turn_count = 0
         self._context_buffer = []
 

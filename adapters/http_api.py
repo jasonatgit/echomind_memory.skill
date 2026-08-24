@@ -99,6 +99,7 @@ class FeedbackRequest(BaseModel):
     task_id: str
     feedback: str
     retrieved_memories: List[Dict[str, Any]]
+    profile: str = "default"
 
 class SyncCodeRequest(BaseModel):
     project_root: str
@@ -222,7 +223,7 @@ def search_sessions(q: str = "", user_id: str = None, project: str = None, limit
 @app.post("/api/memory/feedback")
 def api_feedback(req: FeedbackRequest, auth=Depends(verify_api_key)):
     try:
-        memory_agent.record_feedback(req.user_id, req.task_id, req.feedback, req.retrieved_memories)
+        memory_agent.record_feedback(req.user_id, req.task_id, req.feedback, req.retrieved_memories, profile=req.profile)
         return {"status": "feedback_received", "user_id": req.user_id}
     except Exception as e:
         return _error_response(e, "api_feedback")

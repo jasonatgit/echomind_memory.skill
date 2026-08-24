@@ -1,5 +1,25 @@
 # EchoMind 更新日志
 
+## v1.2.11 — 项目作用域与 Hermes 分身修复 (2026-08-24)
+
+修复 MCP（DSH/Zcode）与 Hermes 路径的跨 agent 记忆污染：让 `project` 成为真实可用的作用域键，并恢复 Hermes 分身（profile）之间的隔离。
+
+| 领域 | 改动 |
+|------|------|
+| **项目作用域** | 顶层配置键 `default_project` 现在于运行时被消费（`ConfigManager.get_top_level`），并由 MCP 网关在客户端未传入 project 时用于解析默认项目——不再是死配置，MCP 流量也不再静默落入共享的 `"default"` 命名空间 |
+| **Hermes 分身隔离** | `initialize()` 优先使用宿主传入的 `agent_identity`（活跃 Hermes profile/分身名）作为记忆 `profile`；`_derive_profile(hermes_home)` 仅作兜底，且 `project` 不再硬编码为 `"hermes"` |
+| **可观测性** | `retrieve_for_task`/`store` 在 `project` 仍为 `"default"` 时发出 warning，使无作用域写入可被发现 |
+| **knowledge 去重修复** | knowledge 主键由 task 维度改为 content 维度（`k:<content_hash>`），`ON CONFLICT(id)` 真正生效，修复 knowledge_memory 随任务无限膨胀及去重失效的问题 |
+| **preferences 双嵌套修复** | `store()` 持久化原始嵌套 preferences 而非 `get(platform=)` 展开的扁平值，`_merge_platform_prefs` 对已嵌套输入整体采纳，避免 `_default` 桶被平台污染及双嵌套 |
+| **feedback 透传 profile** | `/api/memory/feedback`（HTTP 与 MCP）透传 `profile`，RL 权重按 profile 隔离，避免分身在 RL 层互相污染 |
+| **关键字实体抽取 fallback** | FALLBACK_CONFIG 补充 `entities.technologies` 段，使无 LLM 时的关键字实体抽取有数据源（此前恒空） |
+
+**说明：** `platform` 保持软权重（同平台 ×1.0、跨平台 ×0.5），仅作用于 context 源；knowledge/experience/task 的作用域为 `user_id + project + profile`。本次发布无 schema 迁移。
+
+> 已知低影响问题暂不修复（待专项重构）：`session_id` 在 context（稳定 key）与 task/experience（原始 id）之间语义不一致，但不影响检索正确性；`sync_to_code_project` 导出未按 project 过滤。
+
+---
+
 ## v1.2.10 — 算法优化轮 (2026-08-15)
 
 算法优化轮：补齐反思闭环，并强化 RL 学习路径的按用户隔离。

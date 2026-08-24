@@ -514,6 +514,11 @@ class MainMemoryAgent:
                          project: str = "default",
                          session_id: str = "",
                          profile: str = "default") -> Dict[str, Any]:
+        if project == "default":
+            logger.warning(
+                "retrieve_for_task: project is 'default' — memory is unscoped by "
+                "project, so cross-agent contamination may occur. Set project "
+                "explicitly (see config default_project).")
         logger.info(f"Retrieving memory for task: {task_context[:50]}...")
         features = self._extract_task_features(task_context)
         retrieved = {}
@@ -1058,6 +1063,10 @@ class MainMemoryAgent:
         """
         Store a task interaction and update all memory layers.
         """
+        if project == "default":
+            logger.warning(
+                "store: project is 'default' — memory is unscoped by project; "
+                "cross-agent contamination possible. Set project explicitly.")
         try:
             # Extract session title from first user message
             session_title = ""
@@ -1105,8 +1114,19 @@ class MainMemoryAgent:
                     }
 
                 with self.db.transaction():
+                    # B-1 fix: persist the RAW nested preferences (the
+                    # {"_default": {...}, "<platform>": {...}} shape maintained
+                    # by user_agent.update), NOT the flattened result of
+                    # user_agent.get(platform=...). get() expands _default+platform
+                    # into a flat dict, and feeding that flat dict back into
+                    # _merge_platform_prefs writes platform-specific prefs into the
+                    # _default bucket on every store (silent cross-platform
+                    # preference pollution / double-nesting over time).
+                    _store_key = self.user_agent._key(user_id, profile)
+                    _mem = self.user_agent.store.get(_store_key)
+                    _prefs_raw = getattr(_mem, "preferences", {}) if _mem else {}
                     self.db.save_user(user_id,
-                        preferences=user_data.get("preferences", {}),
+                        preferences=_prefs_raw,
                         habits=user_data.get("habits", {}),
                         history=user_data.get("history", []),
                         platform=platform,
@@ -1135,6 +1155,7 @@ profile=profile, language=lang)
                             if len(c) > len(best_content):
                                 best_content = c
                     knowledge_content = best_content[:2000] if best_content else (experience_summary or "Auto-extracted knowledge")
+                    kb_id = None
                     if knowledge_content and knowledge_content != "Auto-extracted knowledge":
                         existing_kb = self.db.search_knowledge_by_content(knowledge_content)
                         # P3-2: Extract entities from content before persisting
@@ -1154,9 +1175,18 @@ profile=profile, language=lang)
                             kb_metadata["epistemic_detail"] = "derived from user-provided experience summary"
                         # Moltspeak nok~: newly-created knowledge lives in the current context (high fidelity)
                         kb_metadata["cognitive_pos"] = "nok"
+                        # M-4 fix: key knowledge by CONTENT, not by task. Using
+                        # stable_memory_key(user, task) made every task (and every
+                        # turn of a session) mint a brand-new knowledge id, so the
+                        # ON CONFLICT(id) dedup never fired and knowledge_memory grew
+                        # unboundedly. Keying by a stable content hash (matching
+                        # knowledge_agent.add_document's content-hash dedup) makes the
+                        # same knowledge id collide on INSERT → UPDATE, restoring dedup.
+                        kb_id = "k:" + str(int(hashlib.md5(
+                            knowledge_content.encode("utf-8")).hexdigest(), 16) % (2**63 - 1))
                         if not existing_kb:
                             self.db.save_knowledge(
-                                knowledge_id=stable_memory_key(user_id, task_id),
+                                knowledge_id=kb_id,
                                 domain=research_domain,
                                 content=knowledge_content,
                                 metadata=kb_metadata,
@@ -1177,7 +1207,7 @@ profile=profile, language=lang)
                                 # silent no-op until a reload. This mirrors the DB row,
                                 # closing the cross-profile in-memory leak.
                                 "profile": profile,
-                            }, entry_id=stable_memory_key(user_id, task_id))
+                            }, entry_id=kb_id)
                     if exp_data:
                         # Deterministic id from summary hash — matches experience_agent._summary_index,
                         # so DB ON CONFLICT dedups consistently with in-memory (fixes reload duplication)
@@ -1202,12 +1232,12 @@ profile=profile, language=lang, experience_id=exp_id)
                     if exp_data:
                         self.db.save_memory_state("experience", exp_id, "active", reason=weight_reason, source="store")
                     if knowledge_content and knowledge_content != "Auto-extracted knowledge":
-                        self.db.save_memory_state("knowledge", task_pk, "active", reason=weight_reason, source="store")
+                        self.db.save_memory_state("knowledge", kb_id or task_pk, "active", reason=weight_reason, source="store")
 
                 # P2-1: Evolution detection — scan existing knowledge via Jaccard, classify relations
                 if knowledge_content and knowledge_content != "Auto-extracted knowledge":
                     self._detect_knowledge_evolution(knowledge_content, user_id, research_domain,
-                                                     knowledge_id=task_pk,
+                                                     knowledge_id=kb_id or task_pk,
                                                      origin_agent=platform or "default",
                                                      origin_session_id=session_id or "")
 
