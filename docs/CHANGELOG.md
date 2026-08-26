@@ -2,7 +2,7 @@
 
 ## v1.2.12 — Algorithm Improvement: Core-Term Novelty, RL Verification & Chunking (2026-08-26)
 
-Absorbs three dsh-memory (AEIS) algorithms — core-term novelty ratio, candidate significance verification, and code-block-safe chunking — into EchoMind's LLM + RL architecture as zero-LLM fast heuristics on the hot path.
+Algorithms improvement — core-term novelty ratio, candidate significance verification, and code-block-safe chunking — into EchoMind's LLM + RL architecture as zero-LLM fast heuristics on the hot path.
 
 | Area | Change |
 |------|--------|
