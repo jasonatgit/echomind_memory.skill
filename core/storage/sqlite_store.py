@@ -448,7 +448,19 @@ class SqliteStore:
                 CREATE INDEX IF NOT EXISTS idx_knowledge_content ON knowledge_memory(content);
                 CREATE INDEX IF NOT EXISTS idx_task_user_created ON task_memory(user_id, created_at);
                 CREATE INDEX IF NOT EXISTS idx_experience_user_created ON experience_memory(user_id, created_at);
-                CREATE INDEX IF NOT EXISTS idx_reflections_user ON reflections(user_id, created_at);
+                    CREATE INDEX IF NOT EXISTS idx_reflections_user ON reflections(user_id, created_at);
+
+                -- 11. Hit history: binary retrieval-hit log for RL significance
+                -- verification (verify_improvement). Persisted so the learning
+                -- verification loop survives restarts (unlike AEIS in-memory).
+                CREATE TABLE IF NOT EXISTS hit_history (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id TEXT DEFAULT 'default',
+                    hit INTEGER DEFAULT 0,
+                    task_type TEXT DEFAULT '',
+                    ts TEXT DEFAULT (datetime('now'))
+                );
+                CREATE INDEX IF NOT EXISTS idx_hit_history_user ON hit_history(user_id, ts);
             """)
             self._maybe_commit()
             self._migrate_existing_tables()
@@ -958,6 +970,55 @@ class SqliteStore:
             if row:
                 return dict(row)
             return None
+
+    @_require_conn
+    def get_knowledge_content(self, user_id: str, domain: str = "",
+                             limit: int = 500) -> List[str]:
+        """Return recent knowledge `content` strings (DB fallback for the core-term
+        "known corpus" builder). Used only when the in-memory store is too small
+        (cold start / eviction) to build a complete known-term set.
+        """
+        with self._lock:
+            if not self._conn:
+                return []
+            if domain:
+                rows = self._conn.execute(
+                    "SELECT content FROM knowledge_memory WHERE user_id=? AND domain=? "
+                    "ORDER BY created_at DESC LIMIT ?",
+                    (user_id, domain, limit)).fetchall()
+            else:
+                rows = self._conn.execute(
+                    "SELECT content FROM knowledge_memory WHERE user_id=? "
+                    "ORDER BY created_at DESC LIMIT ?",
+                    (user_id, limit)).fetchall()
+            return [r["content"] for r in rows if r["content"]]
+
+    @with_retry_on_busy()
+    @_require_conn
+    def save_hit(self, user_id: str, hit: bool, task_type: str = ""):
+        """Record one binary retrieval-hit for RL significance verification."""
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO hit_history (user_id, hit, task_type) VALUES (?,?,?)",
+                (user_id, 1 if hit else 0, task_type or "")
+            )
+            self._maybe_commit()
+
+    @_require_conn
+    def get_hit_history(self, user_id: str, limit: int = 50,
+                        task_type: str = None) -> List[Dict]:
+        with self._lock:
+            if task_type is not None:
+                rows = self._conn.execute(
+                    "SELECT hit, task_type, ts FROM hit_history WHERE user_id=? "
+                    "AND task_type=? ORDER BY ts DESC, id DESC LIMIT ?",
+                    (user_id, task_type, limit)).fetchall()
+            else:
+                rows = self._conn.execute(
+                    "SELECT hit, task_type, ts FROM hit_history WHERE user_id=? "
+                    "ORDER BY ts DESC, id DESC LIMIT ?",
+                    (user_id, limit)).fetchall()
+        return [dict(r) for r in rows]
 
     @with_retry_on_busy()
     @_require_conn

@@ -1,5 +1,20 @@
 # EchoMind Changelog
 
+## v1.2.12 — Algorithm Improvement: Core-Term Novelty, RL Verification & Chunking (2026-08-26)
+
+Absorbs three dsh-memory (AEIS) algorithms — core-term novelty ratio, candidate significance verification, and code-block-safe chunking — into EchoMind's LLM + RL architecture as zero-LLM fast heuristics on the hot path.
+
+| Area | Change |
+|------|--------|
+| **Core-term novelty ratio** | `_core_term_novelty` / `_known_core_terms` extract 3-4 char CJK core n-grams and gate `_detect_knowledge_evolution`: a sentence that mostly overlaps an old one but carries a brand-new concept (novelty ≥ 0.85) is no longer downgraded to `replaces`/`enriches` via the sentence-level Jaccard |
+| **Known-term corpus** | built from the in-memory `knowledge_agent.store` first, with a SQL DB fallback (`get_knowledge_content`) when the store is below `_MIN_TERM_STORE_SIZE` (cold start / eviction), plus cache invalidation on write/evict — replacing AEIS's incomplete `query_nodes(limit=80)` sampling |
+| **RL significance verification** | `verify_improvement(hits_bool, baseline_bool)` uses binomial standard error (success > baseline + 2·SE); `hit_history` SQLite table persists binary hits (fixing AEIS's non-persistent equivalent); `record_feedback` logs hits and runs verification every 50 feedbacks with a conservative failure ladder (halve LR on first miss) |
+| **Code-block-safe chunking** | `chunk_text()` (core/chunking.py) extracts fenced code blocks whole, never splitting on inner blank lines, slicing over-long blocks in line groups; `add_research_note` keeps the 2000-char cap and chunks with `chunk:i` tracing tags |
+
+**Note:** `hit_history` is a new table; no migration impacting existing data. The novelty gate is a soft signal and does not replace the LLM relation classifier.
+
+---
+
 ## v1.2.11 — Project Scoping & Hermes Persona Fix (2026-08-24)
 
 Fixes cross-agent memory contamination for the MCP (DSH/Zcode) and Hermes paths by making `project` a live scoping key and restoring Hermes profile (persona) isolation.

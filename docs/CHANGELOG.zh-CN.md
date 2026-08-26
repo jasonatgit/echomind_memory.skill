@@ -1,5 +1,20 @@
 # EchoMind 更新日志
 
+## v1.2.12 — 吸收 dsh-memory 算法：核心词新颖比例、RL 显著性验证与分块保护 (2026-08-26)
+
+吸收 dsh-memory（AEIS）三个算法——核心词新颖比例、候选显著性验证、代码块安全分块——作为零 LLM 快速启发式融入热路径。
+
+| 领域 | 改动 |
+|------|------|
+| **核心词新颖比例** | `_core_term_novelty` / `_known_core_terms` 提取 3-4 字 CJK 核心 n-gram，并门控 `_detect_knowledge_evolution`：与旧句高度重叠但含全新概念的句子（novelty ≥ 0.85）不再被整句 Jaccard 误判为 `replaces`/`enriches` |
+| **已知词表构建** | 优先内存 `knowledge_agent.store`，条目低于 `_MIN_TERM_STORE_SIZE`（冷启动/驱逐）时回退 SQL 精确查询（`get_knowledge_content`），写入/驱逐后缓存失效——取代 AEIS 不完整的 `query_nodes(limit=80)` 采样 |
+| **RL 显著性验证** | `verify_improvement(hits_bool, baseline_bool)` 采用二项标准误（success > baseline + 2·SE）；`hit_history` SQLite 表持久化二值命中；`record_feedback` 记录命中并每 50 次 feedback 触发验证，失败走保守阶梯处置（首次减半 LR） |
+| **代码块安全分块** | `chunk_text()`（core/chunking.py）整体提取围栏代码块，绝不拆散内部空行，超长块按行组切分；`add_research_note` 保留 2000 字符截断并分块，加 `chunk:i` 可追溯标签 |
+
+**说明：** `hit_history` 为新表，不影响存量数据。新颖门控为软信号，不取代 LLM 关系分类。
+
+---
+
 ## v1.2.11 — 项目作用域与 Hermes 分身修复 (2026-08-24)
 
 修复 MCP（DSH/Zcode）与 Hermes 路径的跨 agent 记忆污染：让 `project` 成为真实可用的作用域键，并恢复 Hermes 分身（profile）之间的隔离。

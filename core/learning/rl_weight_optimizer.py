@@ -673,6 +673,40 @@ class RLWeightOptimizer:
     def get_current_weights(self) -> Dict[str, float]:
         return self.ema_weights.copy()
 
+    MIN_VERIFY_TASKS = 20
+
+    @staticmethod
+    def verify_improvement(hits_bool: List[bool], baseline_bool: List[bool],
+                           min_tasks: int = None) -> Dict:
+        """Binary-significance verification of learning effect.
+
+        Returns improved only if success > baseline + 2·SE (binomial standard
+        error). Otherwise an actionable reflection list (matching AEIS
+        _distill_reflection) is returned so the caller can roll back / lower LR.
+        """
+        min_tasks = min_tasks or RLWeightOptimizer.MIN_VERIFY_TASKS
+        n = len(hits_bool)
+        if n < min_tasks or not baseline_bool:
+            return {"status": "insufficient", "n": n}
+
+        success = sum(hits_bool) / n
+        baseline = sum(baseline_bool) / len(baseline_bool)
+        se = math.sqrt(success * (1.0 - success) / n)
+
+        improved = success > baseline + 2.0 * se
+        return {
+            "status": "improved" if improved else "not_significant",
+            "success": round(success, 3),
+            "baseline": round(baseline, 3),
+            "se": round(se, 3),
+            "n": n,
+            "reflections": [] if improved else [
+                "learning did not yield significant hit-rate gain — LR too high (oscillation)?",
+                "feedback signal noisy (casual upvotes)?",
+                "weight exploration range too narrow?",
+            ],
+        }
+
     def _softmax(self, w: np.ndarray) -> np.ndarray:
         e = np.exp(w - np.max(w))
         return e / np.sum(e)

@@ -40,6 +40,7 @@ class MemoryRecord(BaseModel):
 from .learning.rl_weight_optimizer import RLWeightOptimizer
 from .storage.sqlite_store import SqliteStore, stable_memory_key
 from .lang_utils import detect_language, get_features, get_inference_keywords, tokenize as adaptive_tokenize
+from .chunking import chunk_text
 
 
 class MainMemoryAgent:
@@ -73,6 +74,13 @@ class MainMemoryAgent:
     _COGNITIVE_FOK_THRESHOLD = 0.3  # freshness below this → fok (fading)
     _COGNITIVE_EXO_THRESHOLD = 0.1  # freshness below this → exo (external)
 
+    # ── Core-term novelty (absorbed from AEIS longterm_gate._novelty) ──
+    # New-concept detection thresholds + in-memory store floor that triggers the
+    # DB fallback when building the "known core terms" set.
+    _NOVELTY_THRESHOLD = 0.85      # novelty >= this → "new-concept sentence", skip replace/enrich downgrade
+    _MIN_TERM_STORE_SIZE = 20      # in-memory knowledge entries below this → DB fallback
+    _TERM_LIMIT = 500              # known-term corpus cap (memory & DB)
+
     def __init__(self, db_path: str = None, config_manager=None):
         self.context_agent = ContextMemoryAgent(max_sessions=5)
         self.task_agent = TaskMemoryAgent()
@@ -102,6 +110,14 @@ class MainMemoryAgent:
         self._pending_reflection = False
         self._store_lock = threading.Lock()
         self._research_kw_cache = None
+        # Core-term novelty cache: {(user_id, domain, limit) -> set[str]}
+        self._core_term_cache: Dict[tuple, set] = {}
+        # RL significance verification:
+        # baseline hits (fixed window) + per-user feedback counter since last verify
+        self._baseline_hits: Dict[str, List[bool]] = {}
+        self._feedback_since_verify: Dict[str, int] = {}
+        self._verify_fail_count: Dict[str, int] = {}
+        self._VERIFY_EVERY = 50  # run verification per this many feedbacks
         # C-H1/P3: track the in-flight auto-reflection thread so shutdown can
         # join() it before closing the DB (a daemon thread left behind races
         # disable_persistence() and silently drops the reflection).
@@ -1208,6 +1224,9 @@ profile=profile, language=lang)
                                 # closing the cross-profile in-memory leak.
                                 "profile": profile,
                             }, entry_id=kb_id)
+                            # P-*: invalidate known-term cache after write so a new term is
+                            # not re-misclassified as novel next time.
+                            self._invalidate_core_term_cache(user_id)
                     if exp_data:
                         # Deterministic id from summary hash — matches experience_agent._summary_index,
                         # so DB ON CONFLICT dedups consistently with in-memory (fixes reload duplication)
@@ -1363,19 +1382,36 @@ profile=profile, language=lang, experience_id=exp_id)
 
     def add_research_note(self, user_id: str, topic: str, content: str,
                           linked_papers: List[str] = None, tags: List[str] = None) -> str:
-        """Add research note to memory and persist"""
+        """Add research note to memory and persist.
+
+        Ingest path: content is chunked (code blocks protected) so a long note
+        isn't one oversized entry. The existing 2000-char cap is kept; chunks
+        beyond the first get `chunk:i` tags for traceability. Returns the first
+        chunk's note_id to preserve the original return contract.
+        """
         import uuid
-        note_id = str(uuid.uuid4())[:12]
-        note = ResearchNote(id=note_id, user_id=user_id, topic=topic,
-                            content=content, linked_papers=linked_papers or [],
-                            tags=tags or [])
-        self.research_agent.add_note(note)
-        if self._persistence_enabled:
-            self.db.save_research_note(note_id=note_id, user_id=user_id,
-                                       topic=topic, content=content,
-                                       linked_papers=linked_papers, tags=tags)
-        logger.info(f"[Research] Added note: {topic}")
-        return note_id
+        # Keep the existing 2000-char truncation, then chunk.
+        content = (content or "")[:2000]
+        chunks = chunk_text(content)
+        if not chunks:
+            chunks = [content or ""]
+
+        first_note_id = str(uuid.uuid4())[:12]
+        base_tags = tags or []
+        for i, chunk in enumerate(chunks):
+            note_id = first_note_id if i == 0 else str(uuid.uuid4())[:12]
+            chunk_tags = base_tags + ([f"chunk:{i}"] if len(chunks) > 1 else [])
+            note = ResearchNote(id=note_id, user_id=user_id, topic=topic,
+                               content=chunk,
+                               linked_papers=linked_papers or [],
+                               tags=chunk_tags)
+            self.research_agent.add_note(note)
+            if self._persistence_enabled:
+                self.db.save_research_note(note_id=note_id, user_id=user_id,
+                                          topic=topic, content=chunk,
+                                          linked_papers=linked_papers, tags=chunk_tags)
+        logger.info(f"[Research] Added note: {topic} ({len(chunks)} chunk(s))")
+        return first_note_id
 
     def _infer_user_preferences(self, context, user_id, platform=None, profile="default"):
         """Infer user preferences from conversation, adaptive to language.
@@ -1527,6 +1563,61 @@ profile=profile, language=lang, experience_id=exp_id)
         if self._persistence_enabled:
             self.db.save_rl_weights(user_id, self.rl_optimizer.ema_weights, profile=profile)
         logger.info(f"User {user_id} gave {feedback} feedback on task {task_id}")
+        # P-*: record binary hit + periodically verify learning significance
+        hit = (feedback == "positive")
+        if self._persistence_enabled:
+            try:
+                self.db.save_hit(user_id, hit=hit)
+            except Exception:
+                logger.debug("save_hit failed", exc_info=True)
+        self._feedback_since_verify[user_id] = self._feedback_since_verify.get(user_id, 0) + 1
+        if self._feedback_since_verify[user_id] >= self._VERIFY_EVERY:
+            self._maybe_verify_improvement(user_id)
+
+    def _freeze_baseline(self, user_id: str, window: int = 20):
+        """Freeze a pre-training baseline window of hit history for verify_improvement."""
+        if not self._persistence_enabled:
+            return
+        try:
+            rows = self.db.get_hit_history(user_id, limit=window)
+            self._baseline_hits[user_id] = [bool(r["hit"]) for r in rows]
+        except Exception:
+            logger.debug("freeze_baseline failed", exc_info=True)
+
+    def _maybe_verify_improvement(self, user_id: str):
+        """Run RL significance verification; apply conservative failure handling."""
+        if not self._persistence_enabled:
+            return
+        self._feedback_since_verify[user_id] = 0
+        try:
+            hits = self.db.get_hit_history(user_id, limit=50)
+            hits_bool = [bool(r["hit"]) for r in hits]
+            baseline_bool = self._baseline_hits.get(user_id) or []
+        except Exception as e:
+            logger.debug("verify_improvement fetch failed: %s", e)
+            return
+
+        verdict = self.rl_optimizer.verify_improvement(hits_bool, baseline_bool)
+        if verdict["status"] == "insufficient":
+            # too few samples to judge — backfill baseline now for later
+            self._freeze_baseline(user_id)
+            return
+
+        if verdict["status"] == "not_significant":
+            fails = self._verify_fail_count.get(user_id, 0) + 1
+            self._verify_fail_count[user_id] = fails
+            logger.warning(f"[RL] learning not significant for {user_id}: {verdict}")
+            # Conservative failure ladder: 1st → halve LR; >=2nd → warn only, so an
+            # auto-rollback never silently clobbers a human-tuned policy.
+            if fails == 1:
+                self.rl_optimizer.learning_rate *= 0.5
+                logger.warning("[RL] not significant — halved learning_rate")
+            else:
+                logger.warning("[RL] repeatedly not significant — recommend manual review")
+        else:
+            self._verify_fail_count[user_id] = 0
+        # after verification, refresh baseline to current window
+        self._freeze_baseline(user_id)
 
     def sync_to_code_project(self, project_root: str, user_id: str,
                              profile: str = "default"):
@@ -1672,6 +1763,88 @@ profile=profile, language=lang, experience_id=exp_id)
         self.context_agent.clear()
 
     # ── P2-1: Knowledge evolution ──────────────────────
+
+    # ── Core-term novelty (absorbed from AEIS _novelty) ──
+
+    @staticmethod
+    def _add_core_grams(bag: set, text: str):
+        """Extract 3-4 char CJK core n-grams from *text* into *bag* (in place).
+
+        Charset matches _jaccard_similarity's CJK bigram convention (hanzi +
+        kana + hangul). Pure digit/ASCII runs are dropped as noise (AEIS par).
+        """
+        if not text:
+            return
+        for seg in re.split(r'[^\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]+', text):
+            cleaned = seg
+            for n in (4, 3):
+                for i in range(len(cleaned) - n + 1):
+                    g = cleaned[i:i + n]
+                    if g and not re.fullmatch(r'[\dA-Za-z_]+', g):
+                        bag.add(g)
+
+    def _core_term_novelty(self, text: str, known_corpus: set) -> float:
+        """Novelty ratio of new core terms (new info fraction, not new sentence).
+
+        Returns [0,1]: 1.0 = all core terms unseen, 0.0 = all seen. Special:
+        empty/no-core-term text → 0.0; empty known corpus (cold start) → 0.5
+        meaning "undetermined" rather than "half new" (aligned with AEIS).
+        """
+        if not text:
+            return 0.0
+        grams = set()
+        self._add_core_grams(grams, text)
+        if not grams:
+            return 0.0
+        if not known_corpus:
+            return 0.5
+        novel = sum(1 for g in grams if g not in known_corpus)
+        return novel / len(grams)
+
+    def _known_core_terms(self, user_id: str, domain: str = "",
+                         limit: int = None) -> set:
+        """Build the "known core terms" set. In-memory store first; DB fallback
+        when the in-memory store is below _MIN_TERM_STORE_SIZE (cold start /
+        eviction), fixing AEIS's `query_nodes(limit=80)` incompleteness with an
+        exact SQL query instead of sampling.
+        """
+        limit = limit or self._TERM_LIMIT
+        cache_key = (user_id, domain or "*", limit)
+        if cache_key in self._core_term_cache:
+            return self._core_term_cache[cache_key]
+
+        known: set = set()
+        entries = list(self.knowledge_agent.store.values())
+        if domain:
+            entries = [e for e in entries
+                      if (e.metadata.get("domain") or e.metadata.get("category") or "") == domain]
+        entries = entries[:limit]
+
+        # DB fallback only when in-memory corpus is too thin (cold start/eviction)
+        if len(entries) < self._MIN_TERM_STORE_SIZE and self._persistence_enabled:
+            try:
+                for content in self.db.get_knowledge_content(user_id, domain, limit):
+                    self._add_core_grams(known, content)
+            except Exception:
+                logger.debug("Known-core-terms DB fallback failed; using memory only",
+                             exc_info=True)
+
+        for e in entries:
+            self._add_core_grams(known, e.content)
+
+        self._core_term_cache[cache_key] = known
+        return known
+
+    def _invalidate_core_term_cache(self, user_id: str = None):
+        """Drop cached known-term sets after a knowledge write/evict."""
+        if not self._core_term_cache:
+            return
+        if user_id is None:
+            self._core_term_cache.clear()
+        else:
+            self._core_term_cache = {
+                k: v for k, v in self._core_term_cache.items() if k[0] != user_id
+            }
 
     @staticmethod
     def _jaccard_similarity(text1: str, text2: str) -> float:
@@ -1831,7 +2004,12 @@ profile=profile, language=lang, experience_id=exp_id)
                     best_sim, best_id, best_content = sim, c.get("id"), c.get("content", "")
             if best_id == knowledge_id:
                 return  # self-reference — skip evolution detection
-            if best_sim > 0.7 and best_id:
+            # P-*: Core-term novelty gate — a sentence that mostly overlaps an old
+            # one but carries a brand-new concept (high novelty) must not be
+            # downgraded to replaces/enriches by the plain sentence-level Jaccard.
+            # Low novelty (well-known) keeps the existing replace/enrich path.
+            novelty = self._core_term_novelty(content, self._known_core_terms(user_id, domain))
+            if best_sim > 0.7 and best_id and novelty < self._NOVELTY_THRESHOLD:
                 relation = self._llm_classify_relation(best_content or "", content, best_sim)
                 if relation:
                     self.db.save_evolution(best_id, knowledge_id, relation,

@@ -128,6 +128,7 @@ When a query involves the following *domain keywords* or related *semantics*, th
 
 | Version | Highlights |
 |:--------|:-----------|
+| v1.2.12 | *Core-term novelty ratio, RL significance verification, code-block-safe chunking.* |
 | v1.2.10 | *Reflection loop closure, real RL credit assignment, per-user meta-state and daily limit, storage indexes.* |
 | v1.2.9 | *Markdown memory archive (9-section .md), Hermes v0.20 adaptation, cognitive_pos lifecycle.* |
 | v1.2.8 | *Self-reflection absorption : epistemic classification, provenance tracking, architectural self-diagnosis. * |
