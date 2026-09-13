@@ -555,8 +555,8 @@ class RLWeightOptimizer:
             self.history.pop(0)
 
     def load_weights_for_user(self, weights: Dict[str, float] = None,
-                              user_id: str = None):
-        """Load per-user weights into the optimizer.
+                              user_id: str = None) -> Dict[str, float]:
+        """Load per-user weights into the optimizer and RETURN them.
 
         If weights is None or empty, reset to deterministic defaults built from
         the _WEIGHT_SPEC midpoints (softmax-normalized) instead of silently
@@ -572,6 +572,12 @@ class RLWeightOptimizer:
         P5-A: when user_id is given (the caller knows whose weights these are),
         it becomes the active user, so the read-through meta-state (LR/
         exploration schedule, history, snapshots) follows this user.
+
+        Concurrency (audit P1-4): returns the effective weights snapshot so the
+        caller can score against exactly what it loaded. The old pattern —
+        load into shared state, then read shared state later — left a window
+        where another thread's load landed in between and the caller scored
+        with the wrong user's weights.
         """
         # P5-A audit (MED-5): serialize the cursor + weights swap against
         # concurrent feedback/retrieve threads (this is a process-wide singleton).
@@ -581,7 +587,7 @@ class RLWeightOptimizer:
             if not weights:
                 self.weights = self._default_weights()
                 self.ema_weights = self.weights.copy()
-                return
+                return self.ema_weights.copy()
             # Schema-complete any missing / non-numeric dimensions.
             defaults = self._default_weights()
             completed = {}
@@ -590,6 +596,7 @@ class RLWeightOptimizer:
                 completed[k] = float(v) if isinstance(v, (int, float)) else defaults[k]
             self.weights = completed
             self.ema_weights = completed.copy()
+            return self.ema_weights.copy()
 
     def _default_weights(self) -> Dict[str, float]:
         """Deterministic default weights from _WEIGHT_SPEC range midpoints.
@@ -671,7 +678,11 @@ class RLWeightOptimizer:
         return result
 
     def get_current_weights(self) -> Dict[str, float]:
-        return self.ema_weights.copy()
+        # Concurrency (audit P1-4): serialize against concurrent weight swaps
+        # (load_weights_for_user / feedback flush) so a reader never observes a
+        # half-updated or wrong-user weights dict.
+        with self._lock:
+            return self.ema_weights.copy()
 
     MIN_VERIFY_TASKS = 20
 

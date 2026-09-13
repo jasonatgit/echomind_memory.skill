@@ -4,6 +4,7 @@
 
 
 import logging
+import threading
 from datetime import datetime, timezone
 from typing import List, Dict, Optional, Callable, Union, Tuple
 
@@ -39,12 +40,28 @@ class ReflectiveAgent:
         # fallback in-memory path keeps the limit enforced even when a store is
         # not connected (favored over a global scalar shared across all users).
         self._daily_count_map: Dict[Tuple[str, str], int] = {}
+        # P1-4: serialize quota reservation/refund within this instance (the
+        # cross-process guarantee lives in the store's conditional upsert).
+        self._quota_lock = threading.Lock()
         # B10 fix: resolve the daily limit deterministically (midpoint) instead
         # of per-instance random. The old random.uniform gave HTTP vs Hermes
         # processes different limits for the same config, so a user could hit
         # different effective quotas depending on which entrypoint triggered
         # reflection. A deterministic midpoint keeps the [lo, hi] tuning knob
         # while making the limit identical across all instances.
+        max_daily = self.config.get("max_daily", [5, 20])
+        if isinstance(max_daily, (list, tuple)) and len(max_daily) == 2:
+            self._daily_limit = int((max_daily[0] + max_daily[1]) // 2)
+        else:
+            self._daily_limit = int(max_daily)
+
+    def refresh_daily_limit(self):
+        """Recompute the daily limit from the current config (P2.6).
+
+        The limit was frozen at __init__, so a reflection.max_daily hot-update
+        never took effect. Same derivation as __init__: a two-element list is
+        the [lo, hi] tuning knob and its midpoint is used.
+        """
         max_daily = self.config.get("max_daily", [5, 20])
         if isinstance(max_daily, (list, tuple)) and len(max_daily) == 2:
             self._daily_limit = int((max_daily[0] + max_daily[1]) // 2)
@@ -96,6 +113,51 @@ class ReflectiveAgent:
             except Exception:
                 pass
         return count
+
+    def _reserve_daily(self, user_id: str) -> bool:
+        """Atomically reserve one reflection slot (audit P1-4, reflection side).
+
+        Reserve-before-process: the limit check and the consume are a single
+        store-level conditional upsert, so two processes sharing the DB can no
+        longer both pass a separate check and both increment past the limit
+        (the old check-then-increment TOCTOU). The caller returns the slot via
+        ``_refund_daily`` when the reflection fails to produce a consumable
+        result, so failed attempts never consume quota.
+        """
+        today = self._today()
+        with self._quota_lock:
+            # Prune stale (past-day) cache keys (same as _increment_daily_count).
+            for k in [k for k in self._daily_count_map if k[1] != today]:
+                del self._daily_count_map[k]
+        if self.store is not None:
+            try:
+                count, allowed = self.store.increment_daily_reflection_count(
+                    user_id, today, limit=self._daily_limit)
+                with self._quota_lock:
+                    self._daily_count_map[(user_id, today)] = count
+                return allowed
+            except Exception:
+                pass  # fall back to the in-process path below
+        # No store connected, or the authoritative op failed: in-process check-
+        # then-increment under the quota lock (best effort, single instance).
+        with self._quota_lock:
+            count = self._daily_count_map.get((user_id, today), 0)
+            if count >= self._daily_limit:
+                return False
+            self._daily_count_map[(user_id, today)] = count + 1
+            return True
+
+    def _refund_daily(self, user_id: str) -> None:
+        """Return one reserved slot (floor 0) after a failed reflection."""
+        today = self._today()
+        with self._quota_lock:
+            count = self._daily_count_map.get((user_id, today), 0)
+            self._daily_count_map[(user_id, today)] = max(0, count - 1)
+        if self.store is not None:
+            try:
+                self.store.decrement_daily_reflection_count(user_id, today)
+            except Exception:
+                pass
 
     # ── Engine status detection ──
 
@@ -169,7 +231,7 @@ class ReflectiveAgent:
         """
         if _engine is None:
             return None
-        if self._check_daily_limit(user_id):
+        if not self._reserve_daily(user_id):
             return None
         result = _engine._reflect_records(
             records,
@@ -180,22 +242,27 @@ class ReflectiveAgent:
             self.store,
             self.memory,
         )
+        output = None
         if result is not None and not isinstance(result, tuple):
-            self._increment_daily_count(user_id)
             self._last_reflection = datetime.now(timezone.utc)
-        # Unify return type to ReflectionOutput (never return raw dict/str)
-        if isinstance(result, dict):
-            from .models.reflection import ReflectionOutput
-
-            try:
-                return ReflectionOutput(**result)
-            except Exception:
-                logger.warning("reflect_with_llm: failed to coerce dict to ReflectionOutput")
-                return None
-        if isinstance(result, str):
-            # Raw string from fallback — not a valid reflection output
-            return None
-        return result
+            if isinstance(result, dict):
+                from .models.reflection import ReflectionOutput
+                try:
+                    output = ReflectionOutput(**result)
+                except Exception:
+                    logger.warning("reflect_with_llm: failed to coerce dict to ReflectionOutput")
+                    output = None
+            elif isinstance(result, str):
+                # Raw string from fallback — not a valid reflection output
+                output = None
+            else:
+                output = result
+        if output is None:
+            # P1-4: the reserved slot is refunded so failed reflections
+            # (parse failure / low confidence / coercion failure) never
+            # consume quota.
+            self._refund_daily(user_id)
+        return output
 
     # ── Two-phase HTTP API (phase 2): process LLM response ──
 
@@ -209,7 +276,7 @@ class ReflectiveAgent:
         """Parse and merge LLM response back into memory."""
         if _engine is None:
             return None
-        if self._check_daily_limit(user_id):
+        if not self._reserve_daily(user_id):
             return None
         result = _engine._process_reflection(
             raw_response,
@@ -220,16 +287,23 @@ class ReflectiveAgent:
             self.store,
             self.memory,
         )
+        output = None
         if result is not None:
-            self._increment_daily_count(user_id)
             self._last_reflection = datetime.now(timezone.utc)
             if isinstance(result, dict):
                 from .models.reflection import ReflectionOutput
                 try:
-                    return ReflectionOutput(**result)
+                    output = ReflectionOutput(**result)
                 except Exception:
                     logger.warning("process_result: failed to coerce dict to ReflectionOutput")
-                    return None
-            if isinstance(result, str):
-                return None
-        return result
+                    output = None
+            elif isinstance(result, str):
+                output = None
+            else:
+                output = result
+        if output is None:
+            # P1-4: refund the reserved slot — a parse failure / low-confidence
+            # result must not consume quota, and the endpoint's post-hoc
+            # _check_daily_limit then correctly reports 400 (not 429).
+            self._refund_daily(user_id)
+        return output

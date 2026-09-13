@@ -566,18 +566,37 @@ class SqliteStore:
 
 
 
+    @with_retry_on_busy()
     def _migrate_existing_tables(self):
         """Backward-compatible: add missing columns, transactional + schema_version flag
 
         - Atomic: BEGIN IMMEDIATE TRANSACTION + COMMIT / ROLLBACK
         - Idempotent: PRAGMA user_version check + per-table column detection
         - Preserves legacy platform migration logic
+        - BUSY-safe (audit P1-6): the decorator retries BEGIN IMMEDIATE when
+          another process holds the write lock past busy_timeout.
         """
         # Detect current schema version
         cursor = self._conn.execute("PRAGMA user_version")
         current_version = cursor.fetchone()[0]
         if current_version >= SCHEMA_VERSION:
             return  # already at latest schema
+
+        def _idempotent_alter(stmt: str, desc: str):
+            """ALTER with duplicate-column tolerance (audit P1-6).
+
+            A prior partial run may have applied the DDL without advancing
+            user_version; re-raising here would block startup forever, so the
+            benign case is logged and skipped like _run_schema_migrations does.
+            """
+            try:
+                self._conn.execute(stmt)
+            except sqlite3.OperationalError as e:
+                err = str(e).lower()
+                if "duplicate column" in err or "already exists" in err:
+                    logger.warning("Migration skip (already applied): %s (%s)", desc, err)
+                    return
+                raise
 
         try:
             # IMMEDIATE acquires write lock, prevents profile interference
@@ -588,18 +607,18 @@ class SqliteStore:
                 cursor = self._conn.execute(f"PRAGMA table_info({table})")
                 columns = [row[1] for row in cursor.fetchall()]
                 if "profile" not in columns:
-                    self._conn.execute(
-                        f"ALTER TABLE {table} ADD COLUMN profile TEXT DEFAULT 'default'"
-                    )
+                    _idempotent_alter(
+                        f"ALTER TABLE {table} ADD COLUMN profile TEXT DEFAULT 'default'",
+                        f"profile column on {table}")
                     logger.info(f"Migration: added profile column to {table}")
 
             # 2. Legacy platform column migration (keep compat)
             ctx_cols = [r[1] for r in self._conn.execute(
                 "PRAGMA table_info(context_memory)").fetchall()]
             if "platform" not in ctx_cols:
-                self._conn.execute(
-                    "ALTER TABLE context_memory ADD COLUMN platform TEXT DEFAULT 'default'"
-                )
+                _idempotent_alter(
+                    "ALTER TABLE context_memory ADD COLUMN platform TEXT DEFAULT 'default'",
+                    "platform column on context_memory")
                 logger.info("Migration: added platform column to context_memory")
 
             # 3. Migrate user_memory to composite PK (v2→v3)
@@ -625,9 +644,9 @@ class SqliteStore:
                         PRIMARY KEY (user_id, profile)
                     )
                 """)
-                # Copy only columns that exist in the old table
-                old_cols = [c for c in um_cols if c not in ('habits', 'history', 'version')
-                            or c in um_cols]
+                # Copy only columns that exist in the old table.
+                # P3.1: the dead `old_cols` comprehension (its condition was
+                # always true and the result was never used) is removed.
                 insert_cols = ["user_id", "preferences"]
                 select_cols = ["user_id", "COALESCE(preferences, '{}')"]
                 if "profile" in um_cols:
@@ -961,12 +980,28 @@ class SqliteStore:
 
     @with_retry_on_busy()
     @_require_conn
-    def search_knowledge_by_content(self, content: str):
+    def search_knowledge_by_content(self, content: str,
+                                    user_id: str = None,
+                                    profile: str = None):
+        """Find an existing knowledge row by exact content.
+
+        Isolation (audit P1-1): when user_id/profile are supplied the lookup is
+        scoped to that tenant, so one user's dedup can never key off (or skip
+        writing because of) another user's/profiles's row. Callers that omit
+        them keep the legacy global behaviour, but the only production caller
+        (memory_agent.store) now passes both.
+        """
+        sql = "SELECT id, content FROM knowledge_memory WHERE content = ?"
+        params: list = [content]
+        if user_id is not None:
+            sql += " AND user_id = ?"
+            params.append(user_id)
+        if profile is not None:
+            sql += " AND profile = ?"
+            params.append(profile)
+        sql += " LIMIT 1"
         with self._lock:
-            row = self._conn.execute(
-                "SELECT id, content FROM knowledge_memory WHERE content = ? LIMIT 1",
-                (content,)
-            ).fetchone()
+            row = self._conn.execute(sql, tuple(params)).fetchone()
             if row:
                 return dict(row)
             return None
@@ -1290,14 +1325,59 @@ class SqliteStore:
 
     @with_retry_on_busy()
     @_require_conn
-    def increment_daily_reflection_count(self, user_id: str, date: str) -> int:
-        """Atomically increment and return the user's reflection count for the
-        given UTC date. The row is created on first use within the day."""
+    def increment_daily_reflection_count(self, user_id: str, date: str,
+                                         limit: int = None):
+        """Atomically consume one unit of the daily reflection quota.
+
+        With ``limit`` (audit P1-4, reflection side): the limit check and the
+        consume are a SINGLE conditional upsert, so two processes sharing the
+        DB can no longer both pass a separate check and both increment past
+        the limit. Returns ``(new_count, allowed)``.
+
+        With ``limit=None`` the legacy unconditional increment runs (backward
+        compatible with existing callers/tests) and returns the new count.
+        """
         with self._lock:
-            self._conn.execute(
+            if limit is None:
+                self._conn.execute(
+                    """INSERT INTO reflection_daily_count (user_id, date, count)
+                       VALUES (?, ?, 1)
+                       ON CONFLICT(user_id, date) DO UPDATE SET count = count + 1""",
+                    (user_id, date),
+                )
+                self._maybe_commit()
+                row = self._conn.execute(
+                    "SELECT count FROM reflection_daily_count WHERE user_id=? AND date=?",
+                    (user_id, date),
+                ).fetchone()
+                return int(row["count"]) if row else 1
+            cur = self._conn.execute(
                 """INSERT INTO reflection_daily_count (user_id, date, count)
                    VALUES (?, ?, 1)
-                   ON CONFLICT(user_id, date) DO UPDATE SET count = count + 1""",
+                   ON CONFLICT(user_id, date) DO UPDATE SET count = count + 1
+                   WHERE reflection_daily_count.count < ?""",
+                (user_id, date, limit),
+            )
+            allowed = cur.rowcount > 0
+            self._maybe_commit()
+            row = self._conn.execute(
+                "SELECT count FROM reflection_daily_count WHERE user_id=? AND date=?",
+                (user_id, date),
+            ).fetchone()
+            return (int(row["count"]) if row else 1, allowed)
+
+    @with_retry_on_busy()
+    @_require_conn
+    def decrement_daily_reflection_count(self, user_id: str, date: str) -> int:
+        """Refund one reserved quota unit (floor 0).
+
+        Pairs with the ``limit`` form of increment_daily_reflection_count: a
+        reserved reflection that fails to produce a consumable result returns
+        its slot so failed attempts never consume quota."""
+        with self._lock:
+            self._conn.execute(
+                """UPDATE reflection_daily_count SET count = count - 1
+                   WHERE user_id=? AND date=? AND count > 0""",
                 (user_id, date),
             )
             self._maybe_commit()
@@ -1305,7 +1385,7 @@ class SqliteStore:
                 "SELECT count FROM reflection_daily_count WHERE user_id=? AND date=?",
                 (user_id, date),
             ).fetchone()
-            return int(row["count"]) if row else 1
+            return int(row["count"]) if row else 0
 
     @_require_conn
     def get_recent_episodic(self, user_id: str, count: int = 8,
@@ -1364,6 +1444,57 @@ class SqliteStore:
         "transcript": "session_transcripts",
     }
 
+    @staticmethod
+    def _chunked(seq, size=400):
+        for i in range(0, len(seq), size):
+            yield seq[i:i + size]
+
+    def _delete_memory_states(self, memory_type: str, ids) -> int:
+        """Remove lifecycle rows for the given memory ids (audit P2-2).
+
+        memory_states has no user/profile column, so it must be cleaned by the
+        ids actually being deleted. Deletion is best-effort: a missing table or
+        odd id must never abort the caller's delete.
+        """
+        ids = [i for i in ids if i]
+        if not ids:
+            return 0
+        total = 0
+        try:
+            for chunk in self._chunked(ids):
+                ph = ",".join("?" for _ in chunk)
+                cur = self._conn.execute(
+                    f"DELETE FROM memory_states WHERE memory_type=? AND memory_id IN ({ph})",
+                    (memory_type, *chunk),
+                )
+                total += cur.rowcount
+        except sqlite3.OperationalError:
+            pass
+        return total
+
+    def _delete_evolution_edges(self, knowledge_ids) -> int:
+        """Remove knowledge_evolution edges touching the given knowledge ids.
+
+        knowledge_evolution has no user/profile column, so it is cleaned by the
+        knowledge ids being removed (audit P2-2).
+        """
+        ids = [i for i in knowledge_ids if i]
+        if not ids:
+            return 0
+        total = 0
+        try:
+            for chunk in self._chunked(ids):
+                ph = ",".join("?" for _ in chunk)
+                cur = self._conn.execute(
+                    f"DELETE FROM knowledge_evolution WHERE source_id IN ({ph}) "
+                    f"OR target_id IN ({ph})",
+                    (*chunk, *chunk),
+                )
+                total += cur.rowcount
+        except sqlite3.OperationalError:
+            pass
+        return total
+
     @with_retry_on_busy()
     @_require_conn
     def delete_memory(self, memory_type: str, memory_id: str) -> bool:
@@ -1386,8 +1517,13 @@ class SqliteStore:
             cursor = self._conn.execute(
                 f"DELETE FROM {table} WHERE {id_col}=?", (memory_id,)
             )
+            deleted = cursor.rowcount > 0
+            # Cascade to auxiliary tables that key off the deleted id.
+            self._delete_memory_states(memory_type, [memory_id])
+            if memory_type == "knowledge":
+                self._delete_evolution_edges([memory_id])
             self._maybe_commit()
-            return cursor.rowcount > 0
+            return deleted
 
     @with_retry_on_busy()
     @_require_conn
@@ -1409,11 +1545,43 @@ class SqliteStore:
     @with_retry_on_busy()
     @_require_conn
     def delete_user_memories(self, user_id: str, profile: str = None) -> Dict[str, int]:
-        """Delete all memory records for a user. Returns counts per table."""
+        """Delete all memory records for a user. Returns counts per table.
+
+        Profile isolation (audit P1-3): only `reflections` lacks a profile
+        column. `session_transcripts` DOES have one, so a profile-scoped delete
+        must not fall through to an unrestricted user-wide delete for it.
+
+        Cascade (audit P2-2): auxiliary tables without a user/profile column
+        (`memory_states`, `knowledge_evolution`) are cleaned by the ids of the
+        rows actually being removed; `hit_history` and `reflection_daily_count`
+        are removed by user_id.
+        """
         results = {}
-        # Tables that lack a profile column (reflections, session_transcripts)
-        _NO_PROFILE_TABLES = {"reflections", "session_transcripts"}
+        # `reflections` is the only memory table without a profile column.
+        _NO_PROFILE_TABLES = {"reflections"}
+
+        def _ids(table: str, id_col: str = "id"):
+            """Collect ids in the same scope as the upcoming DELETE."""
+            sql = f"SELECT {id_col} FROM {table} WHERE user_id=?"
+            params: tuple = (user_id,)
+            if profile and table not in _NO_PROFILE_TABLES:
+                sql += " AND profile=?"
+                params = (user_id, profile)
+            return tuple(r[0] for r in self._conn.execute(sql, params).fetchall())
+
         with self._lock:
+            # 1. Collect ids to cascade before deleting anything.
+            knowledge_ids = _ids("knowledge_memory")
+            state_ids = {
+                "user": (user_id,),
+                "task": _ids("task_memory"),
+                "experience": _ids("experience_memory"),
+                "context": _ids("context_memory", id_col="session_id"),
+                "knowledge": knowledge_ids,
+                "paper": _ids("research_papers"),
+            }
+
+            # 2. Delete main tables.
             for key, table in self.MEMORY_TABLES.items():
                 if profile and table not in _NO_PROFILE_TABLES:
                     cursor = self._conn.execute(
@@ -1425,6 +1593,26 @@ class SqliteStore:
                         f"DELETE FROM {table} WHERE user_id=?", (user_id,)
                     )
                 results[key] = cursor.rowcount
+
+            # 3. Cascade to auxiliary tables.
+            removed_states = 0
+            for mtype, ids in state_ids.items():
+                removed_states += self._delete_memory_states(mtype, ids)
+            results["memory_states"] = removed_states
+            results["knowledge_evolution"] = self._delete_evolution_edges(knowledge_ids)
+            try:
+                cur = self._conn.execute(
+                    "DELETE FROM hit_history WHERE user_id=?", (user_id,))
+                results["hit_history"] = cur.rowcount
+            except sqlite3.OperationalError:
+                results["hit_history"] = 0
+            try:
+                cur = self._conn.execute(
+                    "DELETE FROM reflection_daily_count WHERE user_id=?", (user_id,))
+                results["reflection_daily_count"] = cur.rowcount
+            except sqlite3.OperationalError:
+                results["reflection_daily_count"] = 0
+
             self._maybe_commit()
         return results
 
