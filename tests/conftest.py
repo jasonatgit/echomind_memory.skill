@@ -57,7 +57,9 @@ def mock_llm_fn():
     def _llm(prompt: str) -> str:
         return json.dumps({
             "key_insights": ["test insight"],
-            "user_preferences": {"response_style": "concise"},
+            # P3.5: match the ReflectionOutput contract (List[str]) — a dict
+            # here made the coercion fail and discarded the reflection.
+            "user_preferences": ["response_style=concise"],
             "procedural_rules": [],
             "new_knowledge": [{"content": "test knowledge", "domain": "general"}],
             "confidence": 0.8,

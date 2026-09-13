@@ -195,6 +195,24 @@ def _process_reflection(
     if not isinstance(output, dict):
         return output
 
+    # P3.5+: LLMs in the wild return list-shaped fields as dicts ("concise":
+    # true) or scalars; the ReflectionOutput contract is List[str], and a
+    # dict-shaped field made the coercion in reflect_with_llm fail — the
+    # whole reflection was discarded. Normalize the four list fields so a
+    # valid-but-misshaped LLM response still consumes.
+    for field in ("key_insights", "user_preferences", "procedural_rules",
+                  "new_knowledge", "forget_suggestions"):
+        val = output.get(field)
+        if isinstance(val, dict):
+            output[field] = [f"{k}={v}" if not isinstance(v, str) else f"{k}:{v}"
+                             for k, v in val.items()]
+        elif isinstance(val, str):
+            output[field] = [val] if val else []
+        elif val is None:
+            output[field] = []
+        elif isinstance(val, list):
+            output[field] = [str(v) for v in val]
+
     min_conf = 0.65
     try:
         if config is not None:

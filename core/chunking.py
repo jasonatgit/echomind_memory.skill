@@ -39,7 +39,19 @@ def _split_long(block: str, max_len: int) -> List[str]:
                 buf = f"{buf}\n{ln}" if buf else ln
         if buf:
             final.append(buf)
-    return final
+    # P3.2: hard upper bound. A single line longer than max_len survived both
+    # passes above (an empty buf accepts any single line), producing chunks
+    # that violated the documented "at most max_len chars" contract and could
+    # overflow downstream token limits. Force-split them mid-line as the last
+    # resort.
+    bounded: List[str] = []
+    for piece in final:
+        if len(piece) <= max_len:
+            bounded.append(piece)
+            continue
+        for i in range(0, len(piece), max_len):
+            bounded.append(piece[i:i + max_len])
+    return bounded
 
 
 def chunk_text(text: str, max_len: int = MAX_CHUNK) -> List[str]:
@@ -62,8 +74,8 @@ def chunk_text(text: str, max_len: int = MAX_CHUNK) -> List[str]:
     for part in re.split(r"(```[\s\S]*?```)", text):
         if not part:
             continue
-        if part.startswith("```") and part.endswith("```"):
-            chunks.extend(_split_long(part, max_len))
-        else:
-            chunks.extend(_split_long(part, max_len))
+        # P3.1: the fenced-vs-plain branches were identical dead code — both
+        # run _split_long (the real AEIS fix lives in _split_long's splitting
+        # rules, not in a separate branch here).
+        chunks.extend(_split_long(part, max_len))
     return [c for c in chunks if c and c.strip()]

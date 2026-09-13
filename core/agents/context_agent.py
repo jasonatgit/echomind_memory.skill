@@ -96,4 +96,6 @@ class ContextMemoryAgent:
                         "INSERT INTO context_archive (session_id, role, content) VALUES (?, ?, ?)", rows)
                     self._db._conn.commit()
             except Exception as e:
-                logger.debug("Failed to archive evicted messages: %s", e)
+                # P3.3: data-loss path (evicted messages not archived); must
+                # be observable, not debug-silent.
+                logger.warning("Failed to archive evicted messages: %s", e)

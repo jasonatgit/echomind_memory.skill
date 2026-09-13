@@ -16,7 +16,7 @@ tags:
   - self-reflection
 ---
 
-# EchoMind Memory v1.2.10
+# EchoMind Memory v1.2.12
 
 ## 概述
 

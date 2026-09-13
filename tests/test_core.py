@@ -17,12 +17,12 @@ class TestStore:
         assert ok is True
 
     def test_store_with_context(self, memory_agent, sample_context):
-        """store() accepts context messages."""
+        """store() accepts context messages and succeeds on the temp DB."""
         ok = memory_agent.store(
             "user_1", "task_1", sample_context,
             "completed", True, "Sort function",
         )
-        assert ok is True or ok is False  # at minimum doesn't crash
+        assert ok is True
 
     def test_store_empty_context(self, memory_agent):
         """store() with empty context does not crash."""
@@ -86,20 +86,24 @@ class TestFeedback:
     """Record feedback behavior."""
 
     def test_positive_feedback(self, memory_agent):
-        """Positive feedback does not crash."""
+        """Positive feedback keeps the weights valid (sum ≈ 1, in range)."""
         memory_agent.record_feedback(
             "user_1", "task_1", "positive",
             [{"source": "knowledge", "id": "k1", "content": "test"}],
         )
-        assert True
+        w = memory_agent.rl_optimizer.get_current_weights()
+        assert abs(sum(w.values()) - 1.0) < 0.05
+        assert all(v > 0 for v in w.values())
 
     def test_negative_feedback(self, memory_agent):
-        """Negative feedback does not crash."""
+        """Negative feedback keeps the weights valid (sum ≈ 1, in range)."""
         memory_agent.record_feedback(
             "user_1", "task_1", "negative",
             [{"source": "knowledge", "id": "k1", "content": "test"}],
         )
-        assert True
+        w = memory_agent.rl_optimizer.get_current_weights()
+        assert abs(sum(w.values()) - 1.0) < 0.05
+        assert all(v > 0 for v in w.values())
 
 
 class TestReflection:
@@ -115,10 +119,12 @@ class TestReflection:
         assert isinstance(ids, list)
 
     def test_reflect_with_llm(self, memory_agent, mock_llm_fn):
-        """reflect_with_llm with mock LLM."""
+        """reflect_with_llm with a valid mock LLM produces a ReflectionOutput."""
         result = memory_agent.reflective.reflect_with_llm(
             [{"id": "r1", "content": "test", "text": ""}],
             "user_1", "test", mock_llm_fn,
         )
-        if result is not None:
-            assert hasattr(result, 'key_insights')
+        # mock_llm_fn returns confidence 0.8 >= the 0.65 gate, so the
+        # reflection is consumed and coerced to ReflectionOutput.
+        assert result is not None
+        assert hasattr(result, "key_insights")

@@ -13,6 +13,31 @@ from adapters.http_api import app
 from core.config_manager import get_config_manager
 
 
+@pytest.fixture(scope="module", autouse=True)
+def _isolated_db(tmp_path_factory):
+    """P3.5: redirect the app's memory_agent to a temp DB.
+
+    The module-level MainMemoryAgent in adapters/http_api points at the real
+    ~/.echomind/memory.db; TestClient triggers the lifespan, which calls
+    enable_persistence() and would read AND WRITE the production database
+    (test_store_minimal writes real rows). Rebinding agent.db to a fresh temp
+    store BEFORE any request keeps every endpoint test fully isolated.
+    """
+    import adapters.http_api as http_api_mod
+    from core.storage.sqlite_store import SqliteStore
+
+    agent = http_api_mod.memory_agent
+    old_db = agent.db
+    db_path = str(tmp_path_factory.mktemp("api_db") / "test.db")
+    agent.db = SqliteStore(db_path=db_path)
+    yield
+    try:
+        agent.db.close()
+    except Exception:
+        pass
+    agent.db = old_db
+
+
 @pytest.fixture
 def client():
     return TestClient(app)
