@@ -1,5 +1,30 @@
 # EchoMind Changelog
 
+## v1.2.13 — Deep-Review Hardening: Isolation, Concurrency & Scoring Consistency (2026-09-13)
+
+Deep code-review hardening across three phases — tenant isolation, RL/transactional concurrency, and unified retrieval/scoring semantics — with behavioral changes to ranking noted below.
+
+| Area | Change |
+|------|--------|
+| **Tenant isolation** | Knowledge dedup (`search_knowledge_by_content`) is scoped by `user_id`/`profile` — one user's dedup can no longer key off (or silently skip because of) another user's row; `record_feedback` passes `profile` through the Hermes `call()` path (previously crossed into the `default` profile's RL weights) |
+| **Delete cascade & profile safety** | `delete_user_memories` no longer deletes `session_transcripts` across profiles (only `reflections` lacks a profile column); single-record and user-wide deletes now cascade to `memory_states`, `knowledge_evolution`, `hit_history`, `reflection_daily_count` (orphan rows and inflated health stats eliminated) |
+| **RL read concurrency** | `load_weights_for_user` returns the effective weight snapshot and scoring uses exactly that snapshot; `get_current_weights` is serialized — the load-then-read window that let one user score with another's weights is closed |
+| **Transactional IO** | LLM entity extraction moved out of the `store()` write transaction — the `BEGIN IMMEDIATE` lock is never held across network IO (previously an LLM timeout blocked every writer and rolled back the whole memory batch) |
+| **Reflection quota atomicity** | Reserve-then-refund: the daily limit is enforced by a single atomic conditional upsert (cross-process TOCTOU closed); failed reflections (parse error / low confidence) refund their slot and never consume quota |
+| **Unified scoring (behavior change)** | New `_score_base` normalizes weighted signals per source: freshness is the single recency lever (knowledge no longer double-decays), the domain boost is multiplicative, and `trust_score` now drives experience ranking (the fixed `recency_multiplier` constant is removed) |
+| **Retrieval consistency** | `max_results` is honored inside `retrieve_for_task` (previously core always capped at 8, so HTTP `max_results>8` was silently ignored); platform defaults are explicit per entrypoint (`http`/`hermes`/`mcp`); the in-memory context uses the same key as the DB row |
+| **Diversity selection** | `_diversify_top_k` is two-pass bucketed: each domain gets one guaranteed representative (previously a dense single domain could occupy every slot) |
+| **Config validation** | Validation never deletes user YAML values (rejected keys fall back at read time); list/tuple elements are range-checked (a negative `max_daily` list previously disabled reflection silently); config hot-reload clears all derived caches and hot-refreshes the daily limit; per-path `get_config_manager` instances are cached |
+| **Security** | `/api/config/parameter` enforces a section whitelist and protects `api_key` from runtime overwrite; unknown memory types return 400 (not 500); MCP notifications return an empty 202 body |
+| **Lifecycle & observability** | Pending reflections are flushed and the reflection thread joined before `call()`-agent teardown and cleared on session reset; data-loss and LLM-config-sync failures log warnings instead of debug-silent |
+| **Robustness & tests** | Fallback engine normalizes list-shaped LLM fields (valid-but-misshaped responses are no longer discarded); chunking enforces a hard upper bound on over-long single lines; CLI gains action whitelist, stdin schema validation and try/finally cleanup; `tests/test_api.py` runs on a temp DB (previously touched the real `~/.echomind/memory.db`); dead code removed (`_pending_reflection_event`, `old_cols`, duplicate chunking branch) |
+
+**Note (behavior change):** ranking order changes with the unified scoring — knowledge ages at the documented half-life speed (previously quadratic), experience recency is now time-based, and `trust_score` participates in experience ranking. Existing RL weights remain valid; recalibrate after observing retrieval quality for 1–2 weeks. `retrieval.recency_multiplier` is deprecated (commented in the config templates; uncommenting has no effect).
+
+**No migration required:** no new tables or columns; all changes are in-place code and config-comment updates.
+
+---
+
 ## v1.2.12 — Algorithm Improvement: Core-Term Novelty, RL Verification & Chunking (2026-08-26)
 
 Algorithms improvement — core-term novelty ratio, candidate significance verification, and code-block-safe chunking — into EchoMind's LLM + RL architecture as zero-LLM fast heuristics on the hot path.

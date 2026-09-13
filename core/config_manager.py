@@ -98,7 +98,9 @@ FALLBACK_CONFIG = {
         "context_limit": 2,
         "preference_score_boost": 0.2,
         "relevance_multiplier": 0.6,
-        "recency_multiplier": 0.5,
+        # Deprecated since v1.2.13: unused — experience scoring no longer has
+        # a constant recency term (freshness is the single recency lever).
+        # "recency_multiplier": 0.5,
         "state_scan_limit": 1000,
     },
     "inference": {

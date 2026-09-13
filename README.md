@@ -60,6 +60,7 @@
 |------|------|
 | **RL-Enhanced Auto-Optimization** | Adjusts memory weights via user feedback with persistence; cosine learning rate decay + epsilon-greedy exploration |
 | **Multi-Trigger Retrieval** | Keywords + RL weights + LLM semantics — a true semantic memory system |
+| **Unified RL Scoring (v1.2.13+)** | All five weight dimensions drive every ranked source: freshness (Ebbinghaus) is the single recency lever, `trust_score` participates in experience ranking, and per-source signals are normalized — no fixed constants inside the weighted sum |
 | **Adaptive Reflection Batch** | Dynamically adjusts reflection trigger threshold based on weekly user activity |
 | **Few-Shot Anchoring** | Rapidly builds memory norms from small samples, improving memory quality |
 
@@ -128,6 +129,7 @@ When a query involves the following *domain keywords* or related *semantics*, th
 
 | Version | Highlights |
 |:--------|:-----------|
+| v1.2.13 | *Deep-review hardening: tenant isolation, RL read concurrency, atomic reflection quota, unified scoring (freshness single lever, trust drives experience), config validation & security guards.* |
 | v1.2.12 | *Core-term novelty ratio, RL significance verification, code-block-safe chunking.* |
 | v1.2.11 | *Project scoping, Hermes persona isolation, content-hash knowledge dedup.* |
 | v1.2.10 | *Reflection loop closure, real RL credit assignment, per-user meta-state and daily limit, storage indexes.* |
@@ -225,6 +227,7 @@ No. v1.1.6+ uses the following mechanisms to guarantee concurrency safety:
 1. **WAL mode**: SQLite write-ahead logging, supports concurrent reads across multiple processes
 2. **busy_timeout=5000**: waits up to 5 seconds when encountering a lock
 3. **Auto-retry**: exponential backoff retry up to 3 times in edge cases
+4. **Per-profile isolation everywhere (v1.2.13+)**: knowledge dedup, feedback RL weights, and deletion (single-record and user-wide) are all scoped by profile
 
 ---
 

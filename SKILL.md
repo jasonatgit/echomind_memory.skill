@@ -1,6 +1,6 @@
 ---
 name: echomind-memory
-version: "1.2.12"
+version: "1.2.13"
 description: EchoMind Memory — AI 持久记忆系统。支持 Hermes、OpenCode、OpenClaw、Claude Code 等多平台。6 种记忆类型 + reflective agent + self-reflection (epistemic mode, provenance, self-diagnosis)。
 category: software-development
 platforms:
@@ -16,7 +16,7 @@ tags:
   - self-reflection
 ---
 
-# EchoMind Memory v1.2.12
+# EchoMind Memory v1.2.13
 
 ## 概述
 
@@ -36,6 +36,8 @@ EchoMind Memory 是一个纯 SQLite 的 AI 持久记忆系统，无需 PostgreSQ
 ### RL 自优化
 
 用户反馈（👍/👎）通过 RL 权重优化器调整检索重要性权重（relevance/recency/frequency/explicit_feedback/trust_score）。信用分配只对反馈中真实出现的记忆来源维度给予方向性增量，并按用户隔离学习状态（meta-state、历史、快照）。权重持久化到 `user_memory.preferences.rl_weights`，重启后自动恢复。
+
+v1.2.13+ 评分统一：五个权重维度驱动所有被排序来源——freshness（艾宾浩斯）为唯一时间衰减杠杆，`trust_score` 参与 experience 排序，加权和内无固定常数。
 
 ### Self-Reflective Agent (v1.1.0)
 

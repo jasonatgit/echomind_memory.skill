@@ -16,11 +16,13 @@
 | `POST` | `/api/research/note` | Add research note |
 | `GET` | `/api/knowledge/{id}/evolution` | Query knowledge evolution chain |
 | `GET` | `/api/config` | Read current configuration |
-| `POST` | `/api/config/parameter` | Set runtime config parameter |
+| `POST` | `/api/config/parameter` | Set runtime config parameter (section whitelist; `api_key` is protected) |
 | `POST` | `/api/config/reload` | Reload configuration from disk |
 | `POST` | `/api/reflect` | Self-reflection (two-phase: build prompt or process result, supports profile) |
-| `POST` | `/mcp` | MCP JSON-RPC endpoint (Streamable HTTP) |
+| `POST` | `/mcp` | MCP JSON-RPC endpoint (Streamable HTTP; notifications return an empty 202) |
 | `GET` | `/health` | Health check |
+
+> **Error semantics (v1.2.13+):** `DELETE /api/memory/{type}/{id}` returns **400** for an unknown memory type (previously 500). `/api/reflect` returns **429** when the per-user daily reflection limit is reached and **400** for a parse failure / low-confidence result — failed reflections refund their quota slot and never consume the daily limit.
 
 ### Key Request Parameters
 

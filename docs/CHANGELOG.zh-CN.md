@@ -1,5 +1,30 @@
 # EchoMind 更新日志
 
+## v1.2.13 — 深度审查加固：隔离、并发与评分一致性 (2026-09-13)
+
+三轮深度代码审查加固——租户隔离、RL/事务并发、检索与评分语义统一——排序行为变化见下方说明。
+
+| 领域 | 改动 |
+|------|------|
+| **租户隔离** | 知识去重（`search_knowledge_by_content`）按 `user_id`/`profile` 隔离——任一用户的去重不再命中（或因此静默跳过）其他用户的内容；`record_feedback` 在 Hermes `call()` 路径透传 `profile`（此前跨写到 default profile 的 RL 权重） |
+| **删除级联与 profile 安全** | `delete_user_memories` 不再跨 profile 误删 `session_transcripts`（仅 `reflections` 无 profile 列）；单条与用户级删除级联清理 `memory_states`、`knowledge_evolution`、`hit_history`、`reflection_daily_count`（孤儿行与健康统计虚高消除） |
+| **RL 读并发** | `load_weights_for_user` 返回生效权重快照，评分使用该快照；`get_current_weights` 加锁——"先 load 后读"窗口（一个用户可能用另一个用户的权重评分）已关闭 |
+| **事务内 IO** | LLM 实体抽取移出 `store()` 写事务——`BEGIN IMMEDIATE` 写锁不再跨网络 IO 持有（此前 LLM 超时会阻塞所有写者并回滚整批记忆） |
+| **反思配额原子化** | 预扣-退还：每日配额由单条原子条件自增强制（跨进程 TOCTOU 关闭）；失败反思（解析错误/低置信度）退还配额槽位，不再消耗配额 |
+| **评分统一（行为变化）** | 新增 `_score_base` 按来源归一化加权信号：freshness 为唯一 recency 杠杆（knowledge 不再双重衰减）、domain boost 改乘性、`trust_score` 开始驱动 experience 排序（固定常数 `recency_multiplier` 移除） |
+| **检索一致性** | `max_results` 在 `retrieve_for_task` 内生效（此前 core 恒截 8，HTTP `max_results>8` 静默无效）；各入口 platform 默认值显式化（`http`/`hermes`/`mcp`）；内存上下文与 DB 行使用同一 key |
+| **多样性选择** | `_diversify_top_k` 改两遍分桶：每个域保证一个代表（此前密集单域可占满全部名额） |
+| **配置校验** | 校验不再删除用户 YAML 数据（被拒键在读取期回退）；list/tuple 元素逐个校验（负数 `max_daily` 列表此前静默禁用反思）；配置热重载清空全部派生缓存并热刷新每日限额；`get_config_manager` 按路径缓存实例 |
+| **安全** | `/api/config/parameter` 增加 section 白名单并保护 `api_key` 不可被运行时改写；未知记忆类型返回 400（而非 500）；MCP 通知返回空 202 响应体 |
+| **生命周期与可观测** | `call()` agent 退出前触发并 join 待处理反思，会话 reset 时清除 pending 反思；数据丢失与 LLM 配置同步失败改为 warning 日志（此前 debug 静默） |
+| **健壮性与测试** | 回退引擎归一化 list 形 LLM 字段（合法但形状不合规的响应不再被丢弃）；chunking 对超长单行强制硬上限；CLI 增加 action 白名单、stdin schema 校验与 try/finally 清理；`tests/test_api.py` 使用临时 DB（此前会触碰真实 `~/.echomind/memory.db`）；死代码清理（`_pending_reflection_event`、`old_cols`、chunking 重复分支） |
+
+**说明（行为变化）：** 评分统一后排序结果变化——knowledge 按文档 half-life 速度老化（此前二次方）、experience 的 recency 改为真实时间衰减、`trust_score` 参与 experience 排序。现有 RL 权重仍然有效；建议观察检索质量 1–2 周后再校准。`retrieval.recency_multiplier` 已废弃（配置模板中注释保留；取消注释无效果）。
+
+**无需迁移：** 无新表或新列；全部为就地代码与配置注释更新。
+
+---
+
 ## v1.2.12 — 算法优化：核心词新颖比例、RL 显著性验证与分块保护 (2026-08-26)
 
 算法优化——核心词新颖比例、候选显著性验证、代码块安全分块——作为零 LLM 快速启发式融入热路径。

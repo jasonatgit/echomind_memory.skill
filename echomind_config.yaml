@@ -51,7 +51,10 @@ retrieval:
   context_limit: 2
   preference_score_boost: 0.2
   relevance_multiplier: 0.6
-  recency_multiplier: 0.5
+  # Deprecated since v1.2.13: the constant recency_multiplier term was removed
+  # from experience scoring — freshness (Ebbinghaus) is now the single recency
+  # lever. Kept (commented) for reference; uncommenting has no effect.
+  # recency_multiplier: 0.5
   state_scan_limit: 1000
 
 llm:
