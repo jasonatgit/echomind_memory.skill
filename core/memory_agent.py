@@ -3,7 +3,6 @@
 import json
 import math
 import threading
-import uuid
 import random
 import re
 import hashlib
@@ -106,7 +105,6 @@ class MainMemoryAgent:
         )
         self._persistence_enabled = False
         self._store_count: dict = {}
-        self._pending_reflection_event = threading.Event()
         self._pending_reflection = False
         self._store_lock = threading.Lock()
         self._research_kw_cache = None
@@ -335,13 +333,24 @@ class MainMemoryAgent:
     def refresh_config(self):
         """Re-read captured config sections after cfg.on_reload event."""
         self._research_kw_cache = None
+        # P2.6: clear every cache derived from config, so a reload actually
+        # takes effect everywhere (previously the LLM domain map and the
+        # core-term novelty cache kept stale pre-reload data).
+        self.__dict__.pop("_llm_domain_cache", None)
+        self._core_term_cache = {}
         try:
             self.reflective.config = self.cfg.get_section("reflection")
+            # P2.6: the daily limit is derived from reflection.max_daily and
+            # was frozen at ReflectiveAgent.__init__ — recompute it so a
+            # max_daily hot-update takes effect.
+            if hasattr(self.reflective, "refresh_daily_limit"):
+                self.reflective.refresh_daily_limit()
         except Exception:
             pass
 
     def clear_pending_reflection(self):
-        self._pending_reflection_event = threading.Event()
+        # P3.1: the dead threading.Event is gone — the boolean plus the store
+        # lock is the actual synchronization (the Event was never set/wait-ed).
         self._pending_reflection = False
 
     def _trigger_auto_reflection(self, user_id: str, profile: str = None,
@@ -392,7 +401,9 @@ class MainMemoryAgent:
                             "record persisted by _process_reflection",
                             len(result.key_insights), result.confidence)
             except Exception as e:
-                logger.debug("Auto-reflection skipped: %s", e)
+                # P3.3: this is a data-loss path (a due reflection is dropped);
+                # it must be observable, not debug-silent.
+                logger.warning("Auto-reflection failed: %s", e)
 
         t = threading.Thread(target=_run, daemon=True)
         self._reflection_thread = t
@@ -529,7 +540,17 @@ class MainMemoryAgent:
                          platform: Optional[str] = None,
                          project: str = "default",
                          session_id: str = "",
-                         profile: str = "default") -> Dict[str, Any]:
+                         profile: str = "default",
+                         max_results: int = 8) -> Dict[str, Any]:
+        """Retrieve ranked memory for a task.
+
+        P2.1: ``max_results`` is honored HERE — the diversity selection runs
+        with this cap and the returned ``working_memory``/``retrieved_memories``
+        already contain at most this many items. Adapters no longer second-
+        slice (previously core always capped at 8 and each entrypoint sliced
+        differently, so max_results>8 was silently ignored in HTTP and the
+        cap semantics differed across the three entrypoints).
+        """
         if project == "default":
             logger.warning(
                 "retrieve_for_task: project is 'default' — memory is unscoped by "
@@ -586,15 +607,20 @@ class MainMemoryAgent:
             if recent_contexts:
                 retrieved["context"] = recent_contexts
 
-        # Load per-user RL weights for isolated scoring
+        # Load per-user RL weights for isolated scoring. P1-4: capture the
+        # RETURNED snapshot and score against exactly what was loaded — the
+        # load-then-read-later pattern left a window where another thread's
+        # load landed in between.
+        scoring_weights = None
         if self._persistence_enabled:
             user_weights = self.db.load_rl_weights(user_id, profile=profile)
-            self.rl_optimizer.load_weights_for_user(user_weights, user_id=user_id)
+            scoring_weights = self.rl_optimizer.load_weights_for_user(user_weights, user_id=user_id)
 
-        scored = self._compute_importance(retrieved, task_context, user_id, platform, features)
+        scored = self._compute_importance(retrieved, task_context, user_id, platform, features,
+                                          weights=scoring_weights)
         # P0-2: Group-by-domain sampling — ensure knowledge diversity in top-8
         ranked = sorted(scored, key=lambda x: x.importance, reverse=True)
-        top_memories = self._diversify_top_k(ranked, top_k=8)
+        top_memories = self._diversify_top_k(ranked, top_k=max(1, int(max_results)))
         confidence = (sum(m.importance for m in top_memories)
                       / max(len(top_memories), 1))
 
@@ -638,13 +664,33 @@ class MainMemoryAgent:
         }
 
 
+    @staticmethod
+    def _score_base(terms, boosts=()) -> float:
+        """P2.4: unified base score for RL-driven sources.
+
+        terms: (value, weight) pairs of the signals this source carries.
+        Normalizing by the sum of weights actually used keeps the base in
+        [0,1] regardless of which dims a source provides, so every RL
+        dimension is a real lever and no source is structurally shrunk by
+        missing dims. boosts: multiplicative factors applied after
+        normalization, capped at 1.0.
+        """
+        wsum = sum(w for _, w in terms)
+        base = sum(v * w for v, w in terms) / wsum if wsum > 0 else 0.0
+        for b in boosts:
+            base *= b
+        return min(1.0, base)
+
     def _compute_importance(self, retrieved: Dict[str, Any], query: str,
                             user_id: str, platform: Optional[str] = None,
-                            features: Dict[str, Any] = None) -> List[MemoryRecord]:
+                            features: Dict[str, Any] = None,
+                            weights: Optional[Dict[str, float]] = None) -> List[MemoryRecord]:
         research_domain = (features or {}).get("research_domain", "general")
 
         scored = []
-        weights = self.rl_optimizer.get_current_weights()
+        # P1-4: use the explicitly passed weights snapshot (what this retrieve
+        # actually loaded) when available; fall back to a locked read otherwise.
+        weights = weights or self.rl_optimizer.get_current_weights()
 
         for source, memories in retrieved.items():
             if source == "user":
@@ -653,6 +699,7 @@ class MainMemoryAgent:
                 score = self._SCORE_USER_BASE * f
                 if user_mem.get("preferences", {}).get("response_style") == "concise":
                     score += self._SCORE_USER_PREF_BOOST * weights["explicit_feedback"]
+                score = min(1.0, score)
                 if f < self._FRESHNESS_ARCHIVE_THRESHOLD:
                     continue
                 scored.append(MemoryRecord(
@@ -677,10 +724,21 @@ class MainMemoryAgent:
                     if freshness < self._FRESHNESS_ARCHIVE_THRESHOLD:
                         continue
                     trust = mem["metadata"].get("trust_score", 0.5)
-                    # Domain boost: same-domain memories get +0.1
                     mem_domain = mem["metadata"].get("domain") or mem["metadata"].get("category", "")
-                    domain_boost = self._SCORE_DOMAIN_BOOST if (research_domain != "general" and mem_domain == research_domain) else 0
-                    score = (relevance * weights["relevance"] + freshness * weights["recency"] + trust * weights["trust_score"] + domain_boost) * freshness
+                    # P2.4: domain boost is multiplicative (+10%) instead of an
+                    # unweighted additive constant inside the weighted sum.
+                    boosts = []
+                    if research_domain != "general" and mem_domain == research_domain:
+                        boosts.append(1.0 + self._SCORE_DOMAIN_BOOST)
+                    # P2.4: freshness is the SINGLE recency lever (the final
+                    # multiply). The old form had freshness inside the weighted
+                    # sum AND as the final multiplier — quadratic decay that
+                    # aged knowledge twice as fast as the half-life documents.
+                    base = self._score_base([
+                        (relevance, weights["relevance"]),
+                        (trust, weights["trust_score"]),
+                    ], boosts)
+                    score = base * freshness
                     scored.append(MemoryRecord(source=source, content=mem["content"], importance=round(score, 3), metadata=mem, relevance=relevance, trust_score=trust))
 
             elif source == "experience":
@@ -688,7 +746,6 @@ class MainMemoryAgent:
                     freshness = self._freshness(mem)
                     if freshness < self._FRESHNESS_ARCHIVE_THRESHOLD:
                         continue
-                    recency_mult = self.cfg.get("retrieval", "recency_multiplier", 0.5)
                     # P4: unify experience relevance (use find_similar_tasks'
                     # relevance instead of the constant _SCORE_EXPERIENCE_BASE,
                     # which ignored it) and normalize raw frequency via log1p so
@@ -701,11 +758,25 @@ class MainMemoryAgent:
                     # ~1.52) and the hot task dominated the score far beyond the
                     # documented "freq 20 ↦ 1.0" saturation.
                     freq_n = min(1.0, math.log1p(mem.get("frequency", 0)) / max(1.0, math.log1p(freq_cap)))
-                    score = (exp_rel * weights["relevance"] + freq_n * weights["frequency"] + recency_mult * weights["recency"]) * freshness
                     task_status = mem.get("metadata", {}).get("task_status", "")
-                    if task_status == "failed": score *= self._SCORE_FAILED_MULT
-                    elif task_status == "completed": score *= self._SCORE_COMPLETED_MULT
                     trust = mem.get("metadata", {}).get("trust_score", 0.5) if isinstance(mem.get("metadata"), dict) else 0.5
+                    # P2.4: the constant recency_multiplier term is gone — it was
+                    # a fixed 0.5 with no relation to time, so RL's recency dim
+                    # had zero discriminating effect on experience. Freshness
+                    # (the final multiply) is now the recency lever, matching
+                    # knowledge/research. trust joins the weighted sum so RL's
+                    # trust_score dim drives experience ranking too.
+                    boosts = []
+                    if task_status == "failed":
+                        boosts.append(self._SCORE_FAILED_MULT)
+                    elif task_status == "completed":
+                        boosts.append(self._SCORE_COMPLETED_MULT)
+                    base = self._score_base([
+                        (exp_rel, weights["relevance"]),
+                        (freq_n, weights["frequency"]),
+                        (trust, weights["trust_score"]),
+                    ], boosts)
+                    score = base * freshness
                     scored.append(MemoryRecord(source=source, content=mem["summary"], importance=round(score, 3), metadata=mem,
                                                relevance=mem.get("relevance", 0.5), trust_score=trust))
 
@@ -735,8 +806,17 @@ class MainMemoryAgent:
                     if freshness < self._FRESHNESS_ARCHIVE_THRESHOLD:
                         continue
                     mem_paper_domain = mem.get("domain", "")
-                    research_domain_boost = self._SCORE_RESEARCH_DOMAIN_BOOST if (research_domain != "general" and mem_paper_domain == research_domain) else 0
-                    score = (mem["relevance"] * weights["relevance"] + mem["importance_score"] * self._SCORE_RESEARCH_IMPORTANCE_WEIGHT + research_domain_boost) * freshness
+                    # P2.4: research aligned with the unified form — weighted
+                    # signals normalized, domain boost multiplicative, freshness
+                    # as the single recency lever.
+                    boosts = []
+                    if research_domain != "general" and mem_paper_domain == research_domain:
+                        boosts.append(1.0 + self._SCORE_RESEARCH_DOMAIN_BOOST)
+                    base = self._score_base([
+                        (mem.get("relevance", 0.5), weights["relevance"]),
+                        (mem.get("importance_score", 0.5), self._SCORE_RESEARCH_IMPORTANCE_WEIGHT),
+                    ], boosts)
+                    score = base * freshness
                     key_points_str = "; ".join(mem.get("key_points", [])[:3])
                     scored.append(MemoryRecord(
                         source=source,
@@ -805,13 +885,17 @@ class MainMemoryAgent:
     def _diversify_top_k(self, ranked: List[MemoryRecord], top_k: int = 8) -> List[MemoryRecord]:
         """Diversify top-K by domain grouping.
 
-        Ensures at least one item from each domain that appears in the
-        top (top_k × 2) candidates makes it into the final top_k.
-        Falls back to straight ranking when grouping is not beneficial.
+        P2.5: two-pass bucketed selection. Pass 1 guarantees one
+        representative per domain present in the candidate pool (each
+        domain's single highest-ranked item); pass 2 fills the remaining
+        slots by global rank. The old single-pass form could let one dense
+        domain occupy every slot (its later items only needed >= 80% of the
+        last included item's importance), so the per-domain guarantee was
+        unenforceable whenever a domain's top items dominated the pool.
         """
         if not ranked:
             return []
-        # Extract domain from metadata for knowledge/experience sources
+
         def _item_domain(mem: MemoryRecord) -> str:
             if isinstance(mem.metadata, dict):
                 # Direct domain key (experience, research, context)
@@ -824,12 +908,12 @@ class MainMemoryAgent:
                 if isinstance(inner, dict):
                     return inner.get("domain", "") or inner.get("category", "") or ""
             return ""
-        # Items with empty domain keep their rank position
+
+        # Pass 1: one guaranteed representative per domain, in global rank order.
         domains_seen: set[str] = set()
         result: List[MemoryRecord] = []
+        deferred: List[MemoryRecord] = []
         for mem in ranked:
-            if len(result) >= top_k:
-                break
             domain = _item_domain(mem)
             if not domain or domain == "general":
                 # items without domain always pass through
@@ -839,13 +923,14 @@ class MainMemoryAgent:
                 domains_seen.add(domain)
                 result.append(mem)
             else:
-                # Already have a representative from this domain in result
-                # only include if we have room AND this item's importance
-                # is within 80% of the last included
-                if len(result) < top_k:
-                    last_imp = result[-1].importance
-                    if mem.importance >= last_imp * 0.8:
-                        result.append(mem)
+                deferred.append(mem)
+            if len(result) >= top_k:
+                break
+        # Pass 2: fill remaining slots by global rank from the deferred items.
+        for mem in deferred:
+            if len(result) >= top_k:
+                break
+            result.append(mem)
         return result[:top_k]
 
     @staticmethod
@@ -1086,11 +1171,18 @@ class MainMemoryAgent:
         try:
             # Extract session title from first user message
             session_title = ""
+            # P2.3: the in-memory context now uses the SAME key the DB row
+            # uses (stable_memory_key), so get_context() and the DB path see
+            # one logical session under one key. Previously the in-memory
+            # agent keyed on the raw session_id while save_context keyed on
+            # the stable task key — the same session had two identities and
+            # the read paths (memory vs DB) could never agree.
+            ctx_key = stable_memory_key(user_id, task_id)
             for msg in context:
                 if msg.get("role") == "user" and not session_title:
                     content = msg.get("content", "")
                     session_title = f"{datetime.now(timezone.utc).strftime('%m%d-%H%M')}_{content[:120]}"
-                self.context_agent.add_message(msg, session_id=session_id)
+                self.context_agent.add_message(msg, session_id=ctx_key)
             # Note: add_message above is intentionally outside the DB transaction below.
             # In-memory context is the primary state; DB persistence is secondary.
             # Extract task features before create_task to get task_type
@@ -1129,6 +1221,62 @@ class MainMemoryAgent:
                         "task_type": exp_type,
                     }
 
+                # ── Pre-transaction preparation (audit P1-5) ──
+                # All pure computation, the knowledge dedup read, and the LLM
+                # entity extraction happen BEFORE the write transaction, so the
+                # BEGIN IMMEDIATE lock is never held across network IO (the old
+                # in-transaction LLM call blocked every other writer for the
+                # LLM timeout and rolled back the whole batch on timeout).
+                all_text = "".join(m.get("content", "") for m in context)
+                chinese_chars = len(re.findall(r'[\u4e00-\u9fff]', all_text))
+                token_est = int(chinese_chars * 1.5 + (len(all_text) - chinese_chars) / 4)
+                research_domain = features.get("research_domain", "general")
+                best_content = ""
+                for msg in context:
+                    if msg.get("role") == "assistant":
+                        c = msg.get("content", "")
+                        if len(c) > len(best_content):
+                            best_content = c
+                knowledge_content = best_content[:2000] if best_content else (experience_summary or "Auto-extracted knowledge")
+                kb_id = None
+                kb_metadata = None
+                existing_kb = None
+                if knowledge_content and knowledge_content != "Auto-extracted knowledge":
+                    existing_kb = self.db.search_knowledge_by_content(
+                        knowledge_content, user_id=user_id, profile=profile)
+                    # P3-2: Extract entities from content before persisting
+                    kb_metadata = {"source": "task", "task_id": task_id, "user_id": user_id}
+                    entities = self._extract_entities(best_content or experience_summary or "")
+                    if entities:
+                        kb_metadata["entities"] = entities
+                    # W-1 fix: resolve epistemic mode from the real source instead of a hardcoded
+                    # "assistant" (which collapsed every entry to fuzzy). Knowledge
+                    # distilled by the assistant LLM → fuzzy; knowledge taken from a
+                    # user-provided experience summary → user_provided.
+                    if best_content:
+                        kb_metadata["epistemic_mode"] = self._resolve_epistemic("assistant")
+                        kb_metadata["epistemic_detail"] = "generated by LLM, unverified"
+                    else:
+                        kb_metadata["epistemic_mode"] = self._resolve_epistemic("user_direct")
+                        kb_metadata["epistemic_detail"] = "derived from user-provided experience summary"
+                    # Moltspeak nok~: newly-created knowledge lives in the current context (high fidelity)
+                    kb_metadata["cognitive_pos"] = "nok"
+                    # M-4 fix: key knowledge by CONTENT, not by task. Using
+                    # stable_memory_key(user, task) made every task (and every
+                    # turn of a session) mint a brand-new knowledge id, so the
+                    # ON CONFLICT(id) dedup never fired and knowledge_memory grew
+                    # unboundedly. Keying by a stable content hash (matching
+                    # knowledge_agent.add_document's content-hash dedup) makes the
+                    # same knowledge id collide on INSERT → UPDATE, restoring dedup.
+                    kb_id = "k:" + str(int(hashlib.md5(
+                        knowledge_content.encode("utf-8")).hexdigest(), 16) % (2**63 - 1))
+                exp_id = None
+                if exp_data:
+                    # Deterministic id from summary hash — matches experience_agent._summary_index,
+                    # so DB ON CONFLICT dedups consistently with in-memory (fixes reload duplication)
+                    exp_hash = int(hashlib.md5(f"{user_id}:{exp_data['summary']}".encode()).hexdigest(), 16)
+                    exp_id = f"exp:{user_id}:{exp_hash % (2**63-1)}"
+
                 with self.db.transaction():
                     # B-1 fix: persist the RAW nested preferences (the
                     # {"_default": {...}, "<platform>": {...}} shape maintained
@@ -1152,9 +1300,6 @@ class MainMemoryAgent:
                                       project=project, session_id=session_id or "",
                                       session_title=session_title, tags=task_tags,
 profile=profile, language=lang)
-                    all_text = "".join(m.get("content", "") for m in context)
-                    chinese_chars = len(re.findall(r'[\u4e00-\u9fff]', all_text))
-                    token_est = int(chinese_chars * 1.5 + (len(all_text) - chinese_chars) / 4)
                     self.db.save_context(
                         session_id=stable_memory_key(user_id, task_id),
                         user_id=user_id,
@@ -1163,75 +1308,19 @@ profile=profile, language=lang)
                         platform=platform or "default",
                         project=project,
                         profile=profile)
-                    research_domain = features.get("research_domain", "general")
-                    best_content = ""
-                    for msg in context:
-                        if msg.get("role") == "assistant":
-                            c = msg.get("content", "")
-                            if len(c) > len(best_content):
-                                best_content = c
-                    knowledge_content = best_content[:2000] if best_content else (experience_summary or "Auto-extracted knowledge")
-                    kb_id = None
-                    if knowledge_content and knowledge_content != "Auto-extracted knowledge":
-                        existing_kb = self.db.search_knowledge_by_content(knowledge_content)
-                        # P3-2: Extract entities from content before persisting
-                        kb_metadata = {"source": "task", "task_id": task_id, "user_id": user_id}
-                        entities = self._extract_entities(best_content or experience_summary or "")
-                        if entities:
-                            kb_metadata["entities"] = entities
-                        # W-1 fix: resolve epistemic mode from the real source instead of a hardcoded
-                        # "assistant" (which collapsed every entry to fuzzy). Knowledge
-                        # distilled by the assistant LLM → fuzzy; knowledge taken from a
-                        # user-provided experience summary → user_provided.
-                        if best_content:
-                            kb_metadata["epistemic_mode"] = self._resolve_epistemic("assistant")
-                            kb_metadata["epistemic_detail"] = "generated by LLM, unverified"
-                        else:
-                            kb_metadata["epistemic_mode"] = self._resolve_epistemic("user_direct")
-                            kb_metadata["epistemic_detail"] = "derived from user-provided experience summary"
-                        # Moltspeak nok~: newly-created knowledge lives in the current context (high fidelity)
-                        kb_metadata["cognitive_pos"] = "nok"
-                        # M-4 fix: key knowledge by CONTENT, not by task. Using
-                        # stable_memory_key(user, task) made every task (and every
-                        # turn of a session) mint a brand-new knowledge id, so the
-                        # ON CONFLICT(id) dedup never fired and knowledge_memory grew
-                        # unboundedly. Keying by a stable content hash (matching
-                        # knowledge_agent.add_document's content-hash dedup) makes the
-                        # same knowledge id collide on INSERT → UPDATE, restoring dedup.
-                        kb_id = "k:" + str(int(hashlib.md5(
-                            knowledge_content.encode("utf-8")).hexdigest(), 16) % (2**63 - 1))
-                        if not existing_kb:
-                            self.db.save_knowledge(
-                                knowledge_id=kb_id,
-                                domain=research_domain,
-                                content=knowledge_content,
-                                metadata=kb_metadata,
-                                project=project,
-                                session_id=session_id or "",
-                                session_title=session_title, tags=task_tags,
-                                profile=profile,
-                                user_id=user_id,
-                                language=lang)
-                            self.knowledge_agent.add_document(knowledge_content, {
-                                "source": "task", "task_id": task_id,
-                                "user_id": user_id, "domain": research_domain,
-                                "project": project, "session_id": session_id or "",
-                                "session_title": session_title, "tags": task_tags,
-                                "category": research_domain,
-                                # P8/A-M1 fix: tag in-memory knowledge with its profile
-                                # so knowledge_agent.search's profile filter isn't a
-                                # silent no-op until a reload. This mirrors the DB row,
-                                # closing the cross-profile in-memory leak.
-                                "profile": profile,
-                            }, entry_id=kb_id)
-                            # P-*: invalidate known-term cache after write so a new term is
-                            # not re-misclassified as novel next time.
-                            self._invalidate_core_term_cache(user_id)
+                    if kb_id and kb_metadata and not existing_kb:
+                        self.db.save_knowledge(
+                            knowledge_id=kb_id,
+                            domain=research_domain,
+                            content=knowledge_content,
+                            metadata=kb_metadata,
+                            project=project,
+                            session_id=session_id or "",
+                            session_title=session_title, tags=task_tags,
+                            profile=profile,
+                            user_id=user_id,
+                            language=lang)
                     if exp_data:
-                        # Deterministic id from summary hash — matches experience_agent._summary_index,
-                        # so DB ON CONFLICT dedups consistently with in-memory (fixes reload duplication)
-                        exp_hash = int(hashlib.md5(f"{user_id}:{exp_data['summary']}".encode()).hexdigest(), 16)
-                        exp_id = f"exp:{user_id}:{exp_hash % (2**63-1)}"
                         self.db.save_experience(user_id, exp_data["task_type"], success,
                                      exp_data["steps"],
                                      exp_data["summary"],
@@ -1239,6 +1328,25 @@ profile=profile, language=lang)
                                      session_id=session_id or "",
                                      session_title=session_title, tags=task_tags,
 profile=profile, language=lang, experience_id=exp_id)
+
+                # Mirror the committed knowledge into the in-memory agent (kept
+                # next to the transaction so failure handling is unchanged).
+                if kb_id and kb_metadata and not existing_kb:
+                    self.knowledge_agent.add_document(knowledge_content, {
+                        "source": "task", "task_id": task_id,
+                        "user_id": user_id, "domain": research_domain,
+                        "project": project, "session_id": session_id or "",
+                        "session_title": session_title, "tags": task_tags,
+                        "category": research_domain,
+                        # P8/A-M1 fix: tag in-memory knowledge with its profile
+                        # so knowledge_agent.search's profile filter isn't a
+                        # silent no-op until a reload. This mirrors the DB row,
+                        # closing the cross-profile in-memory leak.
+                        "profile": profile,
+                    }, entry_id=kb_id)
+                    # P-*: invalidate known-term cache after write so a new term is
+                    # not re-misclassified as novel next time.
+                    self._invalidate_core_term_cache(user_id)
 
                 # P1-1: Initialize memory states for newly created records
                 if self._persistence_enabled:
@@ -1551,8 +1659,9 @@ profile=profile, language=lang, experience_id=exp_id)
         # update and persist the wrong user's weights.
         if self._persistence_enabled:
             user_weights = self.db.load_rl_weights(user_id, profile=profile)
-            self.rl_optimizer.load_weights_for_user(user_weights, user_id=user_id)
-        cw = self.rl_optimizer.get_current_weights()
+            cw = self.rl_optimizer.load_weights_for_user(user_weights, user_id=user_id)
+        else:
+            cw = self.rl_optimizer.get_current_weights()
         feedback_record = FeedbackRecord(
             user_id=user_id, task_id=task_id,
             retrieved_memories=_normalized_memories, user_feedback=feedback,
@@ -1756,8 +1865,10 @@ profile=profile, language=lang, experience_id=exp_id)
             logger.warning("Failed to export memory.md")
         logger.info(f"Synced EchoMind memories to {echomind_dir}")
 
-    def get_context(self) -> List[Dict]:
-        return self.context_agent.get_context()
+    def get_context(self, session_id: str = "") -> List[Dict]:
+        # P2.3: pass the session key through so callers can read a specific
+        # session instead of silently creating/reading an unnamed one.
+        return self.context_agent.get_context(session_id=session_id)
 
     def clear_context(self):
         self.context_agent.clear()

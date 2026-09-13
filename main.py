@@ -60,15 +60,17 @@ def call(tool_name: str, config_path: str = None, **kwargs):
             task_context=kwargs.get("query", ""),
             user_id=kwargs.get("user_id", ""),
             task_id=kwargs.get("task_id"),
-            platform=kwargs.get("platform"),
+            platform=kwargs.get("platform") or "hermes",
             project=kwargs.get("project", "default"),
             session_id=kwargs.get("session_id", ""),
             profile=kwargs.get("profile", "default"),
+            max_results=kwargs.get("max_results", 5),
         )
+        # P2.1: core honors max_results; no second slice here.
         working = [
             {"source": m.source, "content": m.content,
              "importance": m.importance, "metadata": m.metadata}
-            for m in result.get("retrieved_memories", [])[:kwargs.get("max_results", 5)]
+            for m in result.get("retrieved_memories", [])
         ]
         return {
             "working_memory": working,
@@ -85,7 +87,7 @@ def call(tool_name: str, config_path: str = None, **kwargs):
             task_status=kwargs.get("task_status", "completed"),
             success=kwargs.get("success", False),
             experience_summary=kwargs.get("experience_summary"),
-            platform=kwargs.get("platform"),
+            platform=kwargs.get("platform") or "hermes",
             title=kwargs.get("title"),
             project=kwargs.get("project", "default"),
             session_id=kwargs.get("session_id", ""),
@@ -103,6 +105,7 @@ def call(tool_name: str, config_path: str = None, **kwargs):
                 task_id=kwargs.get("task_id", ""),
                 feedback=kwargs.get("feedback", "positive"),
                 retrieved_memories=kwargs.get("retrieved_memories", []),
+                profile=kwargs.get("profile", "default"),
             )
             return {"status": "feedback_received", "user_id": kwargs.get("user_id", "")}
         except Exception as e:
@@ -150,9 +153,21 @@ def call(tool_name: str, config_path: str = None, **kwargs):
 
 @atexit.register
 def _cleanup_call_agents():
-    """Gracefully close all cached agent connections on process exit."""
+    """Gracefully close all cached agent connections on process exit.
+
+    P2.8: mirrors hermes_provider.shutdown — pending reflections are flushed
+    and the reflection thread joined BEFORE disable_persistence() closes the
+    DB, or the reflection is deterministically dropped (get_recent_episodic
+    and save_reflection are both gated on _persistence_enabled).
+    """
     for path, (agent, _) in list(_call_agents.items()):
         try:
+            pending = getattr(agent, "_pending_reflection", False)
+            if pending:
+                agent._trigger_auto_reflection(platform="hermes")
+            t = getattr(agent, "_reflection_thread", None)
+            if t is not None and t.is_alive():
+                t.join(timeout=30)
             agent.disable_persistence()
         except Exception:
             pass

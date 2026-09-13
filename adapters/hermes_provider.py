@@ -271,7 +271,9 @@ class EchomindMemoryProvider:
             reload_llm_client()
             logger.info("LLM config synced from Hermes: provider=%s", provider)
         except Exception as e:
-            logger.debug("LLM config auto-sync skipped: %s", e)
+            # P3.3: LLM config is a key path — a failed sync means the Hermes
+            # endpoint silently doesn't apply; make it observable.
+            logger.warning("LLM config auto-sync failed: %s", e)
 
     # ═══════════════════════════════════════════════════
     # Core methods called automatically (agent_loop driven, 100% reliable)
@@ -587,6 +589,11 @@ class EchomindMemoryProvider:
                 # /new, /reset: Clear buffer
                 self._context_buffer = []
                 self._turn_count = 0
+                # P2.8: a pending reflection scheduled for the OLD session must
+                # not fire into the NEW session's context — clear it with the
+                # rest of the per-session state.
+                if self._agent:
+                    self._agent.clear_pending_reflection()
 
             if rewound:
                 # /undo N: Clear context cache and retry buffer

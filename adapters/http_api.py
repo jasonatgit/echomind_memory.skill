@@ -10,7 +10,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import APIKeyHeader
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
 import logging
 import uvicorn
@@ -163,13 +163,15 @@ def api_retrieve(req: RetrieveRequest, auth=Depends(verify_api_key)):
     try:
         result = memory_agent.retrieve_for_task(
             req.query, req.user_id, req.task_id,
-            platform=req.platform, project=req.project,
+            platform=req.platform or "http", project=req.project,
             session_id=req.session_id, profile=req.profile,
+            max_results=req.max_results,
         )
+        # P2.1: core honors max_results; no second slice here.
         working = [
             {"source": m.source, "content": m.content,
              "importance": m.importance, "metadata": m.metadata}
-            for m in result["working_memory"][:req.max_results]
+            for m in result["working_memory"]
         ]
         return {
             "working_memory": working,
@@ -199,7 +201,7 @@ def api_store(req: StoreRequest, auth=Depends(verify_api_key)):
         ok = memory_agent.store(
             req.user_id, req.task_id, ctx,
             req.task_status, req.success, req.experience_summary,
-            platform=req.platform, title=req.title,
+            platform=req.platform or "http", title=req.title,
             project=req.project or "default",
             session_id=req.session_id or "",
             correction=req.correction,
@@ -371,6 +373,18 @@ def api_get_config(auth=Depends(verify_api_key)):
 
 @app.post("/api/config/parameter")
 def api_set_config_param(req: ConfigUpdateRequest, auth=Depends(verify_api_key)):
+    # P2.7: section whitelist + protected keys. An authenticated caller could
+    # previously overwrite server.api_key / llm.api_key (locking out the
+    # operator or re-pointing the LLM at an attacker-controlled endpoint).
+    # Hermes LLM sync uses set_runtime directly on the config manager, so it
+    # is unaffected by this HTTP-level guard.
+    _ALLOWED_SECTIONS = {"rl", "reflection", "retrieval", "inference",
+                         "server", "llm", "cleanup", "entities", "user"}
+    _PROTECTED_KEYS = {"api_key"}
+    if req.section not in _ALLOWED_SECTIONS:
+        raise HTTPException(status_code=400, detail=f"Unknown config section: {req.section}")
+    if req.key in _PROTECTED_KEYS:
+        raise HTTPException(status_code=403, detail=f"Config key '{req.key}' cannot be changed at runtime")
     cfg = get_config_manager()
     key_path = f"{req.section}.{req.key}"
     cfg.set_runtime(key_path, req.value)
@@ -394,6 +408,9 @@ class DeleteRequest(BaseModel):
 
 @app.delete("/api/memory/{memory_type}/{memory_id}")
 def api_delete_memory(memory_type: str, memory_id: str, auth=Depends(verify_api_key)):
+    # P2.7: an unknown type is a client error (400), not a server error.
+    if memory_type not in memory_agent.db.MEMORY_TABLES:
+        raise HTTPException(status_code=400, detail=f"Unknown memory type: {memory_type}")
     try:
         deleted = memory_agent.db.delete_memory(memory_type, memory_id)
         return {"status": "deleted" if deleted else "not_found", "memory_type": memory_type, "memory_id": memory_id}
@@ -517,8 +534,12 @@ async def mcp_endpoint(request: dict):
         return {"jsonrpc": "2.0", "error": {"code": -32603, "message": "MCP not available"}}
     try:
         resp = await asyncio.to_thread(handle_mcp_request, request)
-        # M-7 fix: notifications return None (JSON-RPC expects no response)
-        return {} if resp is None else resp
+        # M-7 fix + P2.7: JSON-RPC 2.0 notifications expect NO response body.
+        # The old `{}` placeholder made strict clients fail to parse; an HTTP
+        # transport answers a notification with an empty 202 instead.
+        if resp is None:
+            return Response(status_code=202)
+        return resp
     except Exception as e:
         logger.error(f"mcp_endpoint: {e}", exc_info=True)
         return {"jsonrpc": "2.0", "error": {"code": -32603, "message": str(e)}}

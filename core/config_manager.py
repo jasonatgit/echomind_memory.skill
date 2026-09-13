@@ -3,7 +3,7 @@ import os
 import threading
 import yaml
 import logging
-from typing import Any, Optional
+from typing import Any, Dict, Optional
 
 logger = logging.getLogger("ConfigManager")
 
@@ -188,19 +188,24 @@ class ConfigManager:
     def _validate_config(self):
         """Lightweight schema validation for critical config values.
 
-        Logs warnings for invalid values and reverts to FALLBACK_CONFIG defaults.
-        Schema: {section.key: (expected_type, range_tuple, validator_fn)}
+        Invalid values are recorded and reverted to FALLBACK_CONFIG defaults at
+        read time (P2.6) — the user's YAML data itself is never mutated (the
+        old form ``del sec_data[key]`` edited the cache reference, so the
+        user's value was unrecoverable until reload).
+
+        Schema: {section.key: (expected_type, validator_fn)}
         """
         schema = {
-            "server.port": (int, None, lambda v: v > 0 and v < 65536),
-            "reflection.max_daily": (int, None, lambda v: v > 0),
-            "reflection.batch_size": (int, None, lambda v: v > 0),
-            "reflection.min_records": (int, None, lambda v: v > 0),
-            "rl.learning_rate": (float, None, lambda v: 0 < v < 1),
-            "rl.decay_factor": (float, None, lambda v: 0 < v < 1),
-            "rl.max_buffer_size": (int, None, lambda v: v > 0),
+            "server.port": (int, lambda v: v > 0 and v < 65536),
+            "reflection.max_daily": (int, lambda v: v > 0),
+            "reflection.batch_size": (int, lambda v: v > 0),
+            "reflection.min_records": (int, lambda v: v > 0),
+            "rl.learning_rate": (float, lambda v: 0 < v < 1),
+            "rl.decay_factor": (float, lambda v: 0 < v < 1),
+            "rl.max_buffer_size": (int, lambda v: v > 0),
         }
-        for section_key, (expected_type, type_b, validator) in schema.items():
+        self._invalid_keys = set()
+        for section_key, (expected_type, validator) in schema.items():
             sec, key = section_key.split(".", 1)
             sec_data = self._yaml_cache.get(sec, {})
             if not isinstance(sec_data, dict):
@@ -210,14 +215,24 @@ class ConfigManager:
                 continue
             # Type check
             if not isinstance(val, expected_type):
-                # Allow list/tuple for random-range configs (reflection.batch_size etc.)
                 if isinstance(val, (list, tuple)):
+                    # P2.6: list/tuple range configs still get their ELEMENTS
+                    # validated (previously any list bypassed the range check,
+                    # so reflection.max_daily: [-5, -1] produced a negative
+                    # daily limit and silently disabled reflection).
+                    if any(not (isinstance(v, expected_type) and (validator is None or validator(v)))
+                           for v in val):
+                        logger.warning(
+                            "Config %s: element out of range %r. Using default.",
+                            section_key, val,
+                        )
+                        self._invalid_keys.add(section_key)
                     continue
                 logger.warning(
                     "Config %s: expected %s, got %s (value=%r). Using default.",
                     section_key, expected_type.__name__, type(val).__name__, val,
                 )
-                del sec_data[key]
+                self._invalid_keys.add(section_key)
                 continue
             # Range check
             if validator and not validator(val):
@@ -225,12 +240,21 @@ class ConfigManager:
                     "Config %s: value %r out of valid range. Using default.",
                     section_key, val,
                 )
-                del sec_data[key]
+                self._invalid_keys.add(section_key)
 
     def get(self, section: str, key: str, default: Any = None) -> Any:
         runtime_key = f"{section}.{key}"
         if runtime_key in self._runtime_overrides:
             return self._runtime_overrides[runtime_key]
+
+        # P2.6: a value the schema validation rejected falls through to the
+        # fallback default instead of being served (the user's YAML entry is
+        # preserved for inspection).
+        if runtime_key in getattr(self, "_invalid_keys", ()):
+            section_fb = FALLBACK_CONFIG.get(section, {})
+            if isinstance(section_fb, dict):
+                return section_fb.get(key, default)
+            return default
 
         # YAML takes priority over engine ext_params (user config wins)
         yaml_val = self._yaml_cache.get(section, {}).get(key)
@@ -333,6 +357,10 @@ class ConfigManager:
 
 _config_manager: Optional[ConfigManager] = None
 _config_manager_lock = threading.Lock()
+# P2.6: extra instances keyed by config path, so repeated get_config_manager
+# calls with the same path reuse ONE instance (previously every call built a
+# fresh ConfigManager whose set_runtime overrides never propagated anywhere).
+_extra_managers: Dict[str, "ConfigManager"] = {}
 
 
 def get_config_manager(
@@ -346,4 +374,12 @@ def get_config_manager(
             if _config_manager is None:
                 _config_manager = ConfigManager()
         return _config_manager
-    return ConfigManager(config_path=config_path, ext_params=ext_params)
+    if ext_params is not None:
+        # ext_params callers (Hermes initialize) get one-shot instances.
+        return ConfigManager(config_path=config_path, ext_params=ext_params)
+    key = str(config_path)
+    inst = _extra_managers.get(key)
+    if inst is None:
+        inst = ConfigManager(config_path=config_path)
+        _extra_managers[key] = inst
+    return inst
