@@ -15,6 +15,22 @@ from core._reflective_version import ECHOMIND_VERSION
 
 ECHOMIND_URL = "http://127.0.0.1:8005"
 
+# v1.2.14 provenance: the connecting MCP client's identity, captured from the
+# initialize handshake's clientInfo.name (normalized by provenance). Empty
+# until an initialize arrives; tool calls then default origin_client to it.
+_MCP_CLIENT = ""
+
+
+def _default_origin_client(arguments: dict) -> str:
+    """origin_client for an MCP tool call: explicit argument wins, then the
+    captured clientInfo, then the transport value "mcp"."""
+    explicit = str(arguments.get("origin_client", "") or "").strip()
+    if explicit:
+        return explicit
+    if _MCP_CLIENT:
+        return _MCP_CLIENT
+    return "mcp"
+
 
 def _resolve_project(explicit: str) -> str:
     """Resolve a non-default project scope for MCP traffic.
@@ -130,6 +146,10 @@ def handle_tools_list():
                              "description": "Optional. Tag filter (case-insensitive)."},
                     "tags_match_all": {"type": "boolean", "default": False,
                                        "description": "True requires every tag (AND); default OR."},
+                    "origin_client": {"type": "string",
+                                      "description": "Optional. Source client filter (defaults to the connecting client)."},
+                    "origin_platform": {"type": "string",
+                                        "description": "Optional. Transport filter (mcp/http/hermes/cli)."},
                 },
                 "required": ["query"],
             },
@@ -154,6 +174,8 @@ def handle_tools_list():
                                    "description": "True if this store is a fix/correction of a prior turn"},
                     "tags": {"type": "array", "items": {"type": "string"},
                              "description": "Optional. Caller tags (priority); auto topic tags fill the rest."},
+                    "origin_client": {"type": "string",
+                                      "description": "Optional. Producing client (defaults to the connecting client)."},
                 },
                 "required": [],
             },
@@ -263,6 +285,9 @@ def handle_tool_call(name, arguments):
             # v1.2.14: tag filter plumbed through (case-insensitive).
             "tags": arguments.get("tags", []),
             "tags_match_all": bool(arguments.get("tags_match_all", False)),
+            # v1.2.14: origin hard filter (explicit arg > captured clientInfo).
+            "origin_client": _default_origin_client(arguments),
+            "origin_platform": arguments.get("origin_platform", ""),
         })
         if "error" in result:
             return {"content": [{"type": "text", "text": f"Error: {result['error']}"}]}
@@ -293,6 +318,8 @@ def handle_tool_call(name, arguments):
             "correction": arguments.get("correction", False),
             # v1.2.14: caller tags take priority over auto topic tags.
             "tags": arguments.get("tags", []),
+            # v1.2.14: origin provenance (explicit arg > captured clientInfo).
+            "origin_client": _default_origin_client(arguments),
         })
         if "error" in result:
             return {"content": [{"type": "text", "text": f"Error storing: {result['error']}"}]}
@@ -385,6 +412,17 @@ def handle_mcp_request(msg: dict) -> dict:
     params = msg.get("params", {})
 
     if method == "initialize":
+        # v1.2.14 provenance: capture the connecting client's identity from
+        # clientInfo.name so later stores/retrieves default origin_client to
+        # the real source (claude-code / opencode / ...) instead of a generic
+        # "mcp". The stdio gateway is a single process, so a module-level
+        # value is per-connection; over HTTP an initialize-less call falls
+        # back to the explicit argument or "unknown".
+        global _MCP_CLIENT
+        client_info = params.get("clientInfo")
+        if isinstance(client_info, dict) and client_info.get("name"):
+            from core.provenance import normalize_origin_client
+            _MCP_CLIENT = normalize_origin_client(client_info["name"])
         return {"jsonrpc": "2.0", "id": msg_id, "result": {
             "protocolVersion": "2024-11-05",
             "capabilities": {"tools": {}, "resources": {}},

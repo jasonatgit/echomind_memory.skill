@@ -43,7 +43,8 @@ class ExperienceMemoryAgent:
                         success: bool, steps: List[str], summary: str,
                         project: str = "default", session_id: str = "",
                         session_title: str = "", tags: List[str] = None,
-                        profile: str = "default", entry_id: str = None) -> str:
+                        profile: str = "default", entry_id: str = None,
+                        origin_platform: str = None, origin_client: str = None) -> str:
         summary_hash = int(hashlib.md5(f"{user_id}:{summary}".encode()).hexdigest(), 16) % (2**63 - 1)
         if summary_hash in self._summary_index:
             existing_id = self._summary_index[summary_hash]
@@ -63,6 +64,12 @@ class ExperienceMemoryAgent:
             project=project, session_id=session_id,
             session_title=session_title, tags=tags or [],
             profile=profile,
+            # v1.2.14 provenance: keep the in-memory row consistent with the
+            # DB origin_* columns.
+            metadata={
+                "origin_platform": origin_platform or "",
+                "origin_client": origin_client or "",
+            },
         )
         if entry_id:
             entry.id = entry_id
@@ -165,6 +172,11 @@ class ExperienceMemoryAgent:
                         # apply the failed/completed multipliers (previously
                         # never wired, so _SCORE_FAILED/_COMPLETED were dead).
                         "task_status": "completed" if entry.success else "failed",
+                        # v1.2.14 provenance: origin filters read these.
+                        "origin_platform": entry.metadata.get("origin_platform", "")
+                            if isinstance(entry.metadata, dict) else "",
+                        "origin_client": entry.metadata.get("origin_client", "")
+                            if isinstance(entry.metadata, dict) else "",
                     },
                     "created_at": entry.created_at.isoformat() if entry.created_at else "",
                     "last_access_at": entry.last_access_at.isoformat() if hasattr(entry, 'last_access_at') and entry.last_access_at else "",

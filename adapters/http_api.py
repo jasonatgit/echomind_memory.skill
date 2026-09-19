@@ -80,6 +80,8 @@ class RetrieveRequest(BaseModel):
     profile: str = "default"
     tags: List[str] = []
     tags_match_all: bool = False
+    origin_platform: Optional[str] = None
+    origin_client: Optional[str] = None
 
 
 class StoreRequest(BaseModel):
@@ -96,6 +98,7 @@ class StoreRequest(BaseModel):
     correction: bool = False
     profile: str = "default"
     tags: List[str] = []
+    origin_client: Optional[str] = None
 
 class FeedbackRequest(BaseModel):
     user_id: str
@@ -170,6 +173,8 @@ def api_retrieve(req: RetrieveRequest, auth=Depends(verify_api_key)):
             session_id=req.session_id, profile=req.profile,
             max_results=req.max_results,
             tags=req.tags, tags_match_all=req.tags_match_all,
+            origin_platform=req.origin_platform or "http",
+            origin_client=req.origin_client,
         )
         # P2.1: core honors max_results; no second slice here.
         working = [
@@ -211,6 +216,7 @@ def api_store(req: StoreRequest, auth=Depends(verify_api_key)):
             correction=req.correction,
             profile=req.profile,
             tags=req.tags,
+            origin_client=req.origin_client,
         )
         return {"status": "stored" if ok else "error", "user_id": req.user_id, "task_id": req.task_id}
     except Exception as e:

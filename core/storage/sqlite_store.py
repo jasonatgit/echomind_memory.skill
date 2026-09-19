@@ -177,6 +177,34 @@ _MIGRATIONS = [
          "ALTER TABLE knowledge_evolution ADD COLUMN origin_session_id TEXT DEFAULT ''",
          "ALTER TABLE knowledge_evolution ADD COLUMN origin_turn INTEGER DEFAULT 0",
      ]),
+    (10, "Add origin provenance (transport + client) to all memory tables",
+     [
+         # v1.2.14 provenance: origin_platform = transport (mcp/http/hermes/cli),
+         # origin_client = producing client (claude-code/opencode/...).
+         # Legacy `platform` columns on context_memory/reflections are KEPT and
+         # dual-written; the empty default keeps old rows visible to any
+         # origin filter (audit-safe backward compatibility).
+         "ALTER TABLE knowledge_memory ADD COLUMN origin_platform TEXT DEFAULT ''",
+         "ALTER TABLE knowledge_memory ADD COLUMN origin_client TEXT DEFAULT ''",
+         "ALTER TABLE experience_memory ADD COLUMN origin_platform TEXT DEFAULT ''",
+         "ALTER TABLE experience_memory ADD COLUMN origin_client TEXT DEFAULT ''",
+         "ALTER TABLE task_memory ADD COLUMN origin_platform TEXT DEFAULT ''",
+         "ALTER TABLE task_memory ADD COLUMN origin_client TEXT DEFAULT ''",
+         "ALTER TABLE context_memory ADD COLUMN origin_client TEXT DEFAULT ''",
+         "ALTER TABLE research_papers ADD COLUMN origin_platform TEXT DEFAULT ''",
+         "ALTER TABLE research_papers ADD COLUMN origin_client TEXT DEFAULT ''",
+         "ALTER TABLE research_notes ADD COLUMN origin_platform TEXT DEFAULT ''",
+         "ALTER TABLE research_notes ADD COLUMN origin_client TEXT DEFAULT ''",
+         "ALTER TABLE session_transcripts ADD COLUMN origin_platform TEXT DEFAULT ''",
+         "ALTER TABLE session_transcripts ADD COLUMN origin_client TEXT DEFAULT ''",
+         "ALTER TABLE reflections ADD COLUMN origin_client TEXT DEFAULT ''",
+         "CREATE INDEX IF NOT EXISTS idx_knowledge_origin ON knowledge_memory(origin_platform, origin_client, project)",
+         "CREATE INDEX IF NOT EXISTS idx_experience_origin ON experience_memory(origin_platform, origin_client, project)",
+         "CREATE INDEX IF NOT EXISTS idx_task_origin ON task_memory(origin_platform, origin_client, project)",
+         # context_memory has no origin_platform column (the legacy `platform`
+         # column carries the transport), so its index uses that instead.
+         "CREATE INDEX IF NOT EXISTS idx_context_origin ON context_memory(platform, origin_client, project)",
+     ]),
 ]
 # Tables that need a profile column
 _PROFILE_TABLES = [
@@ -912,25 +940,30 @@ class SqliteStore:
                   steps: List = None, metadata: Dict = None,
                   project: str = "default", session_id: str = "",
                   session_title: str = "", tags: List = None,
-                  profile: str = "default", language: str = ""):
+                  profile: str = "default", language: str = "",
+                  origin_platform: str = None, origin_client: str = None):
         with self._lock:
             task_pk = stable_memory_key(user_id, task_id)
             self._conn.execute("""
                 INSERT INTO task_memory (id, user_id, title, status, steps, metadata,
-                    project, profile, session_id, session_title, tags, language, updated_at, last_access_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+                    project, profile, session_id, session_title, tags, language,
+                    origin_platform, origin_client, updated_at, last_access_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
                 ON CONFLICT(id) DO UPDATE SET
                     status=excluded.status, steps=excluded.steps,
                     metadata=excluded.metadata, title=excluded.title,
                     project=excluded.project, profile=excluded.profile,
                     session_id=excluded.session_id, session_title=excluded.session_title,
                     tags=excluded.tags, language=excluded.language,
+                    origin_platform=excluded.origin_platform,
+                    origin_client=excluded.origin_client,
                     updated_at=datetime('now'),
                     last_access_at=datetime('now')
             """, (task_pk, user_id, title, status,
                   json.dumps(steps or []), json.dumps(metadata or {}),
                   project, profile, session_id, session_title,
-                  json.dumps(tags or []), language))
+                  json.dumps(tags or []), language,
+                  origin_platform or "", origin_client or ""))
             self._maybe_commit()
 
     @with_retry_on_busy()
@@ -939,13 +972,15 @@ class SqliteStore:
                         steps: List, summary: str, experience_id: str = None,
                         project: str = "default", session_id: str = "",
                         session_title: str = "", tags: List = None,
-                        profile: str = "default", language: str = ""):
+                        profile: str = "default", language: str = "",
+                        origin_platform: str = None, origin_client: str = None):
         with self._lock:
             eid = experience_id or f"{user_id}:{summary[:20]}:{int(datetime.now(timezone.utc).timestamp())}"
             self._conn.execute("""
                 INSERT INTO experience_memory (id, user_id, task_type, success,
-                    steps_sequence, summary, project, profile, session_id, session_title, tags, language, last_access_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+                    steps_sequence, summary, project, profile, session_id, session_title, tags, language,
+                    origin_platform, origin_client, last_access_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
                 ON CONFLICT(id) DO UPDATE SET
                     steps_sequence=excluded.steps_sequence,
                     summary=excluded.summary,
@@ -953,29 +988,39 @@ class SqliteStore:
                     tags=excluded.tags, session_id=excluded.session_id,
                     session_title=excluded.session_title, project=excluded.project,
                     profile=excluded.profile, language=excluded.language,
+                    origin_platform=excluded.origin_platform,
+                    origin_client=excluded.origin_client,
                     frequency=experience_memory.frequency + 1,
                     last_access_at=datetime('now')
             """, (eid, user_id, task_type, int(success), json.dumps(steps),
                   summary, project, profile, session_id, session_title,
-                  json.dumps(tags or []), language))
+                  json.dumps(tags or []), language,
+                  origin_platform or "", origin_client or ""))
             self._maybe_commit()
 
     @with_retry_on_busy()
     @_require_conn
     def save_context(self, session_id: str, user_id: str, messages: List,
                      token_count: int = 0, platform: str = "default",
-                     project: str = "default", profile: str = "default"):
+                     project: str = "default", profile: str = "default",
+                     origin_client: str = None):
         with self._lock:
+            # v1.2.14 provenance: the legacy `platform` column is kept and
+            # dual-written (it carries the transport); origin_client records
+            # the producing client alongside it.
             self._conn.execute("""
-                INSERT INTO context_memory (session_id, user_id, messages, token_count, platform, project, profile, updated_at, last_access_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+                INSERT INTO context_memory (session_id, user_id, messages, token_count, platform, project, profile, origin_client, updated_at, last_access_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
                 ON CONFLICT(session_id) DO UPDATE SET
                     messages=excluded.messages, token_count=excluded.token_count,
                     platform=excluded.platform,
+                    origin_client=excluded.origin_client,
+                    project=excluded.project,
+                    profile=excluded.profile,
                     updated_at=datetime('now'),
                     last_access_at=datetime('now')
             """, (session_id, user_id, json.dumps(messages, ensure_ascii=False),
-                  token_count, platform, project, profile))
+                  token_count, platform, project, profile, origin_client or ""))
             self._maybe_commit()
 
     @with_retry_on_busy()
@@ -1063,7 +1108,8 @@ class SqliteStore:
                        output_template: str = "", user_id: str = "default",
                        project: str = "default", session_id: str = "",
                        session_title: str = "", tags: List = None,
-                       profile: str = "default", language: str = ""):
+                       profile: str = "default", language: str = "",
+                       origin_platform: str = None, origin_client: str = None):
         with self._lock:
             _acc = 0
             _m = metadata or {}
@@ -1074,8 +1120,9 @@ class SqliteStore:
             self._conn.execute("""
                 INSERT INTO knowledge_memory (id, domain, content, metadata, trust_score,
                     entry_type, prerequisites, output_template, user_id, project, profile,
-                    session_id, session_title, tags, language, access_count, updated_at, last_access_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+                    session_id, session_title, tags, language, access_count,
+                    origin_platform, origin_client, updated_at, last_access_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
                 ON CONFLICT(id) DO UPDATE SET
                     content=excluded.content, metadata=excluded.metadata,
                     trust_score=excluded.trust_score, domain=excluded.domain,
@@ -1085,13 +1132,16 @@ class SqliteStore:
                     entry_type=excluded.entry_type,
                     prerequisites=excluded.prerequisites,
                     output_template=excluded.output_template,
+                    origin_platform=excluded.origin_platform,
+                    origin_client=excluded.origin_client,
                     access_count=knowledge_memory.access_count + 1,
                     updated_at=datetime('now'),
                     last_access_at=datetime('now')
             """, (knowledge_id, domain, content, json.dumps(metadata or {}), trust_score,
                   entry_type, json.dumps(prerequisites or []), output_template,
                   user_id, project, profile, session_id, session_title,
-                  json.dumps(tags or []), language, _acc))
+                  json.dumps(tags or []), language, _acc,
+                  origin_platform or "", origin_client or ""))
             self._maybe_commit()
 
     @with_retry_on_busy()
@@ -1102,13 +1152,15 @@ class SqliteStore:
                             paper_type: str = "theory", key_points: List = None,
                             importance_score: float = 0.5, metadata: Dict = None,
                             project: str = "default", user_id: str = "default",
-                            profile: str = "default"):
+                            profile: str = "default",
+                            origin_platform: str = None, origin_client: str = None):
         with self._lock:
             self._conn.execute("""
                 INSERT INTO research_papers (id, title, authors, year, journal,
                     abstract, keywords, domain, paper_type, key_points,
-                    importance_score, metadata, project, profile, user_id, last_access_at)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'))
+                    importance_score, metadata, project, profile, user_id,
+                    origin_platform, origin_client, last_access_at)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'))
                 ON CONFLICT(id) DO UPDATE SET
                     title=excluded.title, authors=excluded.authors, year=excluded.year,
                     journal=excluded.journal, abstract=excluded.abstract,
@@ -1117,30 +1169,36 @@ class SqliteStore:
                     importance_score=excluded.importance_score,
                     metadata=excluded.metadata, project=excluded.project,
                     profile=excluded.profile, user_id=excluded.user_id,
+                    origin_platform=excluded.origin_platform,
+                    origin_client=excluded.origin_client,
                     last_access_at=datetime('now')
             """, (paper_id, title, json.dumps(authors or []), year, journal, abstract,
                   json.dumps(keywords or []), domain, paper_type, json.dumps(key_points or []),
-                  importance_score, json.dumps(metadata or {}), project, profile, user_id))
+                  importance_score, json.dumps(metadata or {}), project, profile, user_id,
+                  origin_platform or "", origin_client or ""))
             self._maybe_commit()
 
     @with_retry_on_busy()
     @_require_conn
     def save_research_note(self, note_id: str, user_id: str, topic: str,
                            content: str, linked_papers: List = None, tags: List = None,
-                           project: str = "default", profile: str = "default"):
+                           project: str = "default", profile: str = "default",
+                           origin_platform: str = None, origin_client: str = None):
         with self._lock:
             self._conn.execute("""
-                INSERT INTO research_notes (id, user_id, topic, content, linked_papers, tags, project, profile)
-                VALUES (?,?,?,?,?,?,?,?)
+                INSERT INTO research_notes (id, user_id, topic, content, linked_papers, tags, project, profile, origin_platform, origin_client)
+                VALUES (?,?,?,?,?,?,?,?,?,?)
                 ON CONFLICT(id) DO UPDATE SET
                     content=excluded.content,
                     linked_papers=excluded.linked_papers, tags=excluded.tags,
                     topic=excluded.topic, project=excluded.project,
                     profile=excluded.profile, user_id=excluded.user_id,
+                    origin_platform=excluded.origin_platform,
+                    origin_client=excluded.origin_client,
                     updated_at=datetime('now')
             """, (note_id, user_id, topic, content,
                   json.dumps(linked_papers or []), json.dumps(tags or []),
-                  project, profile))
+                  project, profile, origin_platform or "", origin_client or ""))
             self._maybe_commit()
 
     # ═══════════════════════════════════════════════════
@@ -1213,14 +1271,19 @@ class SqliteStore:
     @with_retry_on_busy()
     @_require_conn
     def save_transcript(self, session_id: str, user_id: str, messages: List,
-                        project: str = "default", profile: str = "default"):
+                        project: str = "default", profile: str = "default",
+                        origin_platform: str = None, origin_client: str = None):
         with self._lock:
             self._conn.execute("""
-                INSERT INTO session_transcripts (session_id, user_id, project, profile, messages, updated_at)
-                VALUES (?, ?, ?, ?, ?, datetime('now'))
+                INSERT INTO session_transcripts (session_id, user_id, project, profile, messages, origin_platform, origin_client, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
                 ON CONFLICT(session_id) DO UPDATE SET
-                    messages=excluded.messages, updated_at=datetime('now')
-            """, (session_id, user_id, project, profile, json.dumps(messages, ensure_ascii=False)))
+                    messages=excluded.messages, updated_at=datetime('now'),
+                    origin_platform=excluded.origin_platform,
+                    origin_client=excluded.origin_client
+            """, (session_id, user_id, project, profile,
+                  json.dumps(messages, ensure_ascii=False),
+                  origin_platform or "", origin_client or ""))
             self._maybe_commit()
 
     @with_retry_on_busy()

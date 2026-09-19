@@ -188,6 +188,12 @@ class MainMemoryAgent:
                 created_at=self._parse_db_ts(e.get("created_at")),
                 last_access_at=self._parse_db_ts(e.get("last_access_at")))
             exp.frequency = e.get("frequency", 1)  # restore persisted frequency
+            # v1.2.14 provenance: restore origin columns into in-memory
+            # metadata so origin-filtered retrieval covers reloaded rows.
+            exp.metadata = {
+                "origin_platform": e.get("origin_platform", ""),
+                "origin_client": e.get("origin_client", ""),
+            }
             self.experience_agent.store[e.get("id","")] = exp
             exp.id = e.get("id", exp.id)  # align model id with DB key before indexing
             self.experience_agent._index_entry(exp)
@@ -219,6 +225,10 @@ class MainMemoryAgent:
             metadata.setdefault("entry_type", k.get("entry_type", "fact"))
             metadata.setdefault("prerequisites", k.get("prerequisites", []))
             metadata.setdefault("output_template", k.get("output_template", ""))
+            # v1.2.14 provenance: restore origin columns so origin-filtered
+            # retrieval covers reloaded entries too.
+            metadata.setdefault("origin_platform", k.get("origin_platform", ""))
+            metadata.setdefault("origin_client", k.get("origin_client", ""))
             if "category" not in metadata and "domain" in k:
                 metadata["category"] = k["domain"]
             entry = KnowledgeEntry(
@@ -536,6 +546,57 @@ class MainMemoryAgent:
         from .llm_client import get_llm_client
         return get_llm_client()
 
+    @staticmethod
+    def _record_origin(record: Any) -> tuple:
+        """Extract (origin_platform, origin_client) from an aggregated record.
+
+        v1.2.14: knowledge/experience records carry origin in their metadata
+        dict; context rows carry it as top-level keys from the DB columns.
+        Missing values read as "" (legacy rows), which the origin filter always
+        passes.
+        """
+        if isinstance(record, dict):
+            meta = record.get("metadata")
+            meta = meta if isinstance(meta, dict) else {}
+            platform = record.get("origin_platform") or meta.get("origin_platform") or ""
+            client = record.get("origin_client") or meta.get("origin_client") or ""
+            return str(platform), str(client)
+        meta = getattr(record, "metadata", None)
+        meta = meta if isinstance(meta, dict) else {}
+        return (str(meta.get("origin_platform", "")), str(meta.get("origin_client", "")))
+
+    def _filter_by_origin(self, retrieved: Dict[str, Any],
+                          origin_platform: str = None,
+                          origin_client: str = None) -> Dict[str, Any]:
+        """Hard-filter aggregated retrieval results by origin (v1.2.14).
+
+        Query values that are empty/None mean no filtering. Records with an
+        EMPTY origin (legacy pre-v1.2.14 rows) always pass, so existing recall
+        is unchanged. A record whose origin is set and differs from the query
+        is dropped.
+        """
+        want_platform = (origin_platform or "").strip().casefold()
+        want_client = (origin_client or "").strip().casefold()
+        if not want_platform and not want_client:
+            return retrieved
+        filtered: Dict[str, Any] = {}
+        for source, records in retrieved.items():
+            if source == "user" or not isinstance(records, list):
+                # user memory has no row-level origin; non-list payloads
+                # (e.g. task_progress dict) are passed through untouched.
+                filtered[source] = records
+                continue
+            kept = []
+            for rec in records:
+                rec_platform, rec_client = self._record_origin(rec)
+                if want_platform and rec_platform and rec_platform.casefold() != want_platform:
+                    continue
+                if want_client and rec_client and rec_client.casefold() != want_client:
+                    continue
+                kept.append(rec)
+            filtered[source] = kept
+        return filtered
+
     def retrieve_for_task(self, task_context: str, user_id: str,
                          task_id: Optional[str] = None,
                          platform: Optional[str] = None,
@@ -544,7 +605,9 @@ class MainMemoryAgent:
                          profile: str = "default",
                          max_results: int = 8,
                          tags: List[str] = None,
-                         tags_match_all: bool = False) -> Dict[str, Any]:
+                         tags_match_all: bool = False,
+                         origin_platform: str = None,
+                         origin_client: str = None) -> Dict[str, Any]:
         """Retrieve ranked memory for a task.
 
         P2.1: ``max_results`` is honored HERE — the diversity selection runs
@@ -558,6 +621,11 @@ class MainMemoryAgent:
         (case-insensitive). ``tags_match_all=False`` (default) matches any
         query tag (OR); ``True`` requires every query tag (AND). Empty/None
         tags mean no tag filtering.
+
+        v1.2.14 provenance: ``origin_platform``/``origin_client`` hard-filter
+        the retrieved sources. A query value that is empty/None means no
+        filtering; records with an EMPTY origin (legacy rows) always pass, so
+        pre-v1.2.14 data keeps its current recall.
         """
         if project == "default":
             logger.warning(
@@ -615,6 +683,11 @@ class MainMemoryAgent:
                 recent_contexts = [c for c in recent_contexts if c.get("project", "default") == project]
             if recent_contexts:
                 retrieved["context"] = recent_contexts
+
+        # v1.2.14 provenance: hard origin filter over the aggregated sources
+        # (query value empty → no filtering; record origin empty → pass).
+        if origin_platform or origin_client:
+            retrieved = self._filter_by_origin(retrieved, origin_platform, origin_client)
 
         # Load per-user RL weights for isolated scoring. P1-4: capture the
         # RETURNED snapshot and score against exactly what was loaded — the
@@ -701,6 +774,29 @@ class MainMemoryAgent:
         # actually loaded) when available; fall back to a locked read otherwise.
         weights = weights or self.rl_optimizer.get_current_weights()
 
+        # v1.2.14: cross-origin soft penalty. A record whose origin differs
+        # from the querying transport is down-weighted (config
+        # retrieval.origin_cross_soft_penalty, default 0.5; the
+        # origin_cross_soft_enabled switch can turn the whole rule off).
+        # Records with no origin (legacy rows) are never penalized.
+        soft_enabled = self.cfg.get("retrieval", "origin_cross_soft_enabled", default=True)
+        soft_penalty = self.cfg.get("retrieval", "origin_cross_soft_penalty", default=0.5)
+        want_platform = (platform or "").strip().casefold()
+
+        def _soft_factor(meta: Any) -> float:
+            if not soft_enabled or not want_platform:
+                return 1.0
+            if isinstance(meta, dict):
+                rec_platform = str(meta.get("origin_platform") or "").strip().casefold()
+            else:
+                rec_platform = ""
+            if not rec_platform or rec_platform == want_platform:
+                return 1.0
+            try:
+                return float(soft_penalty)
+            except (TypeError, ValueError):
+                return 0.5
+
         for source, memories in retrieved.items():
             if source == "user":
                 user_mem = memories
@@ -747,7 +843,9 @@ class MainMemoryAgent:
                         (relevance, weights["relevance"]),
                         (trust, weights["trust_score"]),
                     ], boosts)
-                    score = base * freshness
+                    # v1.2.14: cross-origin soft penalty (metadata carries
+                    # origin_platform for post-v1.2.14 entries).
+                    score = base * freshness * _soft_factor(mem.get("metadata"))
                     scored.append(MemoryRecord(source=source, content=mem["content"], importance=round(score, 3), metadata=mem, relevance=relevance, trust_score=trust))
 
             elif source == "experience":
@@ -785,7 +883,9 @@ class MainMemoryAgent:
                         (freq_n, weights["frequency"]),
                         (trust, weights["trust_score"]),
                     ], boosts)
-                    score = base * freshness
+                    # v1.2.14: cross-origin soft penalty (metadata carries
+                    # origin_platform for post-v1.2.14 entries).
+                    score = base * freshness * _soft_factor(mem.get("metadata"))
                     scored.append(MemoryRecord(source=source, content=mem["summary"], importance=round(score, 3), metadata=mem,
                                                relevance=mem.get("relevance", 0.5), trust_score=trust))
 
@@ -1170,7 +1270,7 @@ class MainMemoryAgent:
               platform: str = None, title: str = None,
               project: str = "default", session_id: str = "",
               profile: str = "default", correction: bool = False,
-              tags: List[str] = None) -> bool:
+              tags: List[str] = None, origin_client: str = None) -> bool:
         """
         Store a task interaction and update all memory layers.
 
@@ -1179,7 +1279,15 @@ class MainMemoryAgent:
         The merged list (case-preserving, casefold-deduped, capped at 12) is
         written to task/knowledge/experience memory and drives tag-filtered
         retrieval via ``retrieve_for_task(tags=...)``.
+
+        v1.2.14 provenance: ``platform`` carries the transport (mcp/http/
+        hermes/cli) and ``origin_client`` the producing client (claude-code/
+        opencode/...). Both are written to the origin_* columns and drive
+        origin-filtered retrieval.
         """
+        from .provenance import normalize_origin_client
+        origin_platform = platform or ""
+        origin_client_norm = normalize_origin_client(origin_client) if origin_client else (normalize_origin_client(platform) if platform else "")
         if project == "default":
             logger.warning(
                 "store: project is 'default' — memory is unscoped by project; "
@@ -1318,7 +1426,8 @@ class MainMemoryAgent:
                                       steps=[{"step": "Initialize", "status": task_status}],
                                       project=project, session_id=session_id or "",
                                       session_title=session_title, tags=task_tags,
-profile=profile, language=lang)
+profile=profile, language=lang,
+                                      origin_platform=origin_platform, origin_client=origin_client_norm)
                     self.db.save_context(
                         session_id=stable_memory_key(user_id, task_id),
                         user_id=user_id,
@@ -1326,7 +1435,8 @@ profile=profile, language=lang)
                         token_count=token_est,
                         platform=platform or "default",
                         project=project,
-                        profile=profile)
+                        profile=profile,
+                        origin_client=origin_client_norm)
                     if kb_id and kb_metadata and not existing_kb:
                         self.db.save_knowledge(
                             knowledge_id=kb_id,
@@ -1338,7 +1448,8 @@ profile=profile, language=lang)
                             session_title=session_title, tags=task_tags,
                             profile=profile,
                             user_id=user_id,
-                            language=lang)
+                            language=lang,
+                            origin_platform=origin_platform, origin_client=origin_client_norm)
                     if exp_data:
                         self.db.save_experience(user_id, exp_data["task_type"], success,
                                      exp_data["steps"],
@@ -1346,7 +1457,8 @@ profile=profile, language=lang)
                                      project=project,
                                      session_id=session_id or "",
                                      session_title=session_title, tags=task_tags,
-profile=profile, language=lang, experience_id=exp_id)
+profile=profile, language=lang, experience_id=exp_id,
+                                     origin_platform=origin_platform, origin_client=origin_client_norm)
 
                 # Mirror the committed knowledge into the in-memory agent (kept
                 # next to the transaction so failure handling is unchanged).
@@ -1362,6 +1474,10 @@ profile=profile, language=lang, experience_id=exp_id)
                         # silent no-op until a reload. This mirrors the DB row,
                         # closing the cross-profile in-memory leak.
                         "profile": profile,
+                        # v1.2.14 provenance: keep the in-memory row consistent
+                        # with the DB origin_* columns.
+                        "origin_platform": origin_platform,
+                        "origin_client": origin_client_norm,
                     }, entry_id=kb_id)
                     # P-*: invalidate known-term cache after write so a new term is
                     # not re-misclassified as novel next time.
@@ -1397,6 +1513,7 @@ profile=profile, language=lang, experience_id=exp_id)
                         project=project, session_id=session_id or "",
                         session_title=session_title, tags=task_tags,
                         profile=profile, entry_id=exp_id,
+                        origin_platform=origin_platform, origin_client=origin_client_norm,
                     )
             elif success or experience_summary:
                 steps_from_context = [m["content"] for m in context if m["role"] != "system"]

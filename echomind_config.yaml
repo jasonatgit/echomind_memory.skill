@@ -51,6 +51,10 @@ retrieval:
   context_limit: 2
   preference_score_boost: 0.2
   relevance_multiplier: 0.6
+  # v1.2.14 cross-origin soft penalty: a record whose origin_platform differs
+  # from the querying transport is down-weighted by this factor (1.0 disables).
+  origin_cross_soft_enabled: true
+  origin_cross_soft_penalty: 0.5
   # Deprecated since v1.2.13: the constant recency_multiplier term was removed
   # from experience scoring — freshness (Ebbinghaus) is now the single recency
   # lever. Kept (commented) for reference; uncommenting has no effect.

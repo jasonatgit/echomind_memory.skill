@@ -1,7 +1,7 @@
 from pydantic import BaseModel, Field
 import uuid
 from datetime import datetime, timezone
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 
 
 class ExperienceEntry(BaseModel):
@@ -20,3 +20,6 @@ class ExperienceEntry(BaseModel):
     last_access_at: Optional[datetime] = None
     tags: List[str] = Field(default_factory=list)
     frequency: int = 1
+    # v1.2.14 provenance: carries origin_platform / origin_client alongside
+    # the DB columns so in-memory retrieval can filter by origin too.
+    metadata: Dict[str, Any] = Field(default_factory=dict)
