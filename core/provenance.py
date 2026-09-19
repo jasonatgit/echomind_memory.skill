@@ -180,6 +180,50 @@ def build_envelope(origin_platform: Optional[str] = None,
     }
 
 
+def envelope_from_record(meta: Any) -> Optional[Dict[str, Any]]:
+    """Extract the provenance envelope from a record's metadata.
+
+    Handles the three nestings that occur in practice:
+    - direct: ``meta["envelope"]`` (knowledge kb_metadata, in-memory rows)
+    - nested: ``meta["metadata"]["envelope"]`` (knowledge/experience search
+      results embed the entry's own metadata dict one level down)
+    - fallback: rebuild a minimal envelope from origin_platform/origin_client
+      fields (rows stored before the envelope existed) so exports and tool
+      output still show a source line instead of nothing.
+
+    Returns the envelope dict or None when nothing origin-related is present.
+    """
+    if not isinstance(meta, dict):
+        return None
+    env = meta.get("envelope")
+    if isinstance(env, dict):
+        return env
+    inner = meta.get("metadata")
+    if isinstance(inner, dict):
+        env = inner.get("envelope")
+        if isinstance(env, dict):
+            return env
+        # Fallback: flat origin fields on the embedded entry metadata.
+        platform = str(inner.get("origin_platform") or "").strip()
+        client = str(inner.get("origin_client") or "").strip()
+        if platform or client:
+            return {"schema": "envelope-v1-fallback",
+                    "origin_platform": platform,
+                    "origin_client": client,
+                    "project": inner.get("project", ""),
+                    "tags": inner.get("tags") or []}
+    # Fallback: flat origin fields on the record metadata itself (context rows).
+    platform = str(meta.get("origin_platform") or "").strip()
+    client = str(meta.get("origin_client") or "").strip()
+    if platform or client:
+        return {"schema": "envelope-v1-fallback",
+                "origin_platform": platform,
+                "origin_client": client,
+                "project": meta.get("project", ""),
+                "tags": meta.get("tags") or []}
+    return None
+
+
 def format_origin_line(envelope: Optional[Dict[str, Any]],
                        created_at: Optional[str] = None) -> str:
     """Render a compact provenance prefix.

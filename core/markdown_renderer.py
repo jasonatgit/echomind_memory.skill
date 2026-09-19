@@ -19,6 +19,9 @@ class KnowledgeRow:
     epistemic_mode: str = ""
     cognitive_pos: str = ""
     domain: str = "general"
+    # v1.2.14 provenance: rendered source prefix, e.g.
+    # [2026-09-13][mcp/claude-code][projA][代码习惯]
+    origin_line: str = ""
 
 
 @dataclass
@@ -26,12 +29,14 @@ class ExperienceRow:
     summary: str
     frequency: int = 1
     success: bool = False
+    origin_line: str = ""
 
 
 @dataclass
 class TaskRow:
     title: str
     status: str
+    origin_line: str = ""
 
 
 @dataclass
@@ -141,13 +146,14 @@ def render_knowledge(items: List[KnowledgeRow]) -> str:
         if not rows:
             continue
         parts.append(f"\n### {label} ({len(rows)})")
-        parts.append("| Knowledge | Trust | Cognitive Pos | Domain |")
-        parts.append("|-----------|------:|:---:|--------|")
+        parts.append("| Knowledge | Trust | Cognitive Pos | Domain | Origin |")
+        parts.append("|-----------|------:|:---:|--------|--------|")
         for r in rows:
             cnt = (r.content or "")[:80].replace("|", "\\|")
             cog_map = {"nok": "⚡ nok", "fok": "🔽 fok", "exo": "📖 exo"}
             cog_icon = cog_map.get(r.cognitive_pos, r.cognitive_pos or "—")
-            parts.append(f"| {cnt} | {_format_trust(r.trust_score)} | {cog_icon} | {r.domain} |")
+            origin = (r.origin_line or "").replace("|", "\\|")
+            parts.append(f"| {cnt} | {_format_trust(r.trust_score)} | {cog_icon} | {r.domain} | {origin} |")
     return "\n".join(parts)
 
 
@@ -162,10 +168,11 @@ def render_experience(items: List[ExperienceRow]) -> str:
         if not lst:
             continue
         parts.append(f"\n### {tag} ({len(lst)})")
-        parts.append("| Summary | Freq |")
-        parts.append("|---------|-----:|")
+        parts.append("| Summary | Freq | Origin |")
+        parts.append("|---------|-----:|--------|")
         for e in lst[:30]:
-            parts.append(f"| {(e.summary or '')[:100]} | {e.frequency} |")
+            origin = (e.origin_line or "").replace("|", "\\|")
+            parts.append(f"| {(e.summary or '')[:100]} | {e.frequency} | {origin} |")
     return "\n".join(parts)
 
 
@@ -186,7 +193,8 @@ def render_tasks(items: List[TaskRow]) -> str:
         parts.append(f"\n### {label} ({len(group)})")
         for t in group[:20]:
             mark = "[x]" if status == "completed" else "[ ]"
-            parts.append(f"- {mark} {t.title}" + ("" if status in ("pending", "completed") else f" ({t.status})"))
+            origin = f" — {t.origin_line}" if t.origin_line else ""
+            parts.append(f"- {mark} {t.title}" + ("" if status in ("pending", "completed") else f" ({t.status})") + origin)
     return "\n".join(parts)
 
 

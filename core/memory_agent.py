@@ -1321,6 +1321,28 @@ class MainMemoryAgent:
             # tags fill the remainder (merge_tags preserves the first spelling
             # seen, casefold-dedups, caps at 12).
             task_tags = merge_tags(tags, self._extract_task_tags(context))
+
+            # v1.2.14 provenance: snapshot the full source envelope once —
+            # written into task/knowledge metadata (and the in-memory
+            # experience entry) so every record can self-describe where it
+            # came from, independent of the origin_* columns. Built
+            # unconditionally so both the persistence and in-memory paths
+            # carry it.
+            from .provenance import build_envelope
+            envelope = build_envelope(
+                origin_platform=origin_platform,
+                origin_client=origin_client_norm,
+                project=project,
+                tags=task_tags,
+                session_id=session_id,
+                task_id=task_id,
+            )
+            # Mirror the envelope into the in-memory task (create_task ran
+            # before the envelope existed), so the markdown export shows the
+            # source for tasks too.
+            _mem_task = self.task_agent.store.get(stable_memory_key(user_id, task_id))
+            if _mem_task is not None:
+                _mem_task.metadata["envelope"] = envelope
             self._infer_user_preferences(context, user_id, platform=platform, profile=profile)
             self._infer_habits(user_id, context, profile=profile)
 
@@ -1373,6 +1395,9 @@ class MainMemoryAgent:
                         knowledge_content, user_id=user_id, profile=profile)
                     # P3-2: Extract entities from content before persisting
                     kb_metadata = {"source": "task", "task_id": task_id, "user_id": user_id}
+                    # v1.2.14 provenance: the full source envelope rides in the
+                    # metadata JSON so the record can self-describe its origin.
+                    kb_metadata["envelope"] = envelope
                     entities = self._extract_entities(best_content or experience_summary or "")
                     if entities:
                         kb_metadata["entities"] = entities
@@ -1424,6 +1449,7 @@ class MainMemoryAgent:
                         profile=profile)
                     self.db.save_task(user_id, task_id, title or "auto-task", task_status,
                                       steps=[{"step": "Initialize", "status": task_status}],
+                                      metadata={"envelope": envelope},
                                       project=project, session_id=session_id or "",
                                       session_title=session_title, tags=task_tags,
 profile=profile, language=lang,
@@ -1475,9 +1501,10 @@ profile=profile, language=lang, experience_id=exp_id,
                         # closing the cross-profile in-memory leak.
                         "profile": profile,
                         # v1.2.14 provenance: keep the in-memory row consistent
-                        # with the DB origin_* columns.
+                        # with the DB origin_* columns and the metadata envelope.
                         "origin_platform": origin_platform,
                         "origin_client": origin_client_norm,
+                        "envelope": envelope,
                     }, entry_id=kb_id)
                     # P-*: invalidate known-term cache after write so a new term is
                     # not re-misclassified as novel next time.
@@ -1514,6 +1541,7 @@ profile=profile, language=lang, experience_id=exp_id,
                         session_title=session_title, tags=task_tags,
                         profile=profile, entry_id=exp_id,
                         origin_platform=origin_platform, origin_client=origin_client_norm,
+                        envelope=envelope,
                     )
             elif success or experience_summary:
                 steps_from_context = [m["content"] for m in context if m["role"] != "system"]
@@ -1532,6 +1560,8 @@ profile=profile, language=lang, experience_id=exp_id,
                     project=project, session_id=session_id or "",
                     session_title=session_title, tags=task_tags,
                     profile=profile,
+                    origin_platform=origin_platform, origin_client=origin_client_norm,
+                    envelope=envelope,
                 )
 
             # O-3/O-4: Correction triggers immediate reflection; use adaptive batch otherwise
@@ -2402,6 +2432,7 @@ profile=profile, language=lang, experience_id=exp_id,
 
         # knowledge → KnowledgeRow list — V8-1: pass profile so the export
         # stays within the requested profile (was exporting every profile).
+        from .provenance import envelope_from_record, format_origin_line
         knowledge: list = []
         for item in self.knowledge_agent.search_all(user_id=user_id, profile=profile):
             mode = item.get("metadata", {}).get("epistemic_mode", "")
@@ -2415,12 +2446,16 @@ profile=profile, language=lang, experience_id=exp_id,
                 trust_f = float(trust) if trust else 0.5
             except (TypeError, ValueError):
                 trust_f = 0.5
+            # v1.2.14 provenance: rendered source prefix per row.
+            env = envelope_from_record(item.get("metadata"))
+            origin = format_origin_line(env, item.get("created_at", ""))
             knowledge.append(KnowledgeRow(
                 content=item.get("content", "") or "",
                 trust_score=trust_f,
                 epistemic_mode=mode or "",
                 cognitive_pos=cog or "",
                 domain=domain or "general",
+                origin_line=origin,
             ))
 
         # experience → ExperienceRow list
@@ -2437,12 +2472,16 @@ profile=profile, language=lang, experience_id=exp_id,
                 summary=e.get("summary", "") or "",
                 frequency=e.get("frequency", 1),
                 success=bool(e.get("success")),
+                origin_line=format_origin_line(
+                    envelope_from_record(e.get("metadata")), e.get("created_at", "")),
             ))
 
         # tasks → TaskRow list — V8-1: filter by profile as well (the task
         # store carries a profile per entry; only export the requested one).
         tasks: list = [
-            TaskRow(title=t.title, status=t.status)
+            TaskRow(title=t.title, status=t.status,
+                    origin_line=format_origin_line(
+                        envelope_from_record(t.metadata)))
             for t in self.task_agent.store.values()
             if t.user_id == user_id and t.profile == profile
         ]

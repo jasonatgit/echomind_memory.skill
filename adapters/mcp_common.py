@@ -294,9 +294,16 @@ def handle_tool_call(name, arguments):
         memories = result.get("working_memory", [])
         if not memories:
             return {"content": [{"type": "text", "text": "No relevant memories found."}]}
+        # v1.2.14 provenance: surface each entry's source so the calling agent
+        # can see where a memory came from at a glance.
+        from core.provenance import envelope_from_record, format_origin_line
         lines = [f"Found {len(memories)} relevant entr(ies):", ""]
         for i, m in enumerate(memories, 1):
             lines.append(f"[{i}] source={m.get('source','?')}  importance={m.get('importance',0):.2f}")
+            env = envelope_from_record(m.get("metadata"))
+            origin = format_origin_line(env)
+            if origin:
+                lines.append(f"    origin={origin}")
             lines.append(f"    {m.get('content','')[:400]}")
             lines.append("")
         return {"content": [{"type": "text", "text": "\n".join(lines)}]}
