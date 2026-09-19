@@ -6,6 +6,7 @@ import hashlib
 from typing import Dict, List, Optional, Set
 
 from ..models.experience import ExperienceEntry
+from ..provenance import tags_match
 
 logger = logging.getLogger("MemoryAgent")
 
@@ -75,7 +76,7 @@ class ExperienceMemoryAgent:
                            project: str = None, session_id: str = None,
                            tags: List[str] = None,
                            min_success_rate: float = 0.7, limit: int = 3,
-                           profile: str = None) -> List[Dict]:
+                           profile: str = None, tags_match_all: bool = False) -> List[Dict]:
         # Use inverted index to quickly locate candidates.
         # When user_id is given, ALWAYS restrict to that user's entries (even
         # if they have none yet -> empty set), otherwise the "no index match"
@@ -98,10 +99,10 @@ class ExperienceMemoryAgent:
                 continue
             if session_id and entry.session_id != session_id:
                 continue
-            if tags:
-                entry_tags = entry.tags if isinstance(entry.tags, list) else []
-                if not any(t in entry_tags for t in tags):
-                    continue
+            # v1.2.14: tags_match — case-insensitive, OR (default) / AND
+            # (tags_match_all); empty query tags mean no filtering.
+            if not tags_match(entry.tags, tags, tags_match_all):
+                continue
             # Filter by min_success_rate: skip failed entries when threshold > 0.5
             if min_success_rate > 0.5 and not entry.success:
                 continue

@@ -19,6 +19,7 @@ from .models.task import TaskMemory
 from .models.user import UserMemory
 from .models.knowledge import KnowledgeEntry
 from .models.experience import ExperienceEntry
+from .provenance import merge_tags
 from .models.research import ResearchPaper, ResearchNote
 from .reflective_agent import ReflectiveAgent
 from .agents import (
@@ -541,7 +542,9 @@ class MainMemoryAgent:
                          project: str = "default",
                          session_id: str = "",
                          profile: str = "default",
-                         max_results: int = 8) -> Dict[str, Any]:
+                         max_results: int = 8,
+                         tags: List[str] = None,
+                         tags_match_all: bool = False) -> Dict[str, Any]:
         """Retrieve ranked memory for a task.
 
         P2.1: ``max_results`` is honored HERE — the diversity selection runs
@@ -550,6 +553,11 @@ class MainMemoryAgent:
         slice (previously core always capped at 8 and each entrypoint sliced
         differently, so max_results>8 was silently ignored in HTTP and the
         cap semantics differed across the three entrypoints).
+
+        v1.2.14: ``tags`` filter knowledge/experience/research results by tag
+        (case-insensitive). ``tags_match_all=False`` (default) matches any
+        query tag (OR); ``True`` requires every query tag (AND). Empty/None
+        tags mean no tag filtering.
         """
         if project == "default":
             logger.warning(
@@ -569,15 +577,16 @@ class MainMemoryAgent:
         retrieved["user"] = self.user_agent.get(user_id, platform=platform)
 
         # Always retrieve knowledge and experience (Bug fix: previously gated on rigid keywords)
+        # v1.2.14: tags plumbed through to the agent-level filters.
         retrieved["knowledge"] = self.knowledge_agent.search(
             query=task_context, domain=features.get("research_domain", "general"), user_id=user_id,
             project=project, session_id=session_id, top_k=5,
-            profile=profile)
+            profile=profile, tags=tags, tags_match_all=tags_match_all)
         retrieved["experience"] = self.experience_agent.find_similar_tasks(
             task_context=task_context, task_type=features["task_type"],
             user_id=user_id, project=project, session_id=session_id,
             min_success_rate=0.5, limit=5,
-            profile=profile)
+            profile=profile, tags=tags, tags_match_all=tags_match_all)
         if features["has_history"]:
             if task_id:
                 composite_id = stable_memory_key(user_id, task_id)
@@ -598,7 +607,7 @@ class MainMemoryAgent:
             retrieved["research"] = self.research_agent.search_papers(
                 query=task_context, domain=features.get("research_domain"),
                 user_id=user_id, project=project, top_k=research_top_k,
-                profile=profile)
+                profile=profile, tags=tags, tags_match_all=tags_match_all)
 
         if self._persistence_enabled:
             recent_contexts = self.db.search_context(user_id, platform=platform, limit=context_limit, profile=profile)
@@ -1160,9 +1169,16 @@ class MainMemoryAgent:
               task_status: str, success: bool = False, experience_summary: str = None,
               platform: str = None, title: str = None,
               project: str = "default", session_id: str = "",
-              profile: str = "default", correction: bool = False) -> bool:
+              profile: str = "default", correction: bool = False,
+              tags: List[str] = None) -> bool:
         """
         Store a task interaction and update all memory layers.
+
+        v1.2.14: ``tags`` are caller-supplied and take priority; auto-extracted
+        topic tags (``_extract_task_tags`` from topic_keywords) fill the rest.
+        The merged list (case-preserving, casefold-deduped, capped at 12) is
+        written to task/knowledge/experience memory and drives tag-filtered
+        retrieval via ``retrieve_for_task(tags=...)``.
         """
         if project == "default":
             logger.warning(
@@ -1193,7 +1209,10 @@ class MainMemoryAgent:
                                         steps=[{"step": "Initialize", "status": task_status}],
                                         profile=profile, project=project,
                                         task_type=features.get("task_type"))
-            task_tags = self._extract_task_tags(context)
+            # v1.2.14: caller-supplied tags take priority, auto-extracted topic
+            # tags fill the remainder (merge_tags preserves the first spelling
+            # seen, casefold-dedups, caps at 12).
+            task_tags = merge_tags(tags, self._extract_task_tags(context))
             self._infer_user_preferences(context, user_id, platform=platform, profile=profile)
             self._infer_habits(user_id, context, profile=profile)
 

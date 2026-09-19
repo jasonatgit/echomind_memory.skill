@@ -7,6 +7,7 @@ import hashlib
 from typing import Dict, List, Set
 
 from ..models.knowledge import KnowledgeEntry
+from ..provenance import tags_match
 
 logger = logging.getLogger("MemoryAgent")
 
@@ -46,7 +47,7 @@ class KnowledgeMemoryAgent:
     def search(self, query: str, domain: str = None, user_id: str = None,
                project: str = None, session_id: str = None,
                tags: List[str] = None, top_k: int = 5,
-               profile: str = None) -> List[Dict]:
+               profile: str = None, tags_match_all: bool = False) -> List[Dict]:
         results = []
         # Use inverted index to quickly locate candidates
         if user_id and user_id in self._user_index:
@@ -74,12 +75,11 @@ class KnowledgeMemoryAgent:
                 continue
             if session_id and entry.metadata.get("session_id") not in (session_id, None, ""):
                 continue
-            if tags:
-                entry_tags = entry.metadata.get("tags", [])
-                if not isinstance(entry_tags, list):
-                    entry_tags = []
-                if not any(t in entry_tags for t in tags):
-                    continue
+            # v1.2.14: tags_match is case-insensitive (casefold) and supports
+            # OR (default) / AND (tags_match_all) semantics; empty query tags
+            # mean no filtering.
+            if not tags_match(entry.metadata.get("tags"), tags, tags_match_all):
+                continue
 
             # M3/P12: the previous hard domain filter dropped cross-domain but
             # relevant knowledge before it could be scored. retrieve_for_task()

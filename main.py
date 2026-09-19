@@ -65,6 +65,8 @@ def call(tool_name: str, config_path: str = None, **kwargs):
             session_id=kwargs.get("session_id", ""),
             profile=kwargs.get("profile", "default"),
             max_results=kwargs.get("max_results", 5),
+            tags=kwargs.get("tags"),
+            tags_match_all=bool(kwargs.get("tags_match_all", False)),
         )
         # P2.1: core honors max_results; no second slice here.
         working = [
@@ -93,6 +95,7 @@ def call(tool_name: str, config_path: str = None, **kwargs):
             session_id=kwargs.get("session_id", ""),
             profile=kwargs.get("profile", "default"),
             correction=kwargs.get("correction", False),
+            tags=kwargs.get("tags"),
         )
         return {"status": "stored",
                 "user_id": kwargs.get("user_id", ""),

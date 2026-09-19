@@ -49,6 +49,15 @@ tools:
           type: string
           default: "default"
           description: "Optional. User profile for memory isolation."
+        tags:
+          type: array
+          items:
+            type: string
+          description: "Optional. Tag filter (case-insensitive, OR by default)."
+        tags_match_all:
+          type: boolean
+          default: false
+          description: "Optional. True requires every tag to match (AND)."
       required:
         - user_id
         - query
@@ -128,6 +137,11 @@ tools:
           type: string
           default: "default"
           description: "Optional. User profile for memory isolation."
+        tags:
+          type: array
+          items:
+            type: string
+          description: "Optional. Caller tags (take priority); auto topic tags fill the rest."
       required:
         - user_id
         - task_id

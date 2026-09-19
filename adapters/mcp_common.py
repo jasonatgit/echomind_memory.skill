@@ -126,6 +126,10 @@ def handle_tools_list():
                     "project": {"type": "string", "default": "default"},
                     "session_id": {"type": "string", "default": ""},
                     "profile": {"type": "string", "default": "default"},
+                    "tags": {"type": "array", "items": {"type": "string"},
+                             "description": "Optional. Tag filter (case-insensitive)."},
+                    "tags_match_all": {"type": "boolean", "default": False,
+                                       "description": "True requires every tag (AND); default OR."},
                 },
                 "required": ["query"],
             },
@@ -148,6 +152,8 @@ def handle_tools_list():
                     "profile": {"type": "string", "default": "default"},
                     "correction": {"type": "boolean", "default": False,
                                    "description": "True if this store is a fix/correction of a prior turn"},
+                    "tags": {"type": "array", "items": {"type": "string"},
+                             "description": "Optional. Caller tags (priority); auto topic tags fill the rest."},
                 },
                 "required": [],
             },
@@ -254,6 +260,9 @@ def handle_tool_call(name, arguments):
             "project": _resolve_project(arguments.get("project", "default")),
             "session_id": arguments.get("session_id", ""),
             "profile": arguments.get("profile", "default"),
+            # v1.2.14: tag filter plumbed through (case-insensitive).
+            "tags": arguments.get("tags", []),
+            "tags_match_all": bool(arguments.get("tags_match_all", False)),
         })
         if "error" in result:
             return {"content": [{"type": "text", "text": f"Error: {result['error']}"}]}
@@ -282,6 +291,8 @@ def handle_tool_call(name, arguments):
             "session_id": arguments.get("session_id", ""),
             "profile": arguments.get("profile", "default"),
             "correction": arguments.get("correction", False),
+            # v1.2.14: caller tags take priority over auto topic tags.
+            "tags": arguments.get("tags", []),
         })
         if "error" in result:
             return {"content": [{"type": "text", "text": f"Error storing: {result['error']}"}]}

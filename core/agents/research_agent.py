@@ -4,6 +4,7 @@ import logging
 from typing import Dict, List, Any
 
 from ..models.research import ResearchPaper, ResearchNote
+from ..provenance import tags_match
 
 logger = logging.getLogger("MemoryAgent")
 
@@ -35,7 +36,8 @@ class ResearchMemoryAgent:
 
     def search_papers(self, query: str, domain: str = None, user_id: str = None,
                       project: str = None, top_k: int = 5,
-                      profile: str = None) -> List[Dict[str, Any]]:
+                      profile: str = None, tags: List[str] = None,
+                      tags_match_all: bool = False) -> List[Dict[str, Any]]:
         results = []
         q_lower = query.lower()
         for p in self.papers.values():
@@ -46,6 +48,10 @@ class ResearchMemoryAgent:
             if profile and p.profile != profile:
                 continue
             if domain and p.domain != domain:
+                continue
+            # v1.2.14: research_papers has no tags column; paper keywords act
+            # as the tags vocabulary so a tags query still filters papers.
+            if not tags_match(p.keywords, tags, tags_match_all):
                 continue
             relevance = 0.0
             t_lower = p.title.lower()
@@ -83,7 +89,7 @@ class ResearchMemoryAgent:
 
     def search_notes(self, query: str, tags: List[str] = None, user_id: str = None,
                      project: str = None, top_k: int = 3,
-                     profile: str = None) -> List[Dict]:
+                     profile: str = None, tags_match_all: bool = False) -> List[Dict]:
         results = []
         q_lower = query.lower()
         for n in self.notes.values():
@@ -93,7 +99,8 @@ class ResearchMemoryAgent:
                 continue
             if profile and n.profile != profile:
                 continue
-            if tags and not any(t in n.tags for t in tags):
+            # v1.2.14: tags_match — case-insensitive, OR (default) / AND.
+            if not tags_match(n.tags, tags, tags_match_all):
                 continue
             relevance = 1.0 if q_lower in n.content.lower() else 0.3
             results.append({"id": n.id, "topic": n.topic, "content": n.content,
