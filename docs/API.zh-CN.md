@@ -4,6 +4,7 @@
 |------|------|------|
 | `POST` | `/api/memory/retrieve` | 检索任务记忆 |
 | `POST` | `/api/memory/store` | 存储对话上下文 |
+| `POST` | `/api/memory/query` | 结构化来源查询（project/tags/来源/日期谓词，无评分） |
 | `POST` | `/api/memory/feedback` | 记录反馈用于 RL 优化 |
 | `POST` | `/api/memory/sync-code` | 同步项目代码风格记忆 |
 | `GET` | `/api/memory/search-sessions` | 搜索会话转录 |
@@ -39,6 +40,10 @@
 | `project` | string | | "default" | 项目隔离标识 |
 | `session_id` | string | | "" | 会话标识 |
 | `profile` | string | | "default" | 用户分身隔离 |
+| `tags` | array | | [] | 标签过滤（大小写不敏感；默认 OR） |
+| `tags_match_all` | boolean | | false | 设为 true 要求全部标签命中（AND） |
+| `origin_platform` | string | | | 传输方式过滤（mcp/http/hermes/cli） |
+| `origin_client` | string | | | 来源客户端过滤（claude-code/opencode/...） |
 
 ### POST /api/memory/store
 | 参数 | 类型 | 必填 | 默认 | 说明 |
@@ -55,6 +60,26 @@
 | `session_id` | string | | "" | 会话标识 |
 | `correction` | boolean | | false | 用户是否在纠正 agent |
 | `profile` | string | | "default" | 用户分身 |
+| `tags` | array | | [] | 调用方 tags（优先）；自动主题 tags 补足 |
+| `origin_client` | string | | | 来源客户端（claude-code/opencode/...）；随记录来源信封落库 |
+
+### POST /api/memory/query
+结构化来源查询（v1.2.14）——精确来源谓词，**无相关性评分**。结果跨所选记忆表合并、按时间倒序。一天的记忆：`date_from` = `date_to` = `YYYY-MM-DD`。
+
+| 参数 | 类型 | 必填 | 默认 | 说明 |
+|------|------|:---:|------|------|
+| `user_id` | string | ✅ | | 用户标识 |
+| `profile` | string | | "default" | 用户分身 |
+| `memory_type` | string | | "all" | knowledge/experience/task/context/research/transcript/reflection，逗号分隔或 "all" |
+| `project` | string | | | 项目作用域 |
+| `tags` | array | | [] | 标签过滤（大小写不敏感） |
+| `tags_match_all` | boolean | | false | 设为 true 要求全部标签命中（AND） |
+| `origin_platform` | string | | | 传输方式过滤（mcp/http/hermes/cli） |
+| `origin_client` | string | | | 来源客户端过滤 |
+| `date_from` / `date_to` | string | | | 日期边界（含，YYYY-MM-DD） |
+| `limit` | integer | | 20 | 最大返回条数 |
+
+未知 `memory_type` 返回 **400**。每条结果含 `memory_type`、`id`、`content`、`tags`、`project`、`origin_platform`、`origin_client`、`created_at` 与完整来源 `envelope`。
 
 ### POST /api/reflect
 | 参数 | 类型 | 必填 | 默认 | 说明 |
@@ -67,3 +92,18 @@
 | `profile` | string | | "default" | 用户分身 |
 
 ---
+
+## MCP 工具
+
+MCP 协议暴露以下工具（经 `POST /mcp` 或 `mcp_gateway.py` stdio）：
+
+| 工具 | 说明 |
+|------|------|
+| `echomind_retrieve` | 按查询语义检索长期记忆（支持 project/session_id/profile、tags、origin） |
+| `echomind_store` | 存储交互入记忆（支持 project/session_id/profile、调用方 tags、origin_client） |
+| `echomind_search` | 按关键词搜索会话转录 |
+| `echomind_feedback` | 对检索结果提供正/负反馈 |
+| `echomind_reflect` | 触发反思（Phase 1 构建 prompt；Phase 2 带 llm_response 提交） |
+| `echomind_query` | 按精确谓词的结构化来源查询：project、tags（OR/AND）、origin_client/origin_platform、日期区间、记忆类型——无相关性评分 |
+| `echomind_delete` | 删除一条记忆 |
+| `echomind_health` | 健康检查 |

@@ -1,5 +1,24 @@
 # EchoMind Changelog
 
+## v1.2.14 — Source Provenance: Origin Tracking, Tag Filters & Structured Query (2026-09-19)
+
+Every memory record now carries a self-describing source envelope — **transport** (mcp/http/hermes/cli) + **origin client** (claude-code/opencode/...) + project + tags + captured time — and can be retrieved by any combination of those predicates, from any supported entrypoint.
+
+| Area | Change |
+|------|--------|
+| **Tag provenance** | `echomind_store` / `store()` accept caller `tags` (priority); auto topic tags fill the remainder (case-preserving, casefold-deduped, ≤12 tags, ≤32 chars). `echomind_retrieve` / `retrieve_for_task` accept `tags` + `tags_match_all` (OR default, AND opt-in) — the agent-level tag filters existed but were never invoked before |
+| **Origin columns** | Migration v10 adds `origin_platform` (transport) and `origin_client` (producing client) to knowledge/experience/task/research/transcript (+ `origin_client` on context/reflections, whose legacy `platform` column is kept and dual-written) with composite indexes; empty defaults keep legacy rows visible to any origin filter |
+| **MCP client inference** | The `initialize` handshake's `clientInfo.name` is captured (normalized) as the connection's `origin_client` — a store from Claude Code is recorded as `mcp`/`claude-code` with no caller effort; explicit arguments override |
+| **Cross-origin soft penalty** | Records whose origin differs from the querying transport are down-weighted ×0.5 (config `retrieval.origin_cross_soft_enabled` / `origin_cross_soft_penalty`, switchable); legacy rows without an origin are never penalized |
+| **Provenance envelope** | `store()` snapshots a full envelope (`schema: envelope-v1`) into task/knowledge/experience metadata; `envelope_from_record` rebuilds a fallback from flat origin fields so pre-envelope records still render |
+| **Visible sources** | The markdown archive gains an Origin column per knowledge/experience/task row — `[2026-09-19][mcp/claude-code][projA][代码习惯,coding]` — and MCP `echomind_retrieve` output shows `origin=` per entry |
+| **echomind_query** | New structured provenance query (MCP tool + `POST /api/memory/query` + `query_memory` skill + CLI `query` subcommand): exact predicates on project / tags (OR/AND) / origin_client / origin_platform / date range (inclusive; one day = `date_from=date_to`) / memory type, no relevance scoring, merged across 7 memory tables |
+| **Robustness** | Every new filter is a bound parameter (no SQL string interpolation); unknown `memory_type` values raise ValueError → HTTP 400; tables without origin columns are skipped, not fatal |
+
+**Migration:** v10 runs automatically on first connect (idempotent `ADD COLUMN` + `CREATE INDEX`, BUSY-retried). No data changes; legacy rows keep their current recall. Ranking note: the cross-origin soft penalty changes ordering when querying across transports — disable via `origin_cross_soft_enabled: false` to restore.
+
+---
+
 ## v1.2.13 — Deep-Review Hardening: Isolation, Concurrency & Scoring Consistency (2026-09-13)
 
 Deep code-review hardening across three phases — tenant isolation, RL/transactional concurrency, and unified retrieval/scoring semantics — with behavioral changes to ranking noted below.

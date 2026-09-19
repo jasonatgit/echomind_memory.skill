@@ -61,6 +61,7 @@
 | **RL-Enhanced Auto-Optimization** | Adjusts memory weights via user feedback with persistence; cosine learning rate decay + epsilon-greedy exploration |
 | **Multi-Trigger Retrieval** | Keywords + RL weights + LLM semantics — a true semantic memory system |
 | **Unified RL Scoring (v1.2.13+)** | All five weight dimensions drive every ranked source: freshness (Ebbinghaus) is the single recency lever, `trust_score` participates in experience ranking, and per-source signals are normalized — no fixed constants inside the weighted sum |
+| **Source Provenance (v1.2.14+)** | Every memory self-describes its origin — transport (mcp/http/hermes/cli) + client (claude-code/opencode/..., inferred from the MCP handshake) + project + tags + captured time; retrieve by tags (OR/AND), origin, date range, or any combination via `echomind_query` |
 | **Adaptive Reflection Batch** | Dynamically adjusts reflection trigger threshold based on weekly user activity |
 | **Few-Shot Anchoring** | Rapidly builds memory norms from small samples, improving memory quality |
 
@@ -129,6 +130,7 @@ When a query involves the following *domain keywords* or related *semantics*, th
 
 | Version | Highlights |
 |:--------|:-----------|
+| v1.2.14 | *Source provenance: origin tracking (transport + client, MCP clientInfo inference), tag filters (caller tags + auto topic tags, OR/AND), provenance envelope, visible source lines, structured `echomind_query`.* |
 | v1.2.13 | *Deep-review hardening: tenant isolation, RL read concurrency, atomic reflection quota, unified scoring (freshness single lever, trust drives experience), config validation & security guards.* |
 | v1.2.12 | *Core-term novelty ratio, RL significance verification, code-block-safe chunking.* |
 | v1.2.11 | *Project scoping, Hermes persona isolation, content-hash knowledge dedup.* |

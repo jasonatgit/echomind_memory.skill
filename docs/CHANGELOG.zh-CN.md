@@ -1,5 +1,24 @@
 # EchoMind 更新日志
 
+## v1.2.14 — 来源追溯：origin 追踪、tags 过滤与结构化查询 (2026-09-19)
+
+每条记忆记录现在携带自描述来源信封——**传输方式**（mcp/http/hermes/cli）+ **来源客户端**（claude-code/opencode/...）+ project + tags + 捕获时间——并可按这些谓词的任意组合，从任何受支持入口检索。
+
+| 领域 | 改动 |
+|------|------|
+| **tags 来源** | `echomind_store` / `store()` 接受调用方 `tags`（优先）；自动主题 tags 补足（保留原文大小写、casefold 去重、≤12 个、单标签 ≤32 字符）。`echomind_retrieve` / `retrieve_for_task` 接受 `tags` + `tags_match_all`（默认 OR，可选 AND）——此前 agent 级 tags 过滤已实现但从未被调用 |
+| **origin 列** | 迁移 v10 为 knowledge/experience/task/research/transcript 增加 `origin_platform`（传输方式）与 `origin_client`（来源客户端）（context/reflections 补 `origin_client`，legacy `platform` 列保留双写），带复合索引；空默认值保证旧数据在任何 origin 过滤下可见 |
+| **MCP client 推断** | `initialize` 握手的 `clientInfo.name` 被捕获（归一化）为连接的 `origin_client`——来自 Claude Code 的存储自动记录为 `mcp`/`claude-code`，调用方零成本；显式参数覆盖 |
+| **跨源软降权** | origin 与查询传输方式不同的记录降权 ×0.5（配置 `retrieval.origin_cross_soft_enabled` / `origin_cross_soft_penalty`，可关）；无 origin 的旧数据不受罚 |
+| **来源信封** | `store()` 将完整信封（`schema: envelope-v1`）快照进 task/knowledge/experience 的 metadata；`envelope_from_record` 从平铺 origin 字段重建兜底，信封出现前的记录仍可渲染 |
+| **来源可见** | markdown 归档的 knowledge/experience/task 每行增加 Origin 列——`[2026-09-19][mcp/claude-code][projA][代码习惯,coding]`；MCP `echomind_retrieve` 输出每条带 `origin=` |
+| **echomind_query** | 新增结构化来源查询（MCP 工具 + `POST /api/memory/query` + `query_memory` 技能 + CLI `query` 子命令）：project / tags（OR/AND）/ origin_client / origin_platform / 日期区间（含边界；一天 = `date_from=date_to`）/ 记忆类型 的精确谓词，无相关性评分，跨 7 张记忆表合并 |
+| **健壮性** | 全部新过滤为绑定参数（无 SQL 字符串拼接）；未知 `memory_type` 抛 ValueError → HTTP 400；无 origin 列的表跳过而非失败 |
+
+**迁移：** v10 在首次连接时自动执行（幂等 `ADD COLUMN` + `CREATE INDEX`，BUSY 重试）。不改动数据；旧数据保持现有召回。排序说明：跨源软降权会改变跨传输查询的排序——设 `origin_cross_soft_enabled: false` 可恢复。
+
+---
+
 ## v1.2.13 — 深度审查加固：隔离、并发与评分一致性 (2026-09-13)
 
 三轮深度代码审查加固——租户隔离、RL/事务并发、检索与评分语义统一——排序行为变化见下方说明。

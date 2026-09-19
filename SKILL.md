@@ -1,6 +1,6 @@
 ---
 name: echomind-memory
-version: "1.2.13"
+version: "1.2.14"
 description: EchoMind Memory — AI 持久记忆系统。支持 Hermes、OpenCode、OpenClaw、Claude Code 等多平台。6 种记忆类型 + reflective agent + self-reflection (epistemic mode, provenance, self-diagnosis)。
 category: software-development
 platforms:
@@ -16,7 +16,7 @@ tags:
   - self-reflection
 ---
 
-# EchoMind Memory v1.2.13
+# EchoMind Memory v1.2.14
 
 ## 概述
 
@@ -39,6 +39,12 @@ EchoMind Memory 是一个纯 SQLite 的 AI 持久记忆系统，无需 PostgreSQ
 
 v1.2.13+ 评分统一：五个权重维度驱动所有被排序来源——freshness（艾宾浩斯）为唯一时间衰减杠杆，`trust_score` 参与 experience 排序，加权和内无固定常数。
 
+### 来源追溯（v1.2.14+）
+
+每条记忆携带来源信封（envelope-v1）：传输方式（mcp/http/hermes/cli）+ 来源客户端（claude-code/opencode/...，MCP 从 `initialize` 的 `clientInfo.name` 自动推断）+ project + tags + 捕获时间。tags 支持调用方传入（优先）与自动主题抽取（兜底），检索按大小写不敏感的 OR/AND 组合过滤；markdown 归档与 MCP 检索输出均显示来源行（如 `[2026-09-19][mcp/claude-code][projA][代码习惯]`）。
+
+- **结构化查询**：`echomind_query`（MCP）/ `POST /api/memory/query` / `query_memory` 技能 / `echomind-cli query` —— 按 project、tags（OR/AND）、origin_client/origin_platform、日期区间（一天 = `date_from=date_to`）、memory_type 的精确组合过滤，无相关性评分。
+
 ### Self-Reflective Agent (v1.1.0)
 
 从 Episodic 记忆自动提炼长期知识，实现记忆自我进化。
@@ -55,7 +61,7 @@ v1.2.13+ 评分统一：五个权重维度驱动所有被排序来源——fresh
 
 ```python
 # 安装后 Hermes 自动发现 skill.yaml 中的工具定义
-# 在对话中直接调用 retrieve_memory / store_memory / record_feedback
+# 在对话中直接调用 retrieve_memory / store_memory / record_feedback / query_memory
 ```
 
 ### OpenCode
