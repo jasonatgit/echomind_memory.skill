@@ -225,6 +225,34 @@ def handle_tools_list():
             },
         },
         {
+            "name": "echomind_query",
+            "description": "Structured provenance query over memory records by exact source predicates (project, tags, origin client/platform, date range, memory type) — no relevance scoring. Use echomind_retrieve for semantic search.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "user_id": {"type": "string", "default": "cli"},
+                    "profile": {"type": "string", "default": "default"},
+                    "memory_type": {"type": "string", "default": "all",
+                                    "description": "knowledge/experience/task/context/research/transcript/reflection, comma-separated, or 'all'."},
+                    "project": {"type": "string", "description": "Optional. Project scope."},
+                    "tags": {"type": "array", "items": {"type": "string"},
+                             "description": "Optional. Tag filter (case-insensitive)."},
+                    "tags_match_all": {"type": "boolean", "default": False,
+                                       "description": "True requires every tag (AND); default OR."},
+                    "origin_client": {"type": "string",
+                                      "description": "Optional. Producing client (claude-code/opencode/...)."},
+                    "origin_platform": {"type": "string",
+                                        "description": "Optional. Transport (mcp/http/hermes/cli)."},
+                    "date_from": {"type": "string",
+                                  "description": "Optional. YYYY-MM-DD (inclusive)."},
+                    "date_to": {"type": "string",
+                                "description": "Optional. YYYY-MM-DD (inclusive)."},
+                    "limit": {"type": "integer", "default": 20},
+                },
+                "required": ["user_id"],
+            },
+        },
+        {
             "name": "echomind_delete",
             "description": "Delete a specific memory entry by type and ID.",
             "inputSchema": {
@@ -392,6 +420,35 @@ def handle_tool_call(name, arguments):
                 return {"content": [{"type": "text", "text": f"Error: {result['error']}"}]}
             return {"content": [{"type": "text", "text": f"Reflection prepared for {result.get('record_count', 0)} records. "
                 f"Prompt: {result.get('prompt', '')[:200]}... (use with llm_response to commit)"}]}
+
+    elif name == "echomind_query":
+        payload = {
+            "user_id": arguments.get("user_id", "cli"),
+            "profile": arguments.get("profile", "default"),
+            "memory_type": arguments.get("memory_type", "all"),
+            "project": arguments.get("project") or None,
+            "tags": arguments.get("tags", []),
+            "tags_match_all": bool(arguments.get("tags_match_all", False)),
+            "origin_platform": arguments.get("origin_platform") or None,
+            "origin_client": arguments.get("origin_client") or None,
+            "date_from": arguments.get("date_from") or None,
+            "date_to": arguments.get("date_to") or None,
+            "limit": arguments.get("limit", 20),
+        }
+        result = _api_post("/api/memory/query", payload)
+        if "error" in result:
+            return {"content": [{"type": "text", "text": f"Error: {result['error']}"}]}
+        records = result.get("results", [])
+        if not records:
+            return {"content": [{"type": "text", "text": "No memories match these predicates."}]}
+        from core.provenance import format_origin_line
+        lines = [f"Found {len(records)} record(s):", ""]
+        for i, r in enumerate(records, 1):
+            origin = format_origin_line(r.get("envelope"), r.get("created_at", ""))
+            lines.append(f"[{i}] type={r.get('memory_type')}  {origin}")
+            lines.append(f"    {str(r.get('content',''))[:200]}")
+            lines.append("")
+        return {"content": [{"type": "text", "text": "\n".join(lines)}]}
 
     elif name == "echomind_delete":
         mt = arguments.get("memory_type", "")

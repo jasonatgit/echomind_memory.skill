@@ -7,12 +7,15 @@ from datetime import datetime, timezone
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from core.memory_agent import MainMemoryAgent
 
-ACTIONS = ("read", "write")
+ACTIONS = ("read", "write", "query")
 _EXPERIENCE_KEYS = ("location", "success", "summary")
 
 
 def _usage():
     print("Usage: echomind-cli [read|write] <user_id> <project_id> [file_path]")
+    print("       echomind-cli query <user_id> [project_id] [--tags a,b] [--tags-all]")
+    print("                          [--origin-client c] [--origin-platform p]")
+    print("                          [--type t] [--from YYYY-MM-DD] [--to YYYY-MM-DD] [--limit n]")
 
 
 def _read(agent, user_id, project_id):
@@ -79,6 +82,61 @@ def _write(agent, user_id):
     print(json.dumps({"status": "written"}))
 
 
+def _query(agent, argv):
+    """Structured provenance query (v1.2.14): --project --tags --tags-all
+    --origin-client --origin-platform --type --from --to --limit."""
+    # Positional args stop at the first --option so unknown options are
+    # rejected below instead of being consumed as the project id.
+    positional = []
+    idx = 0
+    while idx < len(argv) and not argv[idx].startswith("--"):
+        positional.append(argv[idx])
+        idx += 1
+    if not positional:
+        print("error: query requires <user_id>", file=sys.stderr)
+        sys.exit(1)
+    opts = {"user_id": positional[0],
+            "project": positional[1] if len(positional) > 1 else None,
+            "memory_type": "all", "tags": None, "tags_match_all": False,
+            "origin_client": None, "origin_platform": None,
+            "date_from": None, "date_to": None, "limit": 20}
+    i = idx
+    while i < len(argv):
+        key = argv[i]
+        if key == "--tags" and i + 1 < len(argv):
+            opts["tags"] = [t for t in argv[i + 1].split(",") if t.strip()]
+            i += 2
+        elif key == "--tags-all":
+            opts["tags_match_all"] = True
+            i += 1
+        elif key in ("--origin-client", "--origin-platform", "--type",
+                     "--from", "--to", "--limit") and i + 1 < len(argv):
+            opts[{"--origin-client": "origin_client",
+                  "--origin-platform": "origin_platform",
+                  "--type": "memory_type",
+                  "--from": "date_from",
+                  "--to": "date_to",
+                  "--limit": "limit"}[key]] = argv[i + 1]
+            i += 2
+        else:
+            print(f"error: unknown option '{key}'", file=sys.stderr)
+            sys.exit(1)
+    results = agent.query_memory(
+        memory_type=opts["memory_type"], user_id=opts["user_id"],
+        project=opts["project"], tags=opts["tags"],
+        tags_match_all=opts["tags_match_all"],
+        origin_platform=opts["origin_platform"],
+        origin_client=opts["origin_client"],
+        date_from=opts["date_from"], date_to=opts["date_to"],
+        limit=int(opts["limit"]),
+    )
+    from core.provenance import format_origin_line
+    print(json.dumps({"count": len(results), "results": [
+        {**r, "origin_line": format_origin_line(r.get("envelope"), r.get("created_at", ""))}
+        for r in results
+    ]}, indent=2, ensure_ascii=False, default=str))
+
+
 def main():
     if len(sys.argv) < 4:
         _usage()
@@ -100,6 +158,8 @@ def main():
         agent.enable_persistence()
         if action == "read":
             _read(agent, user_id, project_id)
+        elif action == "query":
+            _query(agent, sys.argv[2:])
         else:
             _write(agent, user_id)
     finally:

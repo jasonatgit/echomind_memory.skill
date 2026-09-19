@@ -1493,6 +1493,129 @@ class SqliteStore:
                 rec["content"] = rec.get("title", "")
         return records
 
+    # ── Structured provenance query (v1.2.14) ──────────────
+
+    # memory_type → (table, captured-column, payload column rendered as content)
+    QUERY_TABLES = {
+        "knowledge": ("knowledge_memory", "created_at", "content"),
+        "experience": ("experience_memory", "created_at", "summary"),
+        "task": ("task_memory", "created_at", "title"),
+        "context": ("context_memory", "created_at", "messages"),
+        "research": ("research_papers", "created_at", "title"),
+        "transcript": ("session_transcripts", "created_at", "messages"),
+        "reflection": ("reflections", "created_at", "key_insights"),
+    }
+
+    def _query_rows(self, table: str, captured_col: str, content_col: str,
+                    user_id: str, profile: str, project: str,
+                    tags, tags_match_all: bool,
+                    origin_platform: str, origin_client: str,
+                    date_from: str, date_to: str, limit: int) -> List[Dict]:
+        """Run one structured provenance query against a single table.
+
+        Every filter is a bound parameter; tags are matched in Python
+        (case-insensitive, OR/AND) since JSON-array membership is not indexable.
+        origin filters use the origin_* columns; the legacy `platform` column
+        answers transport queries on context/reflections.
+        """
+        where = ["user_id = ?"]
+        params: list = [user_id]
+        if profile:
+            where.append("profile = ?")
+            params.append(profile)
+        if project:
+            where.append("project = ?")
+            params.append(project)
+        # Transport: origin_platform where it exists, legacy platform elsewhere.
+        transport_col = "origin_platform" if table not in (
+            "context_memory", "reflections") else "platform"
+        if origin_platform:
+            where.append(f"{transport_col} = ?")
+            params.append(origin_platform)
+        if origin_client:
+            where.append("origin_client = ?")
+            params.append(origin_client)
+        if date_from:
+            where.append(f"date({captured_col}) >= date(?)")
+            params.append(date_from)
+        if date_to:
+            where.append(f"date({captured_col}) <= date(?)")
+            params.append(date_to)
+        rows = self._conn.execute(
+            f"SELECT * FROM {table} WHERE {' AND '.join(where)} "
+            f"ORDER BY {captured_col} DESC LIMIT ?",
+            params + [limit],
+        ).fetchall()
+        from core.provenance import tags_match
+        results = []
+        for r in rows:
+            rec = {k: (_safe_json_loads(r[k], []) if k in ("tags",) else r[k])
+                   for k in r.keys()}
+            if not tags_match(rec.get("tags"), tags, tags_match_all):
+                continue
+            envelope = rec.get("metadata")
+            try:
+                import json as _json
+                envelope = _json.loads(envelope) if isinstance(envelope, str) else envelope
+                envelope = (envelope or {}).get("envelope")
+            except Exception:
+                envelope = None
+            results.append({
+                "memory_type": table.replace("_memory", "").replace("research_papers", "research"),
+                "id": rec.get("id", ""),
+                "content": str(rec.get(content_col, "") or "")[:400],
+                "tags": rec.get("tags") or [],
+                "project": rec.get("project", ""),
+                "origin_platform": rec.get(transport_col, "") or rec.get("origin_platform", ""),
+                "origin_client": rec.get("origin_client", ""),
+                "created_at": rec.get(captured_col, ""),
+                "envelope": envelope,
+            })
+        return results
+
+    @_require_conn
+    def query_memory(self, memory_type: str = "all",
+                     user_id: str = "", profile: str = "default",
+                     project: str = None, tags: List = None,
+                     tags_match_all: bool = False,
+                     origin_platform: str = None, origin_client: str = None,
+                     date_from: str = None, date_to: str = None,
+                     limit: int = 20) -> List[Dict]:
+        """Structured provenance query across memory tables (v1.2.14).
+
+        Unlike search/retrieve this applies NO relevance scoring — it answers
+        "which memories match these exact source predicates", e.g. one day's
+        memories from one client in one project. Results are merged across the
+        selected tables and ordered by captured time (newest first). Every
+        filter is a bound parameter.
+        """
+        if memory_type == "all":
+            types = list(self.QUERY_TABLES.keys())
+        else:
+            types = [t.strip() for t in memory_type.split(",") if t.strip()]
+            unknown = [t for t in types if t not in self.QUERY_TABLES]
+            if unknown:
+                raise ValueError(f"Unknown memory_type: {unknown} "
+                                 f"(expected one of {list(self.QUERY_TABLES)} or 'all')")
+        per_table = max(1, int(limit))
+        merged: List[Dict] = []
+        with self._lock:
+            for t in types:
+                table, captured_col, content_col = self.QUERY_TABLES[t]
+                try:
+                    merged.extend(self._query_rows(
+                        table, captured_col, content_col,
+                        user_id or "", profile, project,
+                        tags, tags_match_all,
+                        origin_platform, origin_client,
+                        date_from, date_to, per_table))
+                except sqlite3.OperationalError:
+                    # A table without the origin columns (pre-migration) is
+                    # skipped rather than failing the whole query.
+                    continue
+        merged.sort(key=lambda r: str(r.get("created_at", "")), reverse=True)
+        return merged[:limit]
+
     # ── Delete operations ──────────────────────────────────
 
     MEMORY_TABLES = {

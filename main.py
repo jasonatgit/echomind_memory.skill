@@ -27,7 +27,7 @@ def call(tool_name: str, config_path: str = None, **kwargs):
     """Hermes skill.yaml Dispatch entry point
 
     Supported tools: retrieve_memory, store_memory, record_feedback,
-    sync_code_memory, add_research_paper, add_research_note
+    query_memory, sync_code_memory, add_research_paper, add_research_note
 
     Config path priority:
         call(config_path="./prod.yaml", ...)   ← explicitly passed
@@ -116,6 +116,22 @@ def call(tool_name: str, config_path: str = None, **kwargs):
         except Exception as e:
             logging.getLogger("MemoryAgent").error("record_feedback failed: %s", e)
             return {"status": "error", "detail": str(e)}
+
+    elif tool_name == "query_memory":
+        results = agent.query_memory(
+            memory_type=kwargs.get("memory_type", "all"),
+            user_id=kwargs.get("user_id", ""),
+            profile=kwargs.get("profile", "default"),
+            project=kwargs.get("project"),
+            tags=kwargs.get("tags"),
+            tags_match_all=bool(kwargs.get("tags_match_all", False)),
+            origin_platform=kwargs.get("origin_platform"),
+            origin_client=kwargs.get("origin_client"),
+            date_from=kwargs.get("date_from"),
+            date_to=kwargs.get("date_to"),
+            limit=kwargs.get("limit", 20),
+        )
+        return {"results": results, "count": len(results)}
 
     elif tool_name == "sync_code_memory":
         agent.sync_to_code_project(

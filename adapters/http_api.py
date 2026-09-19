@@ -141,6 +141,22 @@ class ReflectRequest(BaseModel):
     profile: str = "default"
 
 
+class QueryRequest(BaseModel):
+    """Structured provenance query (v1.2.14) — exact source predicates,
+    no relevance scoring. Supports 'one day's memories' via date_from/date_to."""
+    user_id: str
+    profile: str = "default"
+    memory_type: str = "all"
+    project: Optional[str] = None
+    tags: List[str] = []
+    tags_match_all: bool = False
+    origin_platform: Optional[str] = None
+    origin_client: Optional[str] = None
+    date_from: Optional[str] = None
+    date_to: Optional[str] = None
+    limit: int = 20
+
+
 # ── Error handler (v1.2.0: avoid leaking internal details) ──
 
 EXCEPTION_RESPONSE = {"status": "error", "detail": "Internal server error"}
@@ -428,6 +444,28 @@ def api_delete_memory(memory_type: str, memory_id: str, auth=Depends(verify_api_
     except Exception as e:
         logger.error(f"api_delete_memory: {e}", exc_info=True)
         return JSONResponse(status_code=500, content={"status": "error", "detail": "Delete failed"})
+
+@app.post("/api/memory/query")
+def api_query_memory(req: QueryRequest, auth=Depends(verify_api_key)):
+    """Structured provenance query (v1.2.14): project/tags/origin/date
+    predicates, no relevance scoring. Unknown memory types return 400."""
+    try:
+        results = memory_agent.query_memory(
+            memory_type=req.memory_type, user_id=req.user_id,
+            profile=req.profile, project=req.project,
+            tags=req.tags, tags_match_all=req.tags_match_all,
+            origin_platform=req.origin_platform,
+            origin_client=req.origin_client,
+            date_from=req.date_from, date_to=req.date_to,
+            limit=req.limit,
+        )
+        return {"results": results, "count": len(results)}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error("api_query_memory: %s", e, exc_info=True)
+        return JSONResponse(status_code=500, content={"results": [], "error": "Query failed"})
+
 
 @app.post("/api/memory/delete-user")
 def api_delete_user(req: DeleteRequest, auth=Depends(verify_api_key)):

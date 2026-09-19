@@ -262,6 +262,56 @@ tools:
         - topic
         - content
 
+  - name: query_memory
+    description: "Structured provenance query over memory records by exact source predicates (project, tags, origin client/platform, date range, memory type) — no relevance scoring."
+    parameters:
+      type: object
+      properties:
+        config_path:
+          type: string
+          description: "Optional. Path to config file (default: $ECHOMIND_CONFIG or ~/.echomind/echomind_config.yaml)"
+        user_id:
+          type: string
+          description: "User identifier."
+        profile:
+          type: string
+          default: "default"
+          description: "Optional. User profile for memory isolation."
+        memory_type:
+          type: string
+          default: "all"
+          description: "knowledge/experience/task/context/research/transcript/reflection, comma-separated, or 'all'."
+        project:
+          type: string
+          description: "Optional. Project scope."
+        tags:
+          type: array
+          items:
+            type: string
+          description: "Optional. Tag filter (case-insensitive)."
+        tags_match_all:
+          type: boolean
+          default: false
+          description: "Optional. True requires every tag to match (AND)."
+        origin_client:
+          type: string
+          description: "Optional. Producing client (claude-code/opencode/...)."
+        origin_platform:
+          type: string
+          description: "Optional. Transport (mcp/http/hermes/cli)."
+        date_from:
+          type: string
+          description: "Optional. YYYY-MM-DD (inclusive)."
+        date_to:
+          type: string
+          description: "Optional. YYYY-MM-DD (inclusive)."
+        limit:
+          type: integer
+          default: 20
+          description: "Max records to return."
+      required:
+        - user_id
+
 dependencies:
   - pydantic>=2.7
   - python-dotenv>=1.0

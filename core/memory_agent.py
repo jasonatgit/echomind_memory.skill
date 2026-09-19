@@ -1581,6 +1581,30 @@ profile=profile, language=lang, experience_id=exp_id,
             logger.error("store() failed", exc_info=True)
             return False
 
+    def query_memory(self, memory_type: str = "all",
+                     user_id: str = "", profile: str = "default",
+                     project: str = None, tags: List[str] = None,
+                     tags_match_all: bool = False,
+                     origin_platform: str = None, origin_client: str = None,
+                     date_from: str = None, date_to: str = None,
+                     limit: int = 20) -> List[Dict]:
+        """Structured provenance query across memory tables (v1.2.14).
+
+        Answers "which memories match these exact source predicates" — e.g.
+        one day's memories from one client in one project — without relevance
+        scoring. Supported predicates: project, tags (OR/AND, case-insensitive),
+        origin_platform/origin_client, date_from/date_to (YYYY-MM-DD), and
+        memory_type (knowledge/experience/task/context/research/transcript/
+        reflection, comma-separated, or 'all').
+        """
+        if not self._persistence_enabled:
+            return []
+        return self.db.query_memory(
+            memory_type=memory_type, user_id=user_id, profile=profile,
+            project=project, tags=tags, tags_match_all=tags_match_all,
+            origin_platform=origin_platform, origin_client=origin_client,
+            date_from=date_from, date_to=date_to, limit=limit)
+
     def get_recent_episodic(self, user_id: str, count: int = 8,
                             profile: str = None) -> List[Dict]:
         """Get recent N episodic records for ReflectiveAgent"""
