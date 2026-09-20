@@ -67,6 +67,9 @@ def call(tool_name: str, config_path: str = None, **kwargs):
             max_results=kwargs.get("max_results", 5),
             tags=kwargs.get("tags"),
             tags_match_all=bool(kwargs.get("tags_match_all", False)),
+            # P1-2 fix (v1.2.14 review): origin hard filters pass through
+            # explicit arguments only — transparent by default, like MCP/HTTP.
+            origin_platform=kwargs.get("origin_platform"),
             origin_client=kwargs.get("origin_client"),
         )
         # P2.1: core honors max_results; no second slice here.
@@ -97,7 +100,9 @@ def call(tool_name: str, config_path: str = None, **kwargs):
             profile=kwargs.get("profile", "default"),
             correction=kwargs.get("correction", False),
             tags=kwargs.get("tags"),
-            origin_client=kwargs.get("origin_client"),
+            # P1-1/P1-2 fix: this entrypoint IS the Hermes client — mark it
+            # explicitly instead of falling back to the transport value.
+            origin_client=kwargs.get("origin_client") or "hermes",
         )
         return {"status": "stored",
                 "user_id": kwargs.get("user_id", ""),

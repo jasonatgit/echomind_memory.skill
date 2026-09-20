@@ -14,7 +14,7 @@ _EXPERIENCE_KEYS = ("location", "success", "summary")
 def _usage():
     print("Usage: echomind-cli [read|write] <user_id> <project_id> [file_path]")
     print("       echomind-cli query <user_id> [project_id] [--tags a,b] [--tags-all]")
-    print("                          [--origin-client c] [--origin-platform p]")
+    print("                          [--origin-client c] [--origin-platform p] [--profile p]")
     print("                          [--type t] [--from YYYY-MM-DD] [--to YYYY-MM-DD] [--limit n]")
 
 
@@ -98,6 +98,7 @@ def _query(agent, argv):
     opts = {"user_id": positional[0],
             "project": positional[1] if len(positional) > 1 else None,
             "memory_type": "all", "tags": None, "tags_match_all": False,
+            "profile": "default",
             "origin_client": None, "origin_platform": None,
             "date_from": None, "date_to": None, "limit": 20}
     i = idx
@@ -110,10 +111,11 @@ def _query(agent, argv):
             opts["tags_match_all"] = True
             i += 1
         elif key in ("--origin-client", "--origin-platform", "--type",
-                     "--from", "--to", "--limit") and i + 1 < len(argv):
+                     "--profile", "--from", "--to", "--limit") and i + 1 < len(argv):
             opts[{"--origin-client": "origin_client",
                   "--origin-platform": "origin_platform",
                   "--type": "memory_type",
+                  "--profile": "profile",
                   "--from": "date_from",
                   "--to": "date_to",
                   "--limit": "limit"}[key]] = argv[i + 1]
@@ -123,6 +125,7 @@ def _query(agent, argv):
             sys.exit(1)
     results = agent.query_memory(
         memory_type=opts["memory_type"], user_id=opts["user_id"],
+        profile=opts["profile"],
         project=opts["project"], tags=opts["tags"],
         tags_match_all=opts["tags_match_all"],
         origin_platform=opts["origin_platform"],
@@ -138,18 +141,36 @@ def _query(agent, argv):
 
 
 def main():
-    if len(sys.argv) < 4:
-        _usage()
-        sys.exit(1)
-
     action = sys.argv[1]
-    user_id = sys.argv[2]
-    project_id = sys.argv[3]
     if action not in ACTIONS:
         print(f"error: unknown action '{action}' (expected one of {', '.join(ACTIONS)})",
               file=sys.stderr)
         _usage()
         sys.exit(1)
+
+    # P2-2 fix (v1.2.14 review): query takes <user_id> plus options — it must
+    # not be gated behind the read/write 3-argument requirement.
+    if action == "query":
+        if len(sys.argv) < 3:
+            print("error: query requires <user_id>", file=sys.stderr)
+            sys.exit(1)
+        agent = MainMemoryAgent()
+        try:
+            agent.enable_persistence()
+            _query(agent, sys.argv[2:])
+        finally:
+            try:
+                agent.disable_persistence()
+            except Exception:
+                pass
+        return
+
+    if len(sys.argv) < 4:
+        _usage()
+        sys.exit(1)
+
+    user_id = sys.argv[2]
+    project_id = sys.argv[3]
 
     # P3.6: try/finally so an error mid-run still closes the DB connection
     # (the old form leaked the connection and skipped the WAL checkpoint).
@@ -158,8 +179,6 @@ def main():
         agent.enable_persistence()
         if action == "read":
             _read(agent, user_id, project_id)
-        elif action == "query":
-            _query(agent, sys.argv[2:])
         else:
             _write(agent, user_id)
     finally:

@@ -190,10 +190,27 @@ class MainMemoryAgent:
             exp.frequency = e.get("frequency", 1)  # restore persisted frequency
             # v1.2.14 provenance: restore origin columns into in-memory
             # metadata so origin-filtered retrieval covers reloaded rows.
-            exp.metadata = {
+            # P2-4 fix (v1.2.14 review): the provenance envelope now persists
+            # in the experience metadata column (migration v11), so exports
+            # keep the real envelope instead of falling back.
+            _exp_meta = {
                 "origin_platform": e.get("origin_platform", ""),
                 "origin_client": e.get("origin_client", ""),
             }
+            _exp_env = e.get("metadata")
+            if isinstance(_exp_env, str):
+                try:
+                    _exp_env = json.loads(_exp_env)
+                except Exception as _env_err:
+                    # P3.3: a malformed metadata JSON silently dropped the
+                    # provenance envelope; make the failure observable.
+                    logger.warning(
+                        "experience metadata JSON unparsable (id=%s): %s",
+                        e.get("id", ""), _env_err)
+                    _exp_env = None
+            if isinstance(_exp_env, dict) and isinstance(_exp_env.get("envelope"), dict):
+                _exp_meta["envelope"] = _exp_env["envelope"]
+            exp.metadata = _exp_meta
             self.experience_agent.store[e.get("id","")] = exp
             exp.id = e.get("id", exp.id)  # align model id with DB key before indexing
             self.experience_agent._index_entry(exp)
@@ -260,6 +277,14 @@ class MainMemoryAgent:
                 importance_score=p.get("importance_score",0.5),
                 created_at=self._parse_db_ts(p.get("created_at")),
                 last_access_at=p.get("last_access_at") or "")
+            # v1.2.14 provenance (P2-3 review fix): restore origin fields into
+            # the paper's metadata so the markdown export renders a source line.
+            _p_meta = dict(paper.metadata)
+            _p_meta.setdefault("origin_platform", p.get("origin_platform", ""))
+            _p_meta.setdefault("origin_client", p.get("origin_client", ""))
+            if isinstance(p.get("metadata"), dict) and isinstance(p["metadata"].get("envelope"), dict):
+                _p_meta.setdefault("envelope", p["metadata"]["envelope"])
+            paper.metadata = _p_meta
             self.research_agent.papers[paper.id] = paper
             loaded["papers"] += 1
 
@@ -304,7 +329,13 @@ class MainMemoryAgent:
                     raw = prefs['rl_weights']
                     if isinstance(raw, str):
                         try:
-                            import json
+                            # P3.1 fix (v1.2.14 review follow-up): the local
+                            # `import json` made `json` a function-local name
+                            # for the WHOLE of _load_from_db, so the earlier
+                            # experience-envelope json.loads raised
+                            # UnboundLocalError and every envelope was
+                            # silently dropped. The module-level import at the
+                            # top of this file covers all uses here.
                             raw = json.loads(raw)
                         except (json.JSONDecodeError, TypeError):
                             raw = None
@@ -787,7 +818,15 @@ class MainMemoryAgent:
             if not soft_enabled or not want_platform:
                 return 1.0
             if isinstance(meta, dict):
-                rec_platform = str(meta.get("origin_platform") or "").strip().casefold()
+                # P1-4 fix (v1.2.14 review): read the origin the record
+                # actually carries. Context rows keep their transport in the
+                # legacy `platform` column; treat the migration-era 'default'
+                # placeholder as empty so legacy rows are never penalized.
+                rec_platform = str(
+                    meta.get("origin_platform") or meta.get("platform") or ""
+                ).strip().casefold()
+                if rec_platform == "default":
+                    rec_platform = ""
             else:
                 rec_platform = ""
             if not rec_platform or rec_platform == want_platform:
@@ -943,16 +982,27 @@ class MainMemoryAgent:
                     if not messages:
                         continue
                     ctx_platform = ctx.get("platform", "")
-                    platform_mult = 1.0 if (not platform or ctx_platform == platform) else self._SCORE_CROSS_PLATFORM_MULT
+                    # P1-4 fix (v1.2.14 review): the legacy cross-platform
+                    # multiplier is replaced by the unified _soft_factor, so
+                    # context rows follow the same configurable cross-origin
+                    # penalty (origin_cross_soft_enabled/penalty) as
+                    # knowledge/experience instead of a hardcoded 0.5.
+                    soft = _soft_factor(ctx)
                     scored.append(MemoryRecord(
                         source="context",
                         content=json.dumps(messages, ensure_ascii=False),
-                        importance=round(self._SCORE_CONTEXT_BASE * platform_mult * (0.5 + 0.5 * freshness), 3),
+                        importance=round(self._SCORE_CONTEXT_BASE * soft * (0.5 + 0.5 * freshness), 3),
                         metadata={
                             "session_id": ctx.get("session_id", ""),
                             "platform": ctx_platform,
                             "messages": messages,
                             "token_count": ctx.get("token_count", 0),
+                            # P1-4 fix (v1.2.14 review): carry the origin so
+                            # _soft_factor penalizes cross-origin context rows
+                            # consistently with knowledge/experience. The
+                            # legacy 'default' placeholder reads as empty.
+                            "origin_platform": (ctx_platform if ctx_platform != "default" else ""),
+                            "origin_client": ctx.get("origin_client", ""),
                         },
                         relevance=0.3, trust_score=0.4,
                     ))
@@ -1287,7 +1337,14 @@ class MainMemoryAgent:
         """
         from .provenance import normalize_origin_client
         origin_platform = platform or ""
-        origin_client_norm = normalize_origin_client(origin_client) if origin_client else (normalize_origin_client(platform) if platform else "")
+        # P1-1 fix (v1.2.14 review): the client column records ONLY the
+        # producing client. The old platform fallback polluted it — HTTP rows
+        # got client='http', Hermes rows client='hermes' via the fallback — so
+        # an origin_client filter could never find them and transport/client
+        # semantics blurred. Hermes passes origin_client="hermes" explicitly
+        # (its provider IS the client); HTTP/MCP callers pass theirs or leave
+        # the column empty (empty → transparent to any client filter).
+        origin_client_norm = normalize_origin_client(origin_client) if origin_client else ""
         if project == "default":
             logger.warning(
                 "store: project is 'default' — memory is unscoped by project; "
@@ -1484,7 +1541,8 @@ profile=profile, language=lang,
                                      session_id=session_id or "",
                                      session_title=session_title, tags=task_tags,
 profile=profile, language=lang, experience_id=exp_id,
-                                     origin_platform=origin_platform, origin_client=origin_client_norm)
+                                     origin_platform=origin_platform, origin_client=origin_client_norm,
+                                     metadata={"envelope": envelope})
 
                 # Mirror the committed knowledge into the in-memory agent (kept
                 # next to the transaction so failure handling is unchanged).
@@ -2511,10 +2569,17 @@ profile=profile, language=lang, experience_id=exp_id,
         ]
 
         # research — V8-1: scope papers to the requested user/profile
-        papers: list = [
-            p for p in self.research_agent.papers.values()
-            if p.user_id == user_id and p.profile == profile
-        ]
+        # P2-3 fix (v1.2.14 review): each paper row carries a rendered source
+        # line so the Origin column in the archive is populated.
+        from types import SimpleNamespace
+        papers: list = []
+        for p in self.research_agent.papers.values():
+            if p.user_id == user_id and p.profile == profile:
+                origin = format_origin_line(
+                    envelope_from_record(p.metadata),
+                    p.created_at.isoformat() if p.created_at else "")
+                papers.append(SimpleNamespace(
+                    **{**p.model_dump(), "origin_line": origin}))
 
         # stats — K2 fix: build header counts from the SAME profile-scoped data
         # that renders below. The previous get_memory_stats() reported GLOBAL

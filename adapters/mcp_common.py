@@ -313,9 +313,13 @@ def handle_tool_call(name, arguments):
             # v1.2.14: tag filter plumbed through (case-insensitive).
             "tags": arguments.get("tags", []),
             "tags_match_all": bool(arguments.get("tags_match_all", False)),
-            # v1.2.14: origin hard filter (explicit arg > captured clientInfo).
-            "origin_client": _default_origin_client(arguments),
-            "origin_platform": arguments.get("origin_platform", ""),
+            # P0-1 fix (v1.2.14 review): origin filters apply ONLY on explicit
+            # arguments. The captured clientInfo marks STORES (provenance); it
+            # must not hard-filter retrievals — combined with the endpoint's
+            # former "http" strong-cast it made every MCP retrieval return
+            # nothing. Empty → None keeps the core transparent by default.
+            "origin_client": arguments.get("origin_client") or None,
+            "origin_platform": arguments.get("origin_platform") or None,
         })
         if "error" in result:
             return {"content": [{"type": "text", "text": f"Error: {result['error']}"}]}

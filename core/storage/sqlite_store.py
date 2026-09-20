@@ -205,6 +205,21 @@ _MIGRATIONS = [
          # column carries the transport), so its index uses that instead.
          "CREATE INDEX IF NOT EXISTS idx_context_origin ON context_memory(platform, origin_client, project)",
      ]),
+    (11, "Provenance review fixes: experience metadata column + client cleanup",
+     [
+         # P2-4 fix (v1.2.14 review): experience_memory had no metadata
+         # column, so the provenance envelope could not persist across
+         # restarts. ADD COLUMN is idempotent and keeps existing rows.
+         "ALTER TABLE experience_memory ADD COLUMN metadata TEXT DEFAULT '{}'",
+         # P1-1 fix (v1.2.14 review): rows stored while store() fell back to
+         # the transport value polluted the client column — an HTTP write got
+         # client='http'. Hermes rows (client='hermes') are plan-intended and
+         # stay. Empty client makes the row transparent to any client filter.
+         "UPDATE knowledge_memory SET origin_client='' WHERE origin_platform='http' AND origin_client='http'",
+         "UPDATE experience_memory SET origin_client='' WHERE origin_platform='http' AND origin_client='http'",
+         "UPDATE task_memory SET origin_client='' WHERE origin_platform='http' AND origin_client='http'",
+         "UPDATE context_memory SET origin_client='' WHERE platform='http' AND origin_client='http'",
+     ]),
 ]
 # Tables that need a profile column
 _PROFILE_TABLES = [
@@ -973,14 +988,15 @@ class SqliteStore:
                         project: str = "default", session_id: str = "",
                         session_title: str = "", tags: List = None,
                         profile: str = "default", language: str = "",
-                        origin_platform: str = None, origin_client: str = None):
+                        origin_platform: str = None, origin_client: str = None,
+                        metadata: Dict = None):
         with self._lock:
             eid = experience_id or f"{user_id}:{summary[:20]}:{int(datetime.now(timezone.utc).timestamp())}"
             self._conn.execute("""
                 INSERT INTO experience_memory (id, user_id, task_type, success,
                     steps_sequence, summary, project, profile, session_id, session_title, tags, language,
-                    origin_platform, origin_client, last_access_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+                    origin_platform, origin_client, metadata, last_access_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
                 ON CONFLICT(id) DO UPDATE SET
                     steps_sequence=excluded.steps_sequence,
                     summary=excluded.summary,
@@ -990,12 +1006,14 @@ class SqliteStore:
                     profile=excluded.profile, language=excluded.language,
                     origin_platform=excluded.origin_platform,
                     origin_client=excluded.origin_client,
+                    metadata=excluded.metadata,
                     frequency=experience_memory.frequency + 1,
                     last_access_at=datetime('now')
             """, (eid, user_id, task_type, int(success), json.dumps(steps),
                   summary, project, profile, session_id, session_title,
                   json.dumps(tags or []), language,
-                  origin_platform or "", origin_client or ""))
+                  origin_platform or "", origin_client or "",
+                  json.dumps(metadata or {})))
             self._maybe_commit()
 
     @with_retry_on_busy()
@@ -1346,6 +1364,11 @@ class SqliteStore:
     @_require_conn
     def save_reflection(self, data: dict):
         with self._lock:
+            # P1-3 note (v1.2.14 review): reflections are introspection
+            # products with no external client, so origin_client stays empty
+            # (transparent to any client filter); the transport lives in the
+            # legacy `platform` column, which query_memory reads for
+            # reflections. No envelope is attached by design.
             ref = data.get("reflection", {})
             self._conn.execute(
                 """INSERT OR REPLACE INTO reflections
@@ -1495,18 +1518,21 @@ class SqliteStore:
 
     # ── Structured provenance query (v1.2.14) ──────────────
 
-    # memory_type → (table, captured-column, payload column rendered as content)
+    # memory_type → (table, captured-column, content column, id column)
+    # context/transcript key on session_id; everything else on id.
     QUERY_TABLES = {
-        "knowledge": ("knowledge_memory", "created_at", "content"),
-        "experience": ("experience_memory", "created_at", "summary"),
-        "task": ("task_memory", "created_at", "title"),
-        "context": ("context_memory", "created_at", "messages"),
-        "research": ("research_papers", "created_at", "title"),
-        "transcript": ("session_transcripts", "created_at", "messages"),
-        "reflection": ("reflections", "created_at", "key_insights"),
+        "knowledge": ("knowledge_memory", "created_at", "content", "id"),
+        "experience": ("experience_memory", "created_at", "summary", "id"),
+        "task": ("task_memory", "created_at", "title", "id"),
+        "context": ("context_memory", "created_at", "messages", "session_id"),
+        "research": ("research_papers", "created_at", "title", "id"),
+        "note": ("research_notes", "updated_at", "topic", "id"),
+        "transcript": ("session_transcripts", "created_at", "messages", "session_id"),
+        "reflection": ("reflections", "created_at", "key_insights", "id"),
     }
 
-    def _query_rows(self, table: str, captured_col: str, content_col: str,
+    def _query_rows(self, type_name: str, table: str, captured_col: str,
+                    content_col: str, id_col: str,
                     user_id: str, profile: str, project: str,
                     tags, tags_match_all: bool,
                     origin_platform: str, origin_client: str,
@@ -1530,7 +1556,12 @@ class SqliteStore:
         transport_col = "origin_platform" if table not in (
             "context_memory", "reflections") else "platform"
         if origin_platform:
-            where.append(f"{transport_col} = ?")
+            # Observation fix (v1.2.14 review): rows whose transport is the
+            # migration-era 'default' placeholder (or empty) count as
+            # "no origin" and pass any transport filter, consistent with the
+            # "empty record origin passes" rule everywhere else.
+            where.append(
+                f"({transport_col} = ? OR {transport_col} = '' OR {transport_col} = 'default')")
             params.append(origin_platform)
         if origin_client:
             where.append("origin_client = ?")
@@ -1561,8 +1592,8 @@ class SqliteStore:
             except Exception:
                 envelope = None
             results.append({
-                "memory_type": table.replace("_memory", "").replace("research_papers", "research"),
-                "id": rec.get("id", ""),
+                "memory_type": type_name,
+                "id": rec.get(id_col, ""),
                 "content": str(rec.get(content_col, "") or "")[:400],
                 "tags": rec.get("tags") or [],
                 "project": rec.get("project", ""),
@@ -1601,10 +1632,10 @@ class SqliteStore:
         merged: List[Dict] = []
         with self._lock:
             for t in types:
-                table, captured_col, content_col = self.QUERY_TABLES[t]
+                table, captured_col, content_col, id_col = self.QUERY_TABLES[t]
                 try:
                     merged.extend(self._query_rows(
-                        table, captured_col, content_col,
+                        t, table, captured_col, content_col, id_col,
                         user_id or "", profile, project,
                         tags, tags_match_all,
                         origin_platform, origin_client,

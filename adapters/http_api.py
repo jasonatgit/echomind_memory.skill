@@ -189,7 +189,12 @@ def api_retrieve(req: RetrieveRequest, auth=Depends(verify_api_key)):
             session_id=req.session_id, profile=req.profile,
             max_results=req.max_results,
             tags=req.tags, tags_match_all=req.tags_match_all,
-            origin_platform=req.origin_platform or "http",
+            # P0-1 fix (v1.2.14 review): NO origin strong-cast. The transport
+            # already soft-penalizes cross-origin records; origin hard filters
+            # apply only when the caller explicitly passes them — forcing
+            # "http" here made every MCP retrieval (routed through this
+            # endpoint) hard-filter against its own writes and return nothing.
+            origin_platform=req.origin_platform,
             origin_client=req.origin_client,
         )
         # P2.1: core honors max_results; no second slice here.

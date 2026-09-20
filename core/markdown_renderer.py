@@ -212,10 +212,13 @@ def render_research(papers: list) -> str:
     if not papers:
         return "## 📄 Research\n\n(empty)\n"
     parts = ["## 📄 Research"]
-    parts.append("| Title | Domain | Year |")
-    parts.append("|-------|--------|-----:|")
+    # P2-3 fix (v1.2.14 review): papers get an Origin column like the other
+    # sections, so the archive shows the source for every row.
+    parts.append("| Title | Domain | Year | Origin |")
+    parts.append("|-------|--------|-----:|--------|")
     for p in papers[:20]:
-        parts.append(f"| {p.title[:80]} | {p.domain} | {p.year or ''} |")
+        origin = (getattr(p, "origin_line", "") or "").replace("|", "\\|")
+        parts.append(f"| {p.title[:80]} | {p.domain} | {p.year or ''} | {origin} |")
     return "\n".join(parts)
 
 
