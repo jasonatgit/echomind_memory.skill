@@ -71,6 +71,10 @@ def _load_bundled_language_profiles() -> dict:
     return {}
 
 FALLBACK_CONFIG = {
+    # Identity fallback (v1.2.14 usage-path fix): when an entrypoint does
+    # not receive an explicit user_id, memories are scoped to this user
+    # instead of a per-session id or the shared "cli".
+    "default_user": "default",
     "rl": {
         "initial_weights": {
             "relevance": [0.30, 0.50],

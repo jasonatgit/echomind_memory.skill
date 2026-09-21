@@ -23,6 +23,15 @@ if _pkg_dir not in sys.path:
 _call_agents: dict = {}
 
 
+def _default_user_id() -> str:
+    """Configured default identity when a tool call omits user_id."""
+    try:
+        from core.config_manager import get_config_manager
+        return get_config_manager().get_top_level("default_user", "cli") or "cli"
+    except Exception:
+        return "cli"
+
+
 def call(tool_name: str, config_path: str = None, **kwargs):
     """Hermes skill.yaml Dispatch entry point
 
@@ -58,7 +67,7 @@ def call(tool_name: str, config_path: str = None, **kwargs):
     if tool_name == "retrieve_memory":
         result = agent.retrieve_for_task(
             task_context=kwargs.get("query", ""),
-            user_id=kwargs.get("user_id", ""),
+            user_id=(kwargs.get("user_id") or _default_user_id()),
             task_id=kwargs.get("task_id"),
             platform=kwargs.get("platform") or "hermes",
             project=kwargs.get("project", "default"),
@@ -87,7 +96,7 @@ def call(tool_name: str, config_path: str = None, **kwargs):
 
     elif tool_name == "store_memory":
         agent.store(
-            user_id=kwargs.get("user_id", ""),
+            user_id=(kwargs.get("user_id") or _default_user_id()),
             task_id=kwargs.get("task_id", ""),
             context=kwargs.get("context", []),
             task_status=kwargs.get("task_status", "completed"),
@@ -105,19 +114,19 @@ def call(tool_name: str, config_path: str = None, **kwargs):
             origin_client=kwargs.get("origin_client") or "hermes",
         )
         return {"status": "stored",
-                "user_id": kwargs.get("user_id", ""),
+                "user_id": (kwargs.get("user_id") or _default_user_id()),
                 "task_id": kwargs.get("task_id", "")}
 
     elif tool_name == "record_feedback":
         try:
             agent.record_feedback(
-                user_id=kwargs.get("user_id", ""),
+                user_id=(kwargs.get("user_id") or _default_user_id()),
                 task_id=kwargs.get("task_id", ""),
                 feedback=kwargs.get("feedback", "positive"),
                 retrieved_memories=kwargs.get("retrieved_memories", []),
                 profile=kwargs.get("profile", "default"),
             )
-            return {"status": "feedback_received", "user_id": kwargs.get("user_id", "")}
+            return {"status": "feedback_received", "user_id": (kwargs.get("user_id") or _default_user_id())}
         except Exception as e:
             logging.getLogger("MemoryAgent").error("record_feedback failed: %s", e)
             return {"status": "error", "detail": str(e)}
@@ -125,7 +134,7 @@ def call(tool_name: str, config_path: str = None, **kwargs):
     elif tool_name == "query_memory":
         results = agent.query_memory(
             memory_type=kwargs.get("memory_type", "all"),
-            user_id=kwargs.get("user_id", ""),
+            user_id=(kwargs.get("user_id") or _default_user_id()),
             profile=kwargs.get("profile", "default"),
             project=kwargs.get("project"),
             tags=kwargs.get("tags"),
@@ -141,7 +150,7 @@ def call(tool_name: str, config_path: str = None, **kwargs):
     elif tool_name == "sync_code_memory":
         agent.sync_to_code_project(
             project_root=kwargs.get("project_root", "."),
-            user_id=kwargs.get("user_id", ""),
+            user_id=(kwargs.get("user_id") or _default_user_id()),
         )
         return {"status": "synced",
                 "path": f"{kwargs.get('project_root', '.')}/.echomind"}
@@ -164,7 +173,7 @@ def call(tool_name: str, config_path: str = None, **kwargs):
 
     elif tool_name == "add_research_note":
         note_id = agent.add_research_note(
-            user_id=kwargs.get("user_id", ""),
+            user_id=(kwargs.get("user_id") or _default_user_id()),
             topic=kwargs.get("topic", ""),
             content=kwargs.get("content", ""),
             linked_papers=kwargs.get("linked_papers"),

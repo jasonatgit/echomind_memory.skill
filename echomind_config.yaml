@@ -9,6 +9,10 @@ version: 2
 # Memory isolation — default project identifier
 default_project: "default"
 
+# Identity fallback (v1.2.14): entrypoints that do not pass an explicit
+# user_id scope memories to this user (instead of per-session id or "cli").
+default_user: "default"
+
 # Database path
 db:
   path: "~/.echomind/memory.db"

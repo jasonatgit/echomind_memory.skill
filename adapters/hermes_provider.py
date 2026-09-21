@@ -29,6 +29,15 @@ logger = logging.getLogger("EchomindProvider")
 
 PLATFORM = "hermes"
 
+def _default_user_id() -> str:
+    """Configured default identity for entrypoints without an explicit
+    user_id (v1.2.14 usage-path fix); falls back to "cli" when unset."""
+    try:
+        from core.config_manager import get_config_manager
+        return get_config_manager().get_top_level("default_user", "cli") or "cli"
+    except Exception:
+        return "cli"
+
 
 class EchomindMemoryProvider:
     """EchoMind Memory Provider — Hermes Agent loop deep integration
@@ -156,7 +165,13 @@ class EchomindMemoryProvider:
 
         self._skip_writes = False
         self._session_id = session_id
-        self._user_id = kwargs.get("user_id", session_id)
+        # v1.2.14 usage-path fix: never fall back to session_id. Hermes may
+        # omit user_id, and scoping to the per-session id created a new
+        # memory identity for every session (10 fragmented identities were
+        # found in the live DB). Fall back to the configured default user;
+        # the source client is still recorded via provenance (origin_client).
+        self._user_id = (str(kwargs.get("user_id") or "").strip()
+                         or _default_user_id())
         # R3 fix: Hermes passes the active profile (分身) name via
         # agent_identity (agent_init.py:1312 get_active_profile_name()).
         # Prefer it as the memory-scoping profile so each Hermes persona is

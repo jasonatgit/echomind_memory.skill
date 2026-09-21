@@ -32,6 +32,26 @@ def _default_origin_client(arguments: dict) -> str:
     return "mcp"
 
 
+def _default_user_id(arguments: dict) -> str:
+    """Identity for an MCP tool call (v1.2.14 usage-path fix).
+
+    Precedence: explicit argument > config `default_user` > "cli". The MCP
+    schema marks user_id optional with a default, so clients (Claude Code,
+    opencode) frequently omit it; the old hard-coded "cli" fallback then mixed
+    every client's memories under one shared identity. Scoping the fallback to
+    the configured default user keeps identities unified while the *origin*
+    (origin_client/origin_platform) still distinguishes the source client.
+    """
+    uid = str(arguments.get("user_id") or "").strip()
+    if uid:
+        return uid
+    try:
+        from core.config_manager import get_config_manager
+        return get_config_manager().get_top_level("default_user", "cli") or "cli"
+    except Exception:
+        return "cli"
+
+
 def _resolve_project(explicit: str) -> str:
     """Resolve a non-default project scope for MCP traffic.
 
@@ -303,7 +323,7 @@ def handle_tool_call(name, arguments):
         # of letting it fall through to None → "default", which made MCP data
         # indistinguishable from and isolated from Hermes/HTTP data.
         result = _api_post("/api/memory/retrieve", {
-            "user_id": arguments.get("user_id", "cli"),
+            "user_id": _default_user_id(arguments),
             "query": arguments.get("query", ""),
             "platform": arguments.get("platform", "mcp"),
             "max_results": arguments.get("max_results", 5),
@@ -344,7 +364,7 @@ def handle_tool_call(name, arguments):
         exp = arguments.get("experience_summary", "")
         ctx = arguments.get("context") or [{"role": "assistant", "content": exp}]
         result = _api_post("/api/memory/store", {
-            "user_id": arguments.get("user_id", "cli"),
+            "user_id": _default_user_id(arguments),
             "task_id": arguments.get("task_id", ""),
             "context": ctx,
             "task_status": arguments.get("task_status", "completed"),
@@ -366,7 +386,7 @@ def handle_tool_call(name, arguments):
 
     elif name == "echomind_search":
         q = urllib.request.quote(arguments.get("query", ""))
-        uid = arguments.get("user_id", "")
+        uid = _default_user_id(arguments)
         limit = arguments.get("limit", 5)
         path = f"/api/memory/search-sessions?q={q}&limit={limit}"
         if uid:
@@ -385,7 +405,7 @@ def handle_tool_call(name, arguments):
 
     elif name == "echomind_feedback":
         result = _api_post("/api/memory/feedback", {
-            "user_id": arguments.get("user_id", ""),
+            "user_id": _default_user_id(arguments),
             "task_id": arguments.get("task_id", ""),
             "feedback": arguments.get("feedback", ""),
             "retrieved_memories": arguments.get("memory_ids", []),
@@ -398,7 +418,7 @@ def handle_tool_call(name, arguments):
     elif name == "echomind_reflect":
         llm_response = arguments.get("llm_response")
         payload = {
-            "user_id": arguments.get("user_id", ""),
+            "user_id": _default_user_id(arguments),
             "count": arguments.get("count", 8),
             "platform": arguments.get("platform", "http"),
             "profile": arguments.get("profile", "default"),
@@ -427,7 +447,7 @@ def handle_tool_call(name, arguments):
 
     elif name == "echomind_query":
         payload = {
-            "user_id": arguments.get("user_id", "cli"),
+            "user_id": _default_user_id(arguments),
             "profile": arguments.get("profile", "default"),
             "memory_type": arguments.get("memory_type", "all"),
             "project": arguments.get("project") or None,
