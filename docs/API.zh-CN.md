@@ -20,10 +20,12 @@
 | `POST` | `/api/config/parameter` | 设置运行时配置参数（section 白名单；`api_key` 受保护） |
 | `POST` | `/api/config/reload` | 从磁盘重载配置 |
 | `POST` | `/api/reflect` | 自我反思 |
-| `POST` | `/mcp` | MCP JSON-RPC 端点（远程；通知返回空 202） |
+| `POST` | `/mcp` | MCP JSON-RPC 端点（远程；通知返回空 202）。配置 `server.api_key` 时与 `/api/*` 一样要求 `X-API-Key`（为空时开放） |
 | `GET` | `/health` | 健康检查 |
 
 > **错误语义（v1.2.13+）：** `DELETE /api/memory/{type}/{id}` 对未知记忆类型返回 **400**（此前 500）。`/api/reflect` 在达到用户每日反思限额时返回 **429**，解析失败/低置信度返回 **400**——失败反思会退还配额槽位，不消耗每日限额。
+
+> **MCP 客户端身份（v1.2.15+）：** `initialize` 捕获的来源客户端按 HTTP 连接以 `Mcp-Session-Id` 头（或 `X-Session-Id`）隔离；`X-Client-Name` 可按请求设置。并发客户端不再互相串号。stdio 网关按进程归属（每连接一进程）。
 
 ---
 
@@ -62,6 +64,7 @@
 | `profile` | string | | "default" | 用户分身 |
 | `tags` | array | | [] | 调用方 tags（优先）；自动主题 tags 补足 |
 | `origin_client` | string | | | 来源客户端（claude-code/opencode/...）；随记录来源信封落库 |
+| `turn` | integer | | 0 | 来源会话中的轮次索引；记录到知识进化行的 `origin_turn`（v1.2.15） |
 
 ### POST /api/memory/query
 结构化来源查询（v1.2.14）——精确来源谓词，**无相关性评分**。结果跨所选记忆表合并、按时间倒序。一天的记忆：`date_from` = `date_to` = `YYYY-MM-DD`。
@@ -100,7 +103,7 @@ MCP 协议暴露以下工具（经 `POST /mcp` 或 `mcp_gateway.py` stdio）：
 | 工具 | 说明 |
 |------|------|
 | `echomind_retrieve` | 按查询语义检索长期记忆（支持 project/session_id/profile、tags、origin） |
-| `echomind_store` | 存储交互入记忆（支持 project/session_id/profile、调用方 tags、origin_client） |
+| `echomind_store` | 存储交互入记忆（支持 project/session_id/profile、调用方 tags、origin_client、turn） |
 | `echomind_search` | 按关键词搜索会话转录 |
 | `echomind_feedback` | 对检索结果提供正/负反馈 |
 | `echomind_reflect` | 触发反思（Phase 1 构建 prompt；Phase 2 带 llm_response 提交） |

@@ -23,8 +23,9 @@ class KnowledgeMemoryAgent:
             self._remove_from_index(entry_id)
             entry = self.store.get(entry_id)
             if entry:
-                # _content_index uses content hash (int) as key, not entry_id
-                ch = int(hashlib.md5(entry.content.encode()).hexdigest(), 16) % (2**63 - 1)
+                # _content_index uses the tenant-scoped content hash (int) as
+                # key, not entry_id (F5, v1.2.15).
+                ch = self._tenant_content_hash(self._entry_uid(entry), entry.content)
                 self._content_index.pop(ch, None)
             del self.store[entry_id]
 
@@ -34,8 +35,17 @@ class KnowledgeMemoryAgent:
         # Inverted index: {user_id → set(entry_ids)}
         self._user_index: Dict[str, Set[str]] = {}
 
+    def _entry_uid(self, entry: KnowledgeEntry) -> str:
+        return entry.user_id if entry.user_id else entry.metadata.get("user_id", "default")
+
+    def _tenant_content_hash(self, user_id: str, content: str) -> int:
+        """F5 (v1.2.15 audit): content hash scoped by tenant. A bare content
+        md5 let identical content from two users dedup/overwrite across
+        tenants. The \\x00 separator avoids user/content boundary ambiguity."""
+        return int(hashlib.md5(f"{user_id or 'default'}\x00{content}".encode()).hexdigest(), 16) % (2**63 - 1)
+
     def _add_to_index(self, entry: KnowledgeEntry):
-        uid = entry.user_id if entry.user_id else entry.metadata.get("user_id", "default")
+        uid = self._entry_uid(entry)
         self._user_index.setdefault(uid, set()).add(entry.id)
 
     def _remove_from_index(self, entry_id: str):
@@ -171,7 +181,10 @@ class KnowledgeMemoryAgent:
         return results[:limit]
 
     def add_document(self, content: str, metadata: Dict, entry_id: str = None) -> str:
-        content_hash = int(hashlib.md5(content.encode()).hexdigest(), 16) % (2**63 - 1)
+        # F5 (v1.2.15 audit): dedup key is tenant-scoped — same content from
+        # two users must NOT collapse into one entry.
+        uid = metadata.get("user_id", "default")
+        content_hash = self._tenant_content_hash(uid, content)
         if content_hash in self._content_index:
             existing_id = self._content_index[content_hash]
             existing_entry = self.store.get(existing_id)
@@ -184,7 +197,7 @@ class KnowledgeMemoryAgent:
                 )
                 return existing_id
         for existing_id, existing_entry in self.store.items():
-            if existing_entry.content == content:
+            if existing_entry.content == content and self._entry_uid(existing_entry) == uid:
                 existing_entry.metadata["access_count"] = (
                     existing_entry.metadata.get("access_count", 0) + 1
                 )

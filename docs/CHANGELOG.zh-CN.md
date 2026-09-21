@@ -1,5 +1,26 @@
 # EchoMind 更新日志
 
+## v1.2.15 — 深度审计修复：死路径复活、租户隔离与 MCP 串号修复 (2026-09-21)
+
+外部深度审计轮次：四项高危发现曾使三大宣传能力（自动反思、生命周期状态机、知识进化检测）在主路径上成为死代码——全部发现均已复现、修复并通过回归/集成验证。另含默认用户身份统一与 MCP 客户端串号修复。
+
+| 领域 | 改动 |
+|------|------|
+| **自动反思死路径** | `_trigger_auto_reflection._run` 在 RHS 对闭包同名 `batch_size` 自赋值——每次自动反思必抛 `UnboundLocalError` 且被 except 静默吞掉 → 改用独立局部名（`bs`）；每个已调度的反思现在真正执行 |
+| **生命周期状态机死路径** | 状态扫描 SELECT 引用了仅存在于 `user_memory` 表的 `last_updated` 列——首表即抛 `no such column` 且 debug 静默，Active→Stale→Archived 转换恒为零 → 去掉该列（`_freshness` 本就按 `last_access_at` → `created_at` 回退），扫描失败路径升为 warning |
+| **知识进化死路径** | `_detect_knowledge_evolution` 在新条目保存+镜像之后才运行，新条目自身必在候选集且 Jaccard=1.0，循环后自引用检查（`best_id == knowledge_id`）使检测恒为空操作 → 自身条目改在候选循环内排除 |
+| **进化溯源** | `store()` / `POST /api/memory/store` / MCP `echomind_store` 接受 `turn` 轮次索引，透传至进化记录行（`origin_turn`——此前恒为 0） |
+| **GSPO 改为可选（行为变化）** | 聚类聚合把五维 RL 权重算出的分数按簇覆写为同一几何均值且默认开启 → 改为可选（`rl.gspo.enabled`，默认 **false**），且空 `session_id` 不再把全部同源记录并入一簇 |
+| **知识主键加租户维度** | `kb_id` 原为纯内容 md5——用户 B 的同内容插入直接 UPDATE 覆盖用户 A 的行（`user_id=excluded.user_id`）→ 哈希加入租户维度（`user_id \x00 content`），内存侧内容哈希去重（`knowledge_agent.add_document`、reload 索引）同步隔离 |
+| **MCP 身份隔离** | HTTP `/mcp` 端点单进程服务多客户端，单一模块级全局使客户端 B 的调用被记到最后一个 initialize 的客户端名下 → HTTP 连接按 `Mcp-Session-Id`（或 `X-Session-Id`）键控身份，`X-Client-Name` 提供按请求覆盖；stdio 网关保持模块全局（每连接一进程） |
+| **热路径 LLM 门控** | `_detect_research_domain` 的同步 LLM 回退挂在检索路径上——60s 超时 × 3 次尝试，最坏约 181s → 改为可选（`retrieval.llm_domain_detect`，默认 **false**；关键词匹配 + "general" 兜底保留），单次调用硬限 5s |
+| **MCP 端点鉴权** | `POST/GET /mcp` 是全量记忆读写面上仅有的无鉴权路由 → 现在与 `/api/*` 一样要求 `X-API-Key`（未配置 api_key 时保持开放，与 `verify_api_key` 一致）；stdio→HTTP 桥接本就发送该 key |
+| **默认用户身份统一** | 未收到显式 `user_id` 的入口现在把记忆归入配置的顶层 `default_user`（开源默认 `"default"`），而非按会话 id 或共享 `"cli"`：`mcp_common._default_user_id()` 替换六处 `"cli"`/`""` 回退，`hermes_provider` 不再按会话 id 碎片化同一用户的记忆（真实 DB 中观察到 10 个此类身份），`main.py` 八处回退统一走同一 helper。`clientInfo` 推断保持仅溯源用途（`origin_client`）；身份与来源是独立维度 |
+
+**迁移：** 无——无新表或新列。行为说明：(1) `rl.gspo.enabled` 默认 false；设 true 可恢复聚类聚合。(2) `retrieval.llm_domain_detect` 默认 false；设 true 可重新启用 LLM 语义域名回退。(3) 存量 `k:` 知识 id 不重算主键——新 id 插入会为此前被覆盖的行产生一次性重复，可手动清理。(4) MCP 客户端连接已配置 api_key 的服务时需在 `/mcp` 发送 `X-API-Key`（stdio 网关无需改动）。验证：74 项回归测试 + 定向集成检查（状态转换、带 `origin_turn` 的进化记录、跨用户去重、按会话 MCP 身份）。
+
+---
+
 ## v1.2.14 — 来源追溯：origin 追踪、tags 过滤与结构化查询 (2026-09-19)
 
 每条记忆记录现在携带自描述来源信封——**传输方式**（mcp/http/hermes/cli）+ **来源客户端**（claude-code/opencode/...）+ project + tags + 捕获时间——并可按这些谓词的任意组合，从任何受支持入口检索。

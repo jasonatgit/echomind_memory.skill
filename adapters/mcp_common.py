@@ -19,14 +19,27 @@ ECHOMIND_URL = "http://127.0.0.1:8005"
 # initialize handshake's clientInfo.name (normalized by provenance). Empty
 # until an initialize arrives; tool calls then default origin_client to it.
 _MCP_CLIENT = ""
+# F6 (v1.2.15 audit): the HTTP /mcp endpoint serves many clients from ONE
+# process, so a single module-global let client B's calls be attributed to
+# whichever client initialized last. HTTP connections are keyed by session;
+# the stdio gateway stays on the module global (one process per connection).
+_MCP_CLIENT_BY_SESSION: dict = {}
 
 
-def _default_origin_client(arguments: dict) -> str:
-    """origin_client for an MCP tool call: explicit argument wins, then the
-    captured clientInfo, then the transport value "mcp"."""
+def _default_origin_client(arguments: dict, session_id: str = "",
+                           header_client: str = "") -> str:
+    """origin_client for an MCP tool call.
+
+    Precedence: explicit argument > per-request header identity > per-session
+    identity (HTTP) > stdio handshake identity > transport value "mcp".
+    """
     explicit = str(arguments.get("origin_client", "") or "").strip()
     if explicit:
         return explicit
+    if header_client:
+        return header_client
+    if session_id and _MCP_CLIENT_BY_SESSION.get(session_id):
+        return _MCP_CLIENT_BY_SESSION[session_id]
     if _MCP_CLIENT:
         return _MCP_CLIENT
     return "mcp"
@@ -192,6 +205,8 @@ def handle_tools_list():
                     "profile": {"type": "string", "default": "default"},
                     "correction": {"type": "boolean", "default": False,
                                    "description": "True if this store is a fix/correction of a prior turn"},
+                    "turn": {"type": "integer", "default": 0,
+                             "description": "Optional. Turn index in the source session; recorded on evolution rows."},
                     "tags": {"type": "array", "items": {"type": "string"},
                              "description": "Optional. Caller tags (priority); auto topic tags fill the rest."},
                     "origin_client": {"type": "string",
@@ -317,7 +332,11 @@ def handle_resource_read(uri):
     return {"contents": [{"uri": uri, "mimeType": "text/plain", "text": "Resource not found"}]}
 
 
-def handle_tool_call(name, arguments):
+def handle_tool_call(name, arguments, session_id: str = "",
+                     header_client: str = ""):
+    """Dispatch an MCP tools/call. session_id/header_client scope the origin
+    attribution per HTTP connection (F6, v1.2.15); the stdio gateway omits
+    both and falls back to the handshake global."""
     if name == "echomind_retrieve":
         # M-R7 fix: tag MCP-sourced traffic with an explicit platform instead
         # of letting it fall through to None → "default", which made MCP data
@@ -378,7 +397,9 @@ def handle_tool_call(name, arguments):
             # v1.2.14: caller tags take priority over auto topic tags.
             "tags": arguments.get("tags", []),
             # v1.2.14: origin provenance (explicit arg > captured clientInfo).
-            "origin_client": _default_origin_client(arguments),
+            "origin_client": _default_origin_client(arguments, session_id, header_client),
+            # F3b (v1.2.15 audit): turn index recorded on evolution rows.
+            "turn": int(arguments.get("turn", 0) or 0),
         })
         if "error" in result:
             return {"content": [{"type": "text", "text": f"Error storing: {result['error']}"}]}
@@ -493,8 +514,14 @@ def handle_tool_call(name, arguments):
 
 # ── Main MCP request dispatcher (used by both stdio and HTTP) ──
 
-def handle_mcp_request(msg: dict) -> dict:
-    """Dispatch a JSON-RPC 2.0 MCP request, return JSON-RPC response dict."""
+def handle_mcp_request(msg: dict, session_id: str = "",
+                       header_client: str = "") -> dict:
+    """Dispatch a JSON-RPC 2.0 MCP request, return JSON-RPC response dict.
+
+    session_id/header_client come from the HTTP transport (Mcp-Session-Id /
+    X-Client-Name headers) and scope the captured client identity per
+    connection; the stdio gateway omits both.
+    """
     msg_id = msg.get("id")
     method = msg.get("method", "")
     params = msg.get("params", {})
@@ -504,13 +531,23 @@ def handle_mcp_request(msg: dict) -> dict:
         # clientInfo.name so later stores/retrieves default origin_client to
         # the real source (claude-code / opencode / ...) instead of a generic
         # "mcp". The stdio gateway is a single process, so a module-level
-        # value is per-connection; over HTTP an initialize-less call falls
-        # back to the explicit argument or "unknown".
-        global _MCP_CLIENT
+        # value is per-connection; over HTTP the identity is keyed by the
+        # transport session (F6, v1.2.15) so concurrent clients cannot
+        # overwrite each other's attribution. An initialize-less call falls
+        # back to the explicit argument, header identity, or "mcp".
         client_info = params.get("clientInfo")
         if isinstance(client_info, dict) and client_info.get("name"):
             from core.provenance import normalize_origin_client
-            _MCP_CLIENT = normalize_origin_client(client_info["name"])
+            name = normalize_origin_client(client_info["name"])
+            if name:
+                if session_id:
+                    _MCP_CLIENT_BY_SESSION[session_id] = name
+                    # bound the map so long-lived servers don't grow unbounded
+                    if len(_MCP_CLIENT_BY_SESSION) > 1024:
+                        _MCP_CLIENT_BY_SESSION.pop(next(iter(_MCP_CLIENT_BY_SESSION)))
+                else:
+                    global _MCP_CLIENT
+                    _MCP_CLIENT = name
         return {"jsonrpc": "2.0", "id": msg_id, "result": {
             "protocolVersion": "2024-11-05",
             "capabilities": {"tools": {}, "resources": {}},
@@ -523,7 +560,9 @@ def handle_mcp_request(msg: dict) -> dict:
     elif method == "resources/read":
         return {"jsonrpc": "2.0", "id": msg_id, "result": handle_resource_read(params.get("uri", ""))}
     elif method == "tools/call":
-        return {"jsonrpc": "2.0", "id": msg_id, "result": handle_tool_call(params.get("name", ""), params.get("arguments", {}))}
+        return {"jsonrpc": "2.0", "id": msg_id, "result": handle_tool_call(
+            params.get("name", ""), params.get("arguments", {}),
+            session_id=session_id, header_client=header_client)}
     elif method.startswith("notifications/"):
         # M-7 fix: JSON-RPC notifications carry no `id` and expect NO response.
         # Returning a response frame confuses MCP clients (stdio gateway would

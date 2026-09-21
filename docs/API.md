@@ -20,10 +20,12 @@
 | `POST` | `/api/config/parameter` | Set runtime config parameter (section whitelist; `api_key` is protected) |
 | `POST` | `/api/config/reload` | Reload configuration from disk |
 | `POST` | `/api/reflect` | Self-reflection (two-phase: build prompt or process result, supports profile) |
-| `POST` | `/mcp` | MCP JSON-RPC endpoint (Streamable HTTP; notifications return an empty 202) |
+| `POST` | `/mcp` | MCP JSON-RPC endpoint (Streamable HTTP; notifications return an empty 202). Requires the same `X-API-Key` as `/api/*` when `server.api_key` is configured (open when empty) |
 | `GET` | `/health` | Health check |
 
 > **Error semantics (v1.2.13+):** `DELETE /api/memory/{type}/{id}` returns **400** for an unknown memory type (previously 500). `/api/reflect` returns **429** when the per-user daily reflection limit is reached and **400** for a parse failure / low-confidence result — failed reflections refund their quota slot and never consume the daily limit.
+
+> **MCP client identity (v1.2.15+):** the origin client captured at `initialize` is scoped per HTTP connection by the `Mcp-Session-Id` header (or `X-Session-Id`); `X-Client-Name` sets it per request. Concurrent clients are no longer cross-attributed. The stdio gateway attributes per process (one connection per process).
 
 ### Key Request Parameters
 
@@ -60,6 +62,7 @@
 | `profile` | string | | "default" | User profile |
 | `tags` | array | | [] | Caller tags (priority); auto topic tags fill the rest |
 | `origin_client` | string | | | Producing client (claude-code/opencode/...); stored with the record's provenance |
+| `turn` | integer | | 0 | Turn index in the source session; recorded on knowledge-evolution rows as `origin_turn` (v1.2.15) |
 
 #### POST /api/memory/query
 Structured provenance query (v1.2.14) — exact source predicates, **no relevance scoring**. Results merge across the selected memory tables, newest first. One day's memories: `date_from` = `date_to` = `YYYY-MM-DD`.
@@ -96,7 +99,7 @@ The MCP protocol exposes the following tools (via `POST /mcp` or `mcp_gateway.py
 | Tool | Description |
 |------|-------------|
 | `echomind_retrieve` | Search long-term memory by query (supports project/session_id/profile, tags, origin) |
-| `echomind_store` | Store interaction into memory (supports project/session_id/profile, caller tags, origin_client) |
+| `echomind_store` | Store interaction into memory (supports project/session_id/profile, caller tags, origin_client, turn) |
 | `echomind_search` | Search session transcripts by keyword |
 | `echomind_feedback` | Provide positive/negative feedback on retrieval |
 | `echomind_reflect` | Trigger reflection (Phase 1: build prompt; Phase 2 with llm_response: commit) |

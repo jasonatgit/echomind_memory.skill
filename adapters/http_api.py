@@ -7,7 +7,7 @@ import sys
 from typing import Any, Dict, List, Optional
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException, Depends
+from fastapi import FastAPI, HTTPException, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import APIKeyHeader
 from fastapi.responses import JSONResponse, Response
@@ -18,6 +18,7 @@ import uvicorn
 from core.memory_agent import MainMemoryAgent
 from core._reflective_version import get_echomind_version
 from core.config_manager import get_config_manager
+from core.provenance import normalize_origin_client
 from core.models.context import ContextMessage
 
 logger = logging.getLogger("EchoMind.API")
@@ -99,6 +100,7 @@ class StoreRequest(BaseModel):
     profile: str = "default"
     tags: List[str] = []
     origin_client: Optional[str] = None
+    turn: int = 0
 
 class FeedbackRequest(BaseModel):
     user_id: str
@@ -238,6 +240,7 @@ def api_store(req: StoreRequest, auth=Depends(verify_api_key)):
             profile=req.profile,
             tags=req.tags,
             origin_client=req.origin_client,
+            turn=req.turn,
         )
         return {"status": "stored" if ok else "error", "user_id": req.user_id, "task_id": req.task_id}
     except Exception as e:
@@ -582,12 +585,23 @@ except ImportError:
     _MCP_AVAILABLE = False
 
 @app.post("/mcp")
-async def mcp_endpoint(request: dict):
+async def mcp_endpoint(request: dict, http_request: Request, auth=Depends(verify_api_key)):
+    # F8 (v1.2.15 audit): /mcp is a full-memory read/write surface and was
+    # the only unauthenticated route; it now requires the same X-API-Key as
+    # /api/* (no key configured → still open, matching verify_api_key).
     import asyncio
     if not _MCP_AVAILABLE:
         return {"jsonrpc": "2.0", "error": {"code": -32603, "message": "MCP not available"}}
     try:
-        resp = await asyncio.to_thread(handle_mcp_request, request)
+        # F6 (v1.2.15 audit): per-connection client identity over HTTP —
+        # initialize attribution is keyed by Mcp-Session-Id (or X-Session-Id);
+        # X-Client-Name gives a per-request override for clients that never
+        # send a session id.
+        session_id = (http_request.headers.get("mcp-session-id", "")
+                      or http_request.headers.get("x-session-id", ""))
+        raw_client = http_request.headers.get("x-client-name", "").strip()
+        header_client = normalize_origin_client(raw_client) if raw_client else ""
+        resp = await asyncio.to_thread(handle_mcp_request, request, session_id, header_client)
         # M-7 fix + P2.7: JSON-RPC 2.0 notifications expect NO response body.
         # The old `{}` placeholder made strict clients fail to parse; an HTTP
         # transport answers a notification with an empty 202 instead.
@@ -599,7 +613,7 @@ async def mcp_endpoint(request: dict):
         return {"jsonrpc": "2.0", "error": {"code": -32603, "message": str(e)}}
 
 @app.get("/mcp")
-async def mcp_handshake():
+async def mcp_handshake(auth=Depends(verify_api_key)):
     return {"jsonrpc": "2.0", "result": {"protocolVersion": "2024-11-05"}}
 
 

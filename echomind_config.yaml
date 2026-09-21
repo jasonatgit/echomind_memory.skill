@@ -40,6 +40,13 @@ rl:
   decay_factor: 0.97
   max_buffer_size: 50
   seed: null
+  # GSPO-style cluster aggregation (v1.2.15): same-source same-session memories
+  # share a geometric-mean importance. Default OFF — it overwrites the
+  # five-factor RL scores within a cluster (erasing the weight learning at the
+  # tail of every ranked list) and is only meaningful for explicit cluster
+  # ranking experiments. Set enabled: true to restore the old behavior.
+  gspo:
+    enabled: false
 
 reflection:
   batch_size: [5, 12]
@@ -64,6 +71,12 @@ retrieval:
   # lever. Kept (commented) for reference; uncommenting has no effect.
   # recency_multiplier: 0.5
   state_scan_limit: 1000
+  # LLM semantic domain fallback on the retrieve path (v1.2.15): default OFF.
+  # When off, domain detection uses keyword matching only and falls back to the
+  # configured default domain — a sync LLM call here previously blocked a
+  # retrieval for up to ~181s (60s timeout × 3 attempts). When on, the call is
+  # hard-bounded to 5s. Set true only if keyword domains are insufficient.
+  llm_domain_detect: false
 
 llm:
   # Provider mode: openai_compatible | ollama | none

@@ -257,8 +257,12 @@ class MainMemoryAgent:
             entry.id = k.get("id", entry.id)
             self.knowledge_agent.store[entry.id] = entry
             self.knowledge_agent._add_to_index(entry)
+            # F5 (v1.2.15 audit): the index key is tenant-scoped, matching
+            # add_document's hash so cross-user same-content rows don't
+            # collapse into one in-memory entry.
             self.knowledge_agent._content_index[
-                int(hashlib.md5(entry.content.encode()).hexdigest(), 16) % (2**63 - 1)
+                self.knowledge_agent._tenant_content_hash(
+                    self.knowledge_agent._entry_uid(entry), entry.content)
             ] = entry.id
             loaded["knowledge"] += 1
 
@@ -415,10 +419,14 @@ class MainMemoryAgent:
 
         def _run():
             try:
-                batch_size = batch_size if batch_size is not None else agent.reflective.config.get("batch_size", 8)
-                if isinstance(batch_size, (list, tuple)):
-                    batch_size = int(random.uniform(batch_size[0], batch_size[1]))
-                records = agent.get_recent_episodic(user_id, count=batch_size,
+                # F1 (v1.2.15 audit): the old form assigned to the closure's
+                # own name on the RHS — reading `batch_size` before assignment
+                # raised UnboundLocalError on EVERY auto-reflection and the
+                # except below swallowed it. Use a distinct local name.
+                bs = batch_size if batch_size is not None else agent.reflective.config.get("batch_size", 8)
+                if isinstance(bs, (list, tuple)):
+                    bs = int(random.uniform(bs[0], bs[1]))
+                records = agent.get_recent_episodic(user_id, count=bs,
                                                     profile=profile)
                 min_records = agent.reflective.config.get("min_records", 6)
                 if len(records) < min_records:
@@ -520,6 +528,16 @@ class MainMemoryAgent:
                 return domain_id
 
         # Phase 2: LLM semantic fallback (only when keyword match fails)
+        # F7 (v1.2.15 audit): this sync LLM call sat on the hot retrieve path
+        # — 60s timeout × 3 attempts ≈ 181s worst case per retrieval. Domain
+        # detection has a "general" fallback, so the LLM phase is opt-in via
+        # retrieval.llm_domain_detect (default off) and hard-bounded to 5s.
+        try:
+            llm_gate = self.cfg.get("retrieval", "llm_domain_detect", default=False)
+        except Exception:
+            llm_gate = False
+        if not llm_gate:
+            return self.cfg.get("domain", "default", default="general")
         # D4 fix: cache the LLM result per normalized text key so repeated
         # in-session retrievals with the same query don't synchronously call the
         # LLM on the hot retrieve path (blocking + token cost). The cache is
@@ -560,7 +578,9 @@ class MainMemoryAgent:
                 f"Domains:\n{domain_list}\n\n"
                 f"Text: {text[:300]}"
             )
-        result = llm.chat(prompt, temperature=0, max_tokens=20).strip()
+        # F7 (v1.2.15 audit): override the 60s config timeout — a domain
+        # detection must never block a retrieval for minutes.
+        result = llm.chat(prompt, temperature=0, max_tokens=20, timeout=5).strip()
         # L-5 fix: match domain IDs exactly (normalize punctuation/whitespace)
         # instead of a raw substring scan. Substring matching mis-triggers when
         # an ID is a prefix of another (e.g. "ai" matching "ai_ethics" output)
@@ -1007,7 +1027,11 @@ class MainMemoryAgent:
                         relevance=0.3, trust_score=0.4,
                     ))
 
-        if self.cfg.get_section("rl").get("gspo", {}).get("enabled", True):
+        # F4 (v1.2.15 audit): GSPO aggregation overwrites the five-factor RL
+        # scores with one geometric mean per cluster, so it must be opt-in —
+        # on by default it silently erased the RL weight learning results at
+        # the tail of every ranked list.
+        if self.cfg.get_section("rl").get("gspo", {}).get("enabled", False):
             scored = self._gspo_cluster(scored)
         return scored
 
@@ -1024,6 +1048,12 @@ class MainMemoryAgent:
             sid = ""
             if isinstance(mem.metadata, dict):
                 sid = mem.metadata.get("session_id", "") or mem.metadata.get("metadata", {}).get("session_id", "")
+            if not sid:
+                # F4b (v1.2.15 audit): an empty session_id merged every
+                # same-source record into ONE cluster, flattening all their
+                # individually-scored importances. No session scope → no
+                # cluster.
+                continue
             key = f"{mem.source}:{sid}"
             clusters.setdefault(key, []).append(mem)
         for key, members in clusters.items():
@@ -1178,8 +1208,13 @@ class MainMemoryAgent:
                 ("context", "context_memory", "session_id"),
             ]:
                 with self.db._lock:
+                    # F2 (v1.2.15 audit): `last_updated` exists only on
+                    # user_memory — referencing it on the four scanned tables
+                    # raised `no such column` on the first table and the whole
+                    # state-machine scan died in debug silence. _freshness()
+                    # already falls back last_access_at → created_at.
                     rows = self.db._conn.execute(
-                        f"SELECT {id_col} as rid, created_at, last_access_at, last_updated "
+                        f"SELECT {id_col} as rid, created_at, last_access_at "
                         f"FROM {table} ORDER BY created_at DESC LIMIT ?",
                         (limit,),
                     ).fetchall()
@@ -1199,7 +1234,9 @@ class MainMemoryAgent:
                     if mem_type == "knowledge":
                         self._migrate_cognitive_pos(r["rid"], freshness)
         except Exception as e:
-            logger.debug("Memory state update skipped: %s", e)
+            # F2 (v1.2.15 audit): data-loss path (zero lifecycle transitions);
+            # it must be observable, not debug-silent.
+            logger.warning("Memory state update skipped: %s", e)
 
     def _migrate_cognitive_pos(self, knowledge_id: str, freshness: float):
         """Migrate a knowledge entry's cognitive_pos by freshness.
@@ -1320,7 +1357,8 @@ class MainMemoryAgent:
               platform: str = None, title: str = None,
               project: str = "default", session_id: str = "",
               profile: str = "default", correction: bool = False,
-              tags: List[str] = None, origin_client: str = None) -> bool:
+              tags: List[str] = None, origin_client: str = None,
+              turn: int = 0) -> bool:
         """
         Store a task interaction and update all memory layers.
 
@@ -1477,8 +1515,12 @@ class MainMemoryAgent:
                     # unboundedly. Keying by a stable content hash (matching
                     # knowledge_agent.add_document's content-hash dedup) makes the
                     # same knowledge id collide on INSERT → UPDATE, restoring dedup.
+                    # F5 (v1.2.15 audit): the hash carries the tenant — a bare
+                    # content md5 let user B's identical insert UPDATE over
+                    # user A's row (user_id=excluded.user_id). The \x00
+                    # separator avoids user/content boundary ambiguity.
                     kb_id = "k:" + str(int(hashlib.md5(
-                        knowledge_content.encode("utf-8")).hexdigest(), 16) % (2**63 - 1))
+                        f"{user_id}\x00{knowledge_content}".encode("utf-8")).hexdigest(), 16) % (2**63 - 1))
                 exp_id = None
                 if exp_data:
                     # Deterministic id from summary hash — matches experience_agent._summary_index,
@@ -1582,11 +1624,14 @@ profile=profile, language=lang, experience_id=exp_id,
                         self.db.save_memory_state("knowledge", kb_id or task_pk, "active", reason=weight_reason, source="store")
 
                 # P2-1: Evolution detection — scan existing knowledge via Jaccard, classify relations
+                # F3b (v1.2.15 audit): the turn index rides through so the
+                # evolution row can be traced to the producing turn.
                 if knowledge_content and knowledge_content != "Auto-extracted knowledge":
                     self._detect_knowledge_evolution(knowledge_content, user_id, research_domain,
                                                      knowledge_id=kb_id or task_pk,
                                                      origin_agent=platform or "default",
-                                                     origin_session_id=session_id or "")
+                                                     origin_session_id=session_id or "",
+                                                     origin_turn=turn)
 
             # Store experience to in-memory agent (both persistence and non-persistence paths)
             if self._persistence_enabled:
@@ -2358,11 +2403,17 @@ profile=profile, language=lang, experience_id=exp_id,
                                                       domain=domain, top_k=50)
             best_sim, best_id, best_content = 0.0, None, ""
             for c in candidates:
+                # F3 (v1.2.15 audit): the freshly saved entry itself is always
+                # in the candidate set with Jaccard 1.0, so the old post-loop
+                # self-reference check (`best_id == knowledge_id`) made
+                # evolution detection a deterministic no-op. Exclude it inside
+                # the loop instead.
+                c_id = c.get("id")
+                if c_id == knowledge_id:
+                    continue
                 sim = self._jaccard_similarity(content[:500], (c.get("content", "") or "")[:500])
                 if sim > best_sim:
-                    best_sim, best_id, best_content = sim, c.get("id"), c.get("content", "")
-            if best_id == knowledge_id:
-                return  # self-reference — skip evolution detection
+                    best_sim, best_id, best_content = sim, c_id, c.get("content", "")
             # P-*: Core-term novelty gate — a sentence that mostly overlaps an old
             # one but carries a brand-new concept (high novelty) must not be
             # downgraded to replaces/enriches by the plain sentence-level Jaccard.

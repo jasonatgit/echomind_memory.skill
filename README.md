@@ -130,6 +130,7 @@ When a query involves the following *domain keywords* or related *semantics*, th
 
 | Version | Highlights |
 |:--------|:-----------|
+| v1.2.15 | *Deep-audit fixes: reactivated auto-reflection / lifecycle state machine / knowledge evolution (dead paths), tenant-scoped knowledge ids, per-session MCP client isolation + `/mcp` auth, GSPO opt-in, retrieve-path LLM gate (181s → 5s worst case).* |
 | v1.2.14 | *Source provenance: origin tracking (transport + client, MCP clientInfo inference), tag filters (caller tags + auto topic tags, OR/AND), provenance envelope, visible source lines, structured `echomind_query`.* |
 | v1.2.13 | *Deep-review hardening: tenant isolation, RL read concurrency, atomic reflection quota, unified scoring (freshness single lever, trust drives experience), config validation & security guards.* |
 | v1.2.12 | *Core-term novelty ratio, RL significance verification, code-block-safe chunking.* |

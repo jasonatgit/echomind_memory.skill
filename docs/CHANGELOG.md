@@ -1,5 +1,26 @@
 # EchoMind Changelog
 
+## v1.2.15 — Deep-Audit Fixes: Dead-Path Reactivation, Tenant Scoping & MCP Isolation (2026-09-21)
+
+External deep-audit round: four high-severity findings had left three advertised capabilities (auto-reflection, the lifecycle state machine, knowledge evolution detection) as dead code on the main paths — every finding was reproduced, fixed, and covered by regression/integration checks. Plus unified default-user identity and MCP client isolation.
+
+| Area | Change |
+|------|--------|
+| **Auto-reflection dead path** | `_trigger_auto_reflection._run` assigned to the closure's own `batch_size` on the RHS — an `UnboundLocalError` on EVERY auto-reflection, silently swallowed by the except → renamed to a distinct local (`bs`); every scheduled reflection now actually runs |
+| **Lifecycle state machine dead path** | The state scan's SELECT referenced `last_updated`, a column that exists only on `user_memory` — `no such column` on the first table killed the whole scan in debug silence (zero Active→Stale→Archived transitions ever) → column dropped (`_freshness` already falls back `last_access_at` → `created_at`) and the scan-failure path is now a warning, not debug |
+| **Knowledge evolution dead path** | `_detect_knowledge_evolution` ran AFTER the new entry was saved + mirrored, so the new entry itself was always in the candidate set with Jaccard 1.0 and the post-loop self-reference check (`best_id == knowledge_id`) made detection a deterministic no-op → the self entry is excluded inside the candidate loop |
+| **Evolution provenance** | `store()` / `POST /api/memory/store` / MCP `echomind_store` accept a `turn` index, threaded through to the evolution rows (`origin_turn` — previously always 0) |
+| **GSPO opt-in (behavior change)** | Cluster aggregation overwrote the five-factor RL scores with one geometric mean per cluster and defaulted ON → now opt-in (`rl.gspo.enabled`, default **false**), and an empty `session_id` no longer merges every same-source record into one cluster |
+| **Tenant-scoped knowledge ids** | `kb_id` was a bare content md5 — user B's identical insert UPDATEd over user A's row (`user_id=excluded.user_id`) → the hash now carries the tenant (`user_id \x00 content`), and the in-memory content-hash dedup (`knowledge_agent.add_document`, reload index) is scoped the same way |
+| **MCP identity isolation** | The HTTP `/mcp` endpoint serves many clients from ONE process, so the single module-global client identity let client B's calls be attributed to whichever client initialized last → HTTP connections key the captured identity by `Mcp-Session-Id` (or `X-Session-Id`), with `X-Client-Name` as a per-request override; the stdio gateway keeps the module global (one process per connection) |
+| **Hot-path LLM gate** | `_detect_research_domain`'s sync LLM fallback sat on the retrieve path — 60s timeout × 3 attempts ≈ 181s worst case per retrieval → opt-in via `retrieval.llm_domain_detect` (default **false**; keyword match + "general" fallback remain) and hard-bounded to 5s per call |
+| **MCP endpoint auth** | `POST/GET /mcp` were the only unauthenticated routes on a full-memory read/write surface → they now require the same `X-API-Key` as `/api/*` (still open when no key is configured, matching `verify_api_key`); the stdio→HTTP bridge already sends the key |
+| **Unified default_user identity** | Entrypoints that do not receive an explicit `user_id` now scope memories to the configured top-level `default_user` (open-source default `"default"`) instead of per-session ids or the shared `"cli"`: `mcp_common._default_user_id()` replaces six `"cli"`/`""` fallbacks, `hermes_provider` stops fragmenting one user's memory across per-session identities (10 such identities observed in a live DB), and `main.py` routes eight fallbacks through the same helper. `clientInfo` inference stays provenance-only (`origin_client`); identity and origin remain separate dimensions |
+
+**Migration:** none — no new tables or columns. Behavior notes: (1) `rl.gspo.enabled` defaults to false; set it true to restore cluster aggregation. (2) `retrieval.llm_domain_detect` defaults to false; set it true to re-enable the LLM semantic domain fallback. (3) Existing `k:` knowledge ids are NOT re-keyed — new-id inserts create one-time duplicates for previously-collided rows, cleanable manually. (4) MCP clients talking to a key-configured server must send `X-API-Key` on `/mcp` (stdio gateways need no change). Verified: 74 regression tests + targeted integration checks (state transitions, evolution rows with `origin_turn`, cross-user dedup, per-session MCP identity).
+
+---
+
 ## v1.2.14 — Source Provenance: Origin Tracking, Tag Filters & Structured Query (2026-09-19)
 
 Every memory record now carries a self-describing source envelope — **transport** (mcp/http/hermes/cli) + **origin client** (claude-code/opencode/...) + project + tags + captured time — and can be retrieved by any combination of those predicates, from any supported entrypoint.
