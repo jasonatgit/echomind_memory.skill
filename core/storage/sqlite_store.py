@@ -38,6 +38,13 @@ DB_PATH = DB_DIR / "memory.db"
 # MAX_ITEMS (5000) so a truncation here does not silently drop records the
 # in-memory store is expected to hold; memory for 5000 rows is bounded and
 # acceptable, and the previous 1000 caused silent, unrecoverable drift.
+#
+# P2-5 (v1.2.16 audit): a DB over _LOAD_LIMIT per type is still fully
+# queryable via query_memory / structured paths (they hit SQL directly); the
+# cap only bounds what is mirrored in RAM, so retrieval beyond the window is
+# served from the DB. A warning is logged when truncation happens. Bump the
+# constant (or make it configurable) only when in-memory agents must serve
+# >5000 records at once.
 _LOAD_LIMIT = 5000
 
 # Text columns that should never be None when loaded from DB
@@ -262,7 +269,15 @@ def with_retry_on_busy(max_retries=MAX_RETRIES):
                 try:
                     return func(self, *args, **kwargs)
                 except sqlite3.OperationalError as e:
-                    if "database is locked" not in str(e):
+                    # P2-4 (v1.2.16 audit): match on the SQLite error code, not
+                    # the English message string. "database is locked" covers
+                    # contention within a single connection, but an overloaded
+                    # table (or a busy_timeout expiry) surfaces as
+                    # "database table is locked: ..." / errno 5, which the
+                    # string check turned into a hard failure. errno 5 is
+                    # SQLITE_BUSY regardless of wording.
+                    if not (getattr(e, "sqlite_errorcode", None) == 5
+                            or "locked" in str(e)):
                         raise
                     last_exc = e
                     if attempt < max_retries - 1:
@@ -1370,8 +1385,14 @@ class SqliteStore:
             # legacy `platform` column, which query_memory reads for
             # reflections. No envelope is attached by design.
             ref = data.get("reflection", {})
+            # P1-2 (v1.2.16 audit): idempotent reflection write. The id is
+            # unique per reflection (native + fallback use uuid/time_ns()), and
+            # _process_reflection is the single writer, so a real collision is
+            # not expected — but if one ever occurs, INSERT OR IGNORE preserves
+            # the first (already-persisted) reflection instead of OR REPLACE
+            # silently wiping it with a replay of the same id.
             self._conn.execute(
-                """INSERT OR REPLACE INTO reflections
+                """INSERT OR IGNORE INTO reflections
                 (id, user_id, platform, source_episodic_ids,
                  key_insights, user_preferences, procedural_rules,
                  new_knowledge, importance_scores, forget_suggestions,
@@ -1572,10 +1593,36 @@ class SqliteStore:
         if date_to:
             where.append(f"date({captured_col}) <= date(?)")
             params.append(date_to)
+        # P1-1 (v1.2.16 audit): the SQL LIMIT previously applied BEFORE the
+        # Python-side tags filter, so a sparse tag (say 1 row tagged 'audit' in
+        # 150) was systematically missed whenever the newest `limit` rows didn't
+        # include it. Two changes make the filter lossless:
+        #   1. push a LIKE pre-filter down into SQL (json_each array-element
+        #      text, plus the raw JSON string) so only potentially-matching
+        #      rows are ever subject to the LIMIT — Python-side tags_match
+        #      still applies the exact case-insensitive OR/AND semantics;
+        #   2. keep a small safety multiplier for rows whose JSON string
+        #      escapes the tag (e.g. non-ASCII case variants that LOWER can't
+        #      fold), so no width is needed and the result set stays bounded.
+        if tags:
+            like_clauses = []
+            for t in tags or []:
+                if not isinstance(t, str) or not t.strip():
+                    continue
+                pat = f"%{t.strip()}%"
+                like_clauses.append(f"LOWER(tags) LIKE LOWER(?)")
+                like_clauses.append(
+                    "EXISTS (SELECT 1 FROM json_each(tags) "
+                    "WHERE LOWER(json_each.value) LIKE LOWER(?))")
+                params.extend([pat, pat])
+            if like_clauses:
+                where.append(f"({' OR '.join(like_clauses)})")
+        _TAG_FETCH_MULTIPLIER = 2
+        fetch_limit = max(limit, 1) * _TAG_FETCH_MULTIPLIER if tags else max(limit, 1)
         rows = self._conn.execute(
             f"SELECT * FROM {table} WHERE {' AND '.join(where)} "
             f"ORDER BY {captured_col} DESC LIMIT ?",
-            params + [limit],
+            params + [fetch_limit],
         ).fetchall()
         from core.provenance import tags_match
         results = []
@@ -1602,6 +1649,8 @@ class SqliteStore:
                 "created_at": rec.get(captured_col, ""),
                 "envelope": envelope,
             })
+            if len(results) >= limit:
+                break
         return results
 
     @_require_conn
@@ -1712,6 +1761,30 @@ class SqliteStore:
             pass
         return total
 
+    def _delete_context_archive(self, session_ids) -> int:
+        """Remove evicted context messages archived for the given sessions.
+
+        context_archive is keyed by session_id and indexed on it; deleting the
+        archived messages whenever the source context rows expire (or are
+        deleted) keeps the archive from accumulating ghost sessions (P1-4).
+        Best-effort like its peers.
+        """
+        ids = [i for i in session_ids if i]
+        if not ids:
+            return 0
+        total = 0
+        try:
+            for chunk in self._chunked(ids):
+                ph = ",".join("?" for _ in chunk)
+                cur = self._conn.execute(
+                    f"DELETE FROM context_archive WHERE session_id IN ({ph})",
+                    chunk,
+                )
+                total += cur.rowcount
+        except sqlite3.OperationalError:
+            pass
+        return total
+
     @with_retry_on_busy()
     @_require_conn
     def delete_memory(self, memory_type: str, memory_id: str) -> bool:
@@ -1774,7 +1847,15 @@ class SqliteStore:
         are removed by user_id.
         """
         results = {}
-        # `reflections` is the only memory table without a profile column.
+        # P1-3 (v1.2.16 audit): `reflections` is the only memory table without
+        # a profile column, so a profile-scoped delete previously fell through
+        # to an UNRESTRICTED user-wide delete — deleting every profile's
+        # reflections for a user at once. A profile-scoped delete now skips
+        # reflections (the table is inherently user-scoped); only an explicit
+        # user-wide delete (profile=None) touches them. This matches the
+        # per-profile isolation contract of every other table and of
+        # delete_memory, and is deliberately conservative: it never silently
+        # drops more than the caller asked for.
         _NO_PROFILE_TABLES = {"reflections"}
 
         def _ids(table: str, id_col: str = "id"):
@@ -1800,6 +1881,11 @@ class SqliteStore:
 
             # 2. Delete main tables.
             for key, table in self.MEMORY_TABLES.items():
+                if profile and table in _NO_PROFILE_TABLES:
+                    # P1-3: table has no profile column — skipping prevents an
+                    # unrestricted user-wide delete of every profile's rows.
+                    results[key] = 0
+                    continue
                 if profile and table not in _NO_PROFILE_TABLES:
                     cursor = self._conn.execute(
                         f"DELETE FROM {table} WHERE user_id=? AND profile=?",
@@ -1855,6 +1941,23 @@ class SqliteStore:
             "session_transcripts": "updated_at",
         }
         results = {}
+        # P1-4 (v1.2.16 audit): track which rows each delete actually removed so
+        # auxiliary tables (memory_states / knowledge_evolution, keyed by memory
+        # id with no user/profile column) can be cascaded here just as
+        # delete_memory() does. Previously delete_expired() only dropped the
+        # main rows, leaving orphan lifecycle rows and phantom state counts.
+        deleted_by_type: Dict[str, List[str]] = {}
+        id_col_for = {
+            "user_memory": "user_id",
+            "task_memory": "id",
+            "context_memory": "session_id",
+            "knowledge_memory": "id",
+            "research_papers": "id",
+            "experience_memory": "id",
+            "research_notes": "id",
+            "reflections": "id",
+            "session_transcripts": "session_id",
+        }
         with self._lock:
             for key, days in ttl_config.items():
                 if days <= 0:
@@ -1869,31 +1972,72 @@ class SqliteStore:
                     f"PRAGMA table_info({table})").fetchall()}
                 fallback = _FALLBACK_TS.get(table, "")
                 has_ts = fallback in cols
+                # P1-5 (v1.2.16 audit): compare via julianday() instead of a raw
+                # string '<' against datetime('now',...). The string compare on
+                # ISO-8601 timestamps ("2026-07-01T08:16:26...", written by older
+                # versions) is always GREATER than the space-separated SQLite
+                # format ("2026-08-17 12:37:02") because 'T'(0x54) > ' '(0x20),
+                # so TTL deletion never fired for ISO rows (verified against the
+                # real reflections/knowledge_memory data). julianday() parses
+                # both formats as instants and compares as real numbers.
+                def _ts_expr(col: str) -> str:
+                    return f"julianday({col})"
+
+                def _cutoff_expr() -> str:   # now - N days as a julian day
+                    return f"julianday(datetime('now', ?))"
+
                 if "last_access_at" in cols and has_ts:
-                    cursor = self._conn.execute(
-                        f"DELETE FROM {table} WHERE "
-                        f"(CASE WHEN last_access_at = '' THEN {fallback} ELSE last_access_at END) "
-                        f"< datetime('now', ?)",
-                        (f"-{days} days",),
-                    )
+                    where_sql = (
+                        f"(CASE WHEN last_access_at = '' THEN {_ts_expr(fallback)} "
+                        f"ELSE {_ts_expr('last_access_at')} END) < {_cutoff_expr()}")
                 elif "last_access_at" in cols:
-                    cursor = self._conn.execute(
-                        f"DELETE FROM {table} WHERE last_access_at != '' AND "
-                        f"last_access_at < datetime('now', ?)",
-                        (f"-{days} days",),
-                    )
+                    where_sql = (
+                        f"last_access_at != '' AND {_ts_expr('last_access_at')} < {_cutoff_expr()}")
                 elif has_ts:
-                    cursor = self._conn.execute(
-                        f"DELETE FROM {table} WHERE {fallback} < datetime('now', ?)",
-                        (f"-{days} days",),
-                    )
+                    where_sql = f"{_ts_expr(fallback)} < {_cutoff_expr()}"
                 else:
                     logger.warning(
                         "delete_expired: table %s has no last_access_at or "
                         "fallback timestamp column; skipping", table)
                     results[key] = 0
                     continue
+                # P1-4: collect the ids about to be removed so their lifecycle
+                # rows can be cascaded; id_col_for has no key for tables lacking
+                # a usable id column — fall back to no id collection there.
+                id_col = id_col_for.get(table)
+                expired_ids = []
+                if id_col:
+                    try:
+                        rows = self._conn.execute(
+                            f"SELECT {id_col} FROM {table} WHERE {where_sql}",
+                            (f"-{days} days",),
+                        ).fetchall()
+                        expired_ids = [r[0] for r in rows]
+                    except sqlite3.OperationalError:
+                        expired_ids = []
+                cursor = self._conn.execute(
+                    f"DELETE FROM {table} WHERE {where_sql}",
+                    (f"-{days} days",),
+                )
                 results[key] = cursor.rowcount
+                if id_col and expired_ids:
+                    deleted_by_type[table] = expired_ids
+
+            # P1-4: cascade lifecycle rows for every table we actually removed
+            # from. knowledge_evolution touches knowledge ids; memory_states
+            # keys by (memory_type, memory_id); context_archive keys by
+            # session_id (cleaned for expired context rows).
+            evolution_ids = deleted_by_type.get("knowledge_memory", [])
+            for table, ids in deleted_by_type.items():
+                mem_type = next(
+                    (k for k, t in self.MEMORY_TABLES.items() if t == table), None)
+                if mem_type:
+                    self._delete_memory_states(mem_type, ids)
+                if table == "context_memory":
+                    self._delete_context_archive(ids)
+            if evolution_ids:
+                self._delete_evolution_edges(evolution_ids)
+
             self._maybe_commit()
         return results
 

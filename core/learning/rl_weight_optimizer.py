@@ -435,8 +435,15 @@ class RLWeightOptimizer:
             # serialize it against concurrent retrieve/feedback threads.
             with self._lock:
                 self._update_weights(user_id=uid)
-            del self.feedback_buffers[uid]
-            self.feedback_buffer = self.feedback_buffers.setdefault(uid, [])
+                # P2-13 (v1.2.16 audit): the bucket swap must also happen
+                # inside the lock. Previously `del` ran after the lock
+                # released, so a concurrent thread that grabbed the bucket
+                # reference BEFORE the flush kept appending the drained list
+                # 'from the left' — its feedback was silently dropped by the
+                # flush that consumed the drained list. Moving the swap in-lock
+                # means every append lands in the list the next flush drains.
+                del self.feedback_buffers[uid]
+                self.feedback_buffer = self.feedback_buffers.setdefault(uid, [])
         if len(bucket) > self.max_buffer_size:
             bucket.pop(0)
 
@@ -459,6 +466,15 @@ class RLWeightOptimizer:
 
         total_reward = 0
         n = len(buffer)
+        # P2-14 (v1.2.16 audit): a flush with no buffered feedback used to
+        # divide by zero on the avg_reward history line. The production entry
+        # runs only when len(bucket) >= threshold, but direct callers (and a
+        # racing consumer) can invoke _update_weights with an empty buffer.
+        # Guard the no-op flush instead of crashing.
+        if n == 0:
+            if user_id is None or user_id == "default":
+                logger.debug("[RL] _update_weights with empty buffer — skipped")
+            return
 
         current_lr = self._get_lr()
         self.update_counter += 1

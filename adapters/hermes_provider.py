@@ -214,21 +214,26 @@ class EchomindMemoryProvider:
     def shutdown(self):
         """Hermes called on exit"""
         if self._agent:
-            pending = getattr(self._agent, "_pending_reflection", False)
-            if pending:
-                # C-M1/P14: scope to this session's profile and attribute the
-                # reflection to the hermes platform.
-                self._agent._trigger_auto_reflection(
-                    self._user_id, profile=self._profile, platform=PLATFORM)
-            # C-H1/P3: _trigger_auto_reflection spawns a daemon thread; wait for
-            # it to finish before disable_persistence() closes the DB, or the
-            # reflection is deterministically dropped (get_recent_episodic and
-            # save_reflection are both gated on _persistence_enabled). Timeout
-            # bounds the wait so a hung LLM call can't block exit forever.
-            t = getattr(self._agent, "_reflection_thread", None)
-            if t is not None and t.is_alive():
-                t.join(timeout=30)
-            self._agent.disable_persistence()
+            # P0-1/P1-13 (v1.2.16 audit): delegate to the unified shutdown —
+            # flush pending reflection to its recorded user+profile, join the
+            # in-flight thread bounded by the LLM retry budget, then disable
+            # persistence. The previous per-provider copy used a fixed
+            # join(timeout=30) which abandoned reflections when chat retries
+            # (3×60s) ran longer than 30s. If no pending flag was recorded
+            # (legacy path), give shutdown() a best-effort owner so a
+            # late-scheduled thread can still be attributed.
+            if not self._agent._pending_reflection:
+                self._agent._set_pending(
+                    self._user_id, getattr(self, "_profile", "default"))
+            try:
+                self._agent.shutdown()
+            except Exception:
+                logging.getLogger("MemoryAgent").exception(
+                    "EchoMind Memory shutdown failed")
+                try:
+                    self._agent.disable_persistence()
+                except Exception:
+                    pass
         logger.info("EchoMind Memory shutdown")
 
     def _sync_hermes_llm_config(self, **kwargs):

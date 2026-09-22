@@ -53,12 +53,26 @@ def verify_api_key(api_key: str = Depends(api_key_header)):
 async def lifespan(app: FastAPI):
     memory_agent.enable_persistence()
     yield
-    memory_agent.disable_persistence()
+    # P1-10 (v1.2.16 audit): the shutdown previously skipped the reflection
+    # thread entirely — disable_persistence() closed the DB under a possibly
+    # still-running auto-reflection thread, silently dropping the reflection
+    # on every server restart. MainMemoryAgent.shutdown() flushes pending
+    # reflections, joins the thread (bounded by the LLM retry budget), then
+    # disables persistence — same contract as main.py's atexit and
+    # hermes_provider.shutdown.
+    try:
+        memory_agent.shutdown()
+    except Exception:
+        logger.exception("lifespan: shutdown failed")
+        try:
+            memory_agent.disable_persistence()
+        except Exception:
+            pass
 
 
 app = FastAPI(title="EchoMind Memory", version=get_echomind_version(), lifespan=lifespan)
 cors_origins = cfg.get("cors_origins", ["http://localhost:8005"])
-app.add_middleware(CORSMiddleware, allow_origins=cors_origins, allow_methods=["GET", "POST"], allow_headers=["Content-Type", "X-API-Key"])
+app.add_middleware(CORSMiddleware, allow_origins=cors_origins, allow_methods=["GET", "POST", "DELETE"], allow_headers=["Content-Type", "X-API-Key"])
 
 
 # ── Health ──
@@ -447,7 +461,10 @@ def api_delete_memory(memory_type: str, memory_id: str, auth=Depends(verify_api_
     if memory_type not in memory_agent.db.MEMORY_TABLES:
         raise HTTPException(status_code=400, detail=f"Unknown memory type: {memory_type}")
     try:
-        deleted = memory_agent.db.delete_memory(memory_type, memory_id)
+        # P2-8 (v1.2.16 audit): route through the agent layer so the deleted
+        # record is ALSO dropped from the in-memory fast path (the old direct
+        # db.delete_memory left it retrievable until restart).
+        deleted = memory_agent.delete_memory(memory_type, memory_id)
         return {"status": "deleted" if deleted else "not_found", "memory_type": memory_type, "memory_id": memory_id}
     except Exception as e:
         logger.error(f"api_delete_memory: {e}", exc_info=True)
@@ -535,8 +552,10 @@ def api_autoreflection(auth=Depends(verify_api_key)):
         score, summary = memory_agent.compute_autoreflection_score()
         return {"status": "ok", "score": score, "summary": summary}
     except Exception as e:
+        # P2-10 (v1.2.16 audit): never echo internal exception text to clients —
+        # it can leak paths/SQL through the API. Log verbosely, return generic.
         logger.error(f"api_autoreflection: {e}", exc_info=True)
-        return JSONResponse(status_code=500, content={"status": "error", "detail": str(e)})
+        return JSONResponse(status_code=500, content={"status": "error", "detail": "Autoreflection assessment failed"})
 
 @app.get("/api/memory/archive")
 def api_memory_archive(user_id: str = "default", profile: str = "default",
@@ -546,8 +565,9 @@ def api_memory_archive(user_id: str = "default", profile: str = "default",
         md = memory_agent.export_memory_to_markdown(user_id, profile)
         return {"md": md, "user_id": user_id, "profile": profile}
     except Exception as e:
+        # P2-10 (v1.2.16 audit): generic error to clients; internal text logged.
         logger.error(f"api_memory_archive: {e}", exc_info=True)
-        return JSONResponse(status_code=500, content={"status": "error", "detail": str(e)})
+        return JSONResponse(status_code=500, content={"status": "error", "detail": "Archive export failed"})
 
 @app.post("/api/memory/{memory_type}/{memory_id}/state")
 def api_set_memory_state(memory_type: str, memory_id: str,

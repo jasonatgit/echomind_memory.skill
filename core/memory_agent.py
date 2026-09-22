@@ -107,6 +107,12 @@ class MainMemoryAgent:
         self._persistence_enabled = False
         self._store_count: dict = {}
         self._pending_reflection = False
+        # P0-1 (v1.2.16 audit): which user/profile a pending reflection belongs
+        # to. The Hermes store path sets these so the atexit/HTTP shutdown can
+        # flush to the correct account (previously only a bare bool existed and
+        # main.py's atexit call could not supply the required user_id).
+        self._pending_reflection_user = ""
+        self._pending_reflection_profile = ""
         self._store_lock = threading.Lock()
         self._research_kw_cache = None
         # Core-term novelty cache: {(user_id, domain, limit) -> set[str]}
@@ -384,6 +390,10 @@ class MainMemoryAgent:
         # core-term novelty cache kept stale pre-reload data).
         self.__dict__.pop("_llm_domain_cache", None)
         self._core_term_cache = {}
+        # P2-12 (v1.2.16 audit): the research agent's domain list is loaded
+        # lazily from ConfigManager and likewise must drop its derived cache on
+        # reload, or an edited domain_keywords never takes effect until restart.
+        self.research_agent._domain_cache = None
         try:
             self.reflective.config = self.cfg.get_section("reflection")
             # P2.6: the daily limit is derived from reflection.max_daily and
@@ -398,6 +408,68 @@ class MainMemoryAgent:
         # P3.1: the dead threading.Event is gone — the boolean plus the store
         # lock is the actual synchronization (the Event was never set/wait-ed).
         self._pending_reflection = False
+        self._pending_reflection_user = ""
+        self._pending_reflection_profile = ""
+
+    def _set_pending(self, user_id: str, profile: str = None):
+        """Mark a pending auto-reflection and the user/profile it belongs to.
+
+        P0-1 (v1.2.16 audit): a bare boolean told the exit path only that a
+        reflection was due, not for whom — so main.py's atexit call could not
+        supply the required user_id and every Hermes pending reflection was
+        dropped at exit. Storing the owner makes shutdown() flush to the right
+        user+profile instead of the configured default.
+        """
+        self._pending_reflection = True
+        self._pending_reflection_user = user_id
+        self._pending_reflection_profile = profile or ""
+
+    def shutdown(self, join_timeout: float = None):
+        """Gracefully flush pending reflections and close persistence.
+
+        P0-1/P1-10/P1-13 (v1.2.16 audit): the exit/cleanup paths were split
+        across three entry points (main.py atexit, http_api lifespan, and
+        hermes_provider.shutdown) with inconsistent behavior — main.py omitted
+        the required user_id (TypeError dropped silently), http_api never
+        joined the reflection thread, and every join bound was 30s against an
+        LLM budget of up to ~3×60s retries. All three now call this one method:
+        flush the pending reflection to its recorded owner, join the in-flight
+        thread (bounded by the LLM budget), THEN disable persistence so the
+        DB is never closed under a still-running reflection thread.
+        """
+        if not self._persistence_enabled:
+            return
+        try:
+            if self._pending_reflection:
+                owner = self._pending_reflection_user or ""
+                profile = self._pending_reflection_profile or None
+                self._trigger_auto_reflection(
+                    owner, profile=profile, platform="hermes")
+        except Exception:
+            logger.exception("shutdown: failed to schedule pending reflection")
+        t = getattr(self, "_reflection_thread", None)
+        if t is not None and t.is_alive():
+            # P1-13 (v1.2.16 audit): bound the wait by the LLM budget instead of
+            # a fixed 30s — chat() retries up to 3×timeout (default 60s), so a
+            # slow endpoint legitimately needs longer; give it the full budget
+            # plus a little slack rather than abandoning a due reflection.
+            if join_timeout is None:
+                llm_timeout = 60
+                try:
+                    llm_timeout = int(self.cfg.get("llm", "timeout", default=60) or 60)
+                except Exception:
+                    pass
+                join_timeout = max(30, 3 * llm_timeout + 5)
+            t.join(timeout=join_timeout)
+            if t.is_alive():
+                logger.warning(
+                    "shutdown: reflection thread still alive after %.0fs — "
+                    "reflection may be dropped", join_timeout)
+        try:
+            self.disable_persistence()
+        except Exception:
+            logger.exception("shutdown: disable_persistence failed")
+        self.clear_pending_reflection()
 
     def _trigger_auto_reflection(self, user_id: str, profile: str = None,
                                  platform: str = "http",
@@ -423,12 +495,19 @@ class MainMemoryAgent:
                 # own name on the RHS — reading `batch_size` before assignment
                 # raised UnboundLocalError on EVERY auto-reflection and the
                 # except below swallowed it. Use a distinct local name.
+                min_records = agent.reflective.config.get("min_records", 6)
                 bs = batch_size if batch_size is not None else agent.reflective.config.get("batch_size", 8)
                 if isinstance(bs, (list, tuple)):
                     bs = int(random.uniform(bs[0], bs[1]))
+                # P1-9 (v1.2.16 audit): clamp the drawn batch to min_records.
+                # The shipped batch_size range ([5,12] in echomind_config and
+                # FALLBACK_CONFIG) can roll 5 while min_records=6, and a
+                # sub-min batch made len(records) < min_records deterministically
+                # drop the scheduled reflection. Clamping here covers the count
+                # path, the correction path and any direct caller at once.
+                bs = max(int(bs), min_records)
                 records = agent.get_recent_episodic(user_id, count=bs,
                                                     profile=profile)
-                min_records = agent.reflective.config.get("min_records", 6)
                 if len(records) < min_records:
                     return
                 from .llm_client import get_llm_client
@@ -1208,31 +1287,46 @@ class MainMemoryAgent:
                 ("context", "context_memory", "session_id"),
             ]:
                 with self.db._lock:
-                    # F2 (v1.2.15 audit): `last_updated` exists only on
-                    # user_memory — referencing it on the four scanned tables
-                    # raised `no such column` on the first table and the whole
-                    # state-machine scan died in debug silence. _freshness()
-                    # already falls back last_access_at → created_at.
+                    # P1-7 (v1.2.16 audit): the scan was NOT user-scoped — a
+                    # single retrieve_for_task/store on any account swept EVERY
+                    # user's most recent rows and let one user's activity push
+                    # another user's idle memories into stale/archived. Every
+                    # one of the four tables carries user_id, so the scan is now
+                    # bound to the acting user (multi-tenant hygiene).
                     rows = self.db._conn.execute(
                         f"SELECT {id_col} as rid, created_at, last_access_at "
-                        f"FROM {table} ORDER BY created_at DESC LIMIT ?",
-                        (limit,),
+                        f"FROM {table} WHERE user_id = ? "
+                        f"ORDER BY created_at DESC LIMIT ?",
+                        (user_id, limit),
                     ).fetchall()
-                for r in rows:
-                    current = self.db.get_memory_state(mem_type, r["rid"])
-                    if current in ("archived", "superseded"):
-                        continue
-                    freshness = self._freshness(dict(r))
-                    if freshness < self._FRESHNESS_ARCHIVE_THRESHOLD:
-                        if current in ("active", "stale"):
-                            self.db.save_memory_state(mem_type, r["rid"], "archived",
-                                                       "freshness_decay", source="system")
-                    elif freshness < self._FRESHNESS_STALE_THRESHOLD and current == "active":
-                        self.db.save_memory_state(mem_type, r["rid"], "stale",
-                                                  "freshness_decay", source="system")
-                    # cognitive_pos lifecycle (knowledge only)
+                # Batch the lifecycle transitions in one transaction (P1-7):
+                # previously each transition committed independently and the
+                # whole scan was a cross-user side effect on the hot path.
+                # save_memory_state's _maybe_commit no-ops inside a batch, so
+                # the COMMITs collapse to a single one on exit.
+                with self.db.transaction():
+                    for r in rows:
+                        current = self.db.get_memory_state(mem_type, r["rid"])
+                        if current in ("archived", "superseded"):
+                            continue
+                        freshness = self._freshness(dict(r))
+                        if freshness < self._FRESHNESS_ARCHIVE_THRESHOLD:
+                            if current in ("active", "stale"):
+                                self.db.save_memory_state(mem_type, r["rid"], "archived",
+                                                           "freshness_decay", source="system")
+                        elif freshness < self._FRESHNESS_STALE_THRESHOLD and current == "active":
+                            self.db.save_memory_state(mem_type, r["rid"], "stale",
+                                                      "freshness_decay", source="system")
+                    # cognitive_pos lifecycle (knowledge only) — outside the
+                    # batch: _migrate_cognitive_pos commits itself, and a
+                    # nested private commit inside the batch would end the
+                    # outer transaction prematurely.
                     if mem_type == "knowledge":
-                        self._migrate_cognitive_pos(r["rid"], freshness)
+                        for r in rows:
+                            current = self.db.get_memory_state(mem_type, r["rid"])
+                            if current in ("archived", "superseded"):
+                                continue
+                            self._migrate_cognitive_pos(r["rid"], self._freshness(dict(r)))
         except Exception as e:
             # F2 (v1.2.15 audit): data-loss path (zero lifecycle transitions);
             # it must be observable, not debug-silent.
@@ -1265,6 +1359,64 @@ class MainMemoryAgent:
         entry = self.knowledge_agent.store.get(knowledge_id)
         if entry is not None:
             entry.metadata["cognitive_pos"] = new_pos
+
+    def store_reflection_knowledge(self, user_id: str, items: List[str]):
+        """Persist reflection-derived knowledge that _process_reflection merged.
+
+        P1-12 (v1.2.16 audit): reflection key_insights / new_knowledge /
+        procedural_rules were added to the in-memory knowledge store only, so
+        they vanished on restart and (worse) those without an explicit owner
+        landed in the shared "default" tenant. Here they are written to SQLite
+        with the SAME tenant-scoped content hash that store() uses for regular
+        knowledge (kb_id = md5(f"{user_id}\\x00{content}")), which keeps the
+        reflections table as the event log and knowledge_memory as the durable
+        store — deduped across repeated reflections.
+        """
+        if not self._persistence_enabled or not self.db or not items:
+            return
+        import hashlib
+        now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        try:
+            with self.db._lock:
+                for item in items:
+                    if not isinstance(item, str) or not item.strip():
+                        continue
+                    content = item.strip()
+                    h = int(hashlib.md5(
+                        f"{user_id}\x00{content}".encode("utf-8")).hexdigest(), 16) % (2**63 - 1)
+                    kb_id = f"k:{h}"
+                    # Metro metadata mirrors store()'s knowledge path; reflection
+                    # knowledge is reasoned and currently-relevant by source.
+                    metadata = {
+                        "source": "reflection",
+                        "user_id": user_id,
+                        "domain": "insight",
+                        "epistemic_mode": self._resolve_epistemic("reflection"),
+                        "cognitive_pos": "nok",
+                        "created_at": now_str,
+                        "last_updated": now_str,
+                    }
+                    self.db._conn.execute(
+                        "INSERT INTO knowledge_memory "
+                        "(id, domain, content, metadata, user_id, project, "
+                        " profile, session_id, tags, created_at, updated_at, "
+                        " access_count, entry_type, language, last_access_at, "
+                        " origin_client, origin_platform) "
+                        "VALUES (?,?,?,?,?, 'default', 'default', '', '[]', "
+                        " ?, ?, 1, 'fact', '', ?, 'reflection', 'reflection') "
+                        "ON CONFLICT(id) DO UPDATE SET "
+                        " access_count = access_count + 1, "
+                        " last_access_at = excluded.last_access_at",
+                        (kb_id, "insight", content,
+                         json.dumps(metadata, ensure_ascii=False),
+                         user_id, now_str, now_str, now_str),
+                    )
+            self.db._maybe_commit()
+            # The new knowledge changes the known-corpus used by
+            # _detect_knowledge_evolution novelty checks; drop the cache.
+            self._invalidate_core_term_cache()
+        except Exception:
+            logger.exception("store_reflection_knowledge failed")
 
     def _update_last_access_for_retrieved(self, retrieved: Dict[str, Any], user_id: str):
         """Update last_access_at timestamps for records that were just retrieved."""
@@ -1318,6 +1470,25 @@ class MainMemoryAgent:
                     # dict is the actual data source for search_papers).
                     if source == "research" and rec_id in self.research_agent.papers:
                         self.research_agent.papers[rec_id].last_access_at = now
+                    # P1-6 (v1.2.16 audit): refresh the in-RAM freshness source for
+                    # the OTHER sources too. knowledge_agent.search() and
+                    # experience_agent.find_similar_tasks() both read
+                    # entry.last_access_at from their in-memory models, and the
+                    # state-machine (DB) independently archives/stales rows by
+                    # last_access_at — if the RAM copy never advances, _freshness()
+                    # keeps scoring archived memory at ~1.0 and it is never
+                    # filtered out of retrieval. Update knowledge (str) and
+                    # experience (datetime) alongside the DB write; task/context
+                    # rows are ephemeral and unaffected by the gap.
+                    if source == "knowledge":
+                        entry = self.knowledge_agent.store.get(rec_id)
+                        if entry is not None:
+                            entry.last_access_at = now
+                    elif source == "experience":
+                        entry = self.experience_agent.store.get(rec_id)
+                        if entry is not None:
+                            # ExperienceEntry.last_access_at is Optional[datetime]
+                            entry.last_access_at = datetime.now(timezone.utc)
                 except Exception:
                     pass
         try:
@@ -1528,6 +1699,38 @@ class MainMemoryAgent:
                     exp_hash = int(hashlib.md5(f"{user_id}:{exp_data['summary']}".encode()).hexdigest(), 16)
                     exp_id = f"exp:{user_id}:{exp_hash % (2**63-1)}"
 
+                # P1-11 (v1.2.16 audit): mirror the NEW knowledge into the
+                # in-memory agent BEFORE the DB write transaction. Previously
+                # the mirror ran AFTER the transaction committed, so a failure
+                # in any later step (symbolic states, evolution) left the DB
+                # with the row but the in-memory knowledge store without it —
+                # read-memory/write-DB divergence until a restart. Doing the
+                # pure in-memory mirror first keeps memory and DB describing
+                # the same reality: if the DB transaction then fails and rolls
+                # back, the in-memory row simply reflects that the task
+                # happened (and reload from DB pulls them together).
+                if kb_id and kb_metadata and not existing_kb:
+                    self.knowledge_agent.add_document(knowledge_content, {
+                        "source": "task", "task_id": task_id,
+                        "user_id": user_id, "domain": research_domain,
+                        "project": project, "session_id": session_id or "",
+                        "session_title": session_title, "tags": task_tags,
+                        "category": research_domain,
+                        # P8/A-M1 fix: tag in-memory knowledge with its profile
+                        # so knowledge_agent.search's profile filter isn't a
+                        # silent no-op until a reload. This mirrors the DB row,
+                        # closing the cross-profile in-memory leak.
+                        "profile": profile,
+                        # v1.2.14 provenance: keep the in-memory row consistent
+                        # with the DB origin_* columns and the metadata envelope.
+                        "origin_platform": origin_platform,
+                        "origin_client": origin_client_norm,
+                        "envelope": envelope,
+                    }, entry_id=kb_id)
+                    # P-*: invalidate known-term cache after write so a new term is
+                    # not re-misclassified as novel next time.
+                    self._invalidate_core_term_cache(user_id)
+
                 with self.db.transaction():
                     # B-1 fix: persist the RAW nested preferences (the
                     # {"_default": {...}, "<platform>": {...}} shape maintained
@@ -1586,29 +1789,9 @@ profile=profile, language=lang, experience_id=exp_id,
                                      origin_platform=origin_platform, origin_client=origin_client_norm,
                                      metadata={"envelope": envelope})
 
-                # Mirror the committed knowledge into the in-memory agent (kept
-                # next to the transaction so failure handling is unchanged).
-                if kb_id and kb_metadata and not existing_kb:
-                    self.knowledge_agent.add_document(knowledge_content, {
-                        "source": "task", "task_id": task_id,
-                        "user_id": user_id, "domain": research_domain,
-                        "project": project, "session_id": session_id or "",
-                        "session_title": session_title, "tags": task_tags,
-                        "category": research_domain,
-                        # P8/A-M1 fix: tag in-memory knowledge with its profile
-                        # so knowledge_agent.search's profile filter isn't a
-                        # silent no-op until a reload. This mirrors the DB row,
-                        # closing the cross-profile in-memory leak.
-                        "profile": profile,
-                        # v1.2.14 provenance: keep the in-memory row consistent
-                        # with the DB origin_* columns and the metadata envelope.
-                        "origin_platform": origin_platform,
-                        "origin_client": origin_client_norm,
-                        "envelope": envelope,
-                    }, entry_id=kb_id)
-                    # P-*: invalidate known-term cache after write so a new term is
-                    # not re-misclassified as novel next time.
-                    self._invalidate_core_term_cache(user_id)
+                # P1-11 (v1.2.16 audit): the in-memory knowledge mirror moved
+                # BEFORE the write transaction (see above) so memory and DB
+                # describe the same reality even when the transaction fails.
 
                 # P1-1: Initialize memory states for newly created records
                 if self._persistence_enabled:
@@ -1670,13 +1853,18 @@ profile=profile, language=lang, experience_id=exp_id,
             # O-3/O-4: Correction triggers immediate reflection; use adaptive batch otherwise
             if correction:
                 logger.info("Correction detected — triggering immediate reflection")
-                self._pending_reflection = True
+                self._set_pending(user_id, profile)
                 with self._store_lock:
                     self._store_count.pop(user_id, None)
                 if platform != "hermes":
-                    self._trigger_auto_reflection(user_id)
+                    # P1-8 (v1.2.16 audit): pass the DRAWN batch so _run does not
+                    # re-draw and re-introduce the small-under-min_records drop
+                    # that M2/P11 already fixed on the count path (1677 previously
+                    # called without batch_size, restoring the second draw).
+                    self._trigger_auto_reflection(
+                        user_id, batch_size=self._get_adaptive_batch(user_id))
             else:
-                self._store_handle_reflection_trigger(user_id, platform)
+                self._store_handle_reflection_trigger(user_id, platform, profile)
             self._update_memory_states(user_id)
             return True
 
@@ -1708,6 +1896,49 @@ profile=profile, language=lang, experience_id=exp_id,
             origin_platform=origin_platform, origin_client=origin_client,
             date_from=date_from, date_to=date_to, limit=limit)
 
+    def delete_memory(self, memory_type: str, memory_id: str) -> bool:
+        """Delete one memory record AND drop it from the in-memory agents.
+
+        P2-8 (v1.2.16 audit): the HTTP DELETE endpoint previously called
+        db.delete_memory directly, so the DB row vanished while the in-memory
+        store (the fast retrieval path) kept returning the deleted record
+        until a restart. This method mirrors the deletion into whichever agent
+        holds that id before/after the DB delete; the auxiliary tables are
+        cascaded by db.delete_memory as before.
+
+        In-memory keys: knowledge/experience store by id; context by
+        session_id; task by the stable store key (which save_task also uses).
+        Best-effort — a missing in-memory entry is not an error.
+        """
+        if memory_type == "knowledge":
+            entry = self.knowledge_agent.store.get(memory_id)
+            if entry is not None:
+                self.knowledge_agent._remove_from_index(memory_id)
+                ch = self.knowledge_agent._tenant_content_hash(
+                    self.knowledge_agent._entry_uid(entry), entry.content)
+                self.knowledge_agent._content_index.pop(ch, None)
+                self.knowledge_agent.store.pop(memory_id, None)
+        elif memory_type == "experience":
+            entry = self.experience_agent.store.get(memory_id)
+            if entry is not None:
+                uid = getattr(entry, "user_id", "default")
+                self.experience_agent._user_index.get(uid, set()).discard(memory_id)
+                if entry.summary:
+                    h = int(hashlib.md5(
+                        f"{uid}:{entry.summary}".encode()).hexdigest(), 16) % (2**63 - 1)
+                    if self.experience_agent._summary_index.get(h) == memory_id:
+                        self.experience_agent._summary_index.pop(h, None)
+                self.experience_agent.store.pop(memory_id, None)
+        elif memory_type == "context":
+            self.context_agent._sessions.pop(memory_id, None)
+        elif memory_type == "task":
+            self.task_agent.store.pop(memory_id, None)
+        # DB delete + auxiliary cascade (also the source of truth for the
+        # return value).
+        if not self._persistence_enabled:
+            return False
+        return self.db.delete_memory(memory_type, memory_id)
+
     def get_recent_episodic(self, user_id: str, count: int = 8,
                             profile: str = None) -> List[Dict]:
         """Get recent N episodic records for ReflectiveAgent"""
@@ -1715,7 +1946,8 @@ profile=profile, language=lang, experience_id=exp_id,
             return self.db.get_recent_episodic(user_id, count, profile=profile)
         return []
 
-    def _store_handle_reflection_trigger(self, user_id: str, platform: str):
+    def _store_handle_reflection_trigger(self, user_id: str, platform: str,
+                                        profile: str = None):
         """Extracted from store(): handle reflection scheduling with adaptive batch."""
         if not self._persistence_enabled:
             return
@@ -1725,7 +1957,11 @@ profile=profile, language=lang, experience_id=exp_id,
             if self._store_count[user_id] >= batch_size:
                 del self._store_count[user_id]
                 if platform == "hermes":
-                    self._pending_reflection = True
+                    # P0-1 (v1.2.16 audit): record the owner alongside the flag
+                    # so the Hermes shutdown/atexit flush can target the right
+                    # user+profile (previously only a bare bool was set and
+                    # main.py:202 could not supply the required user_id).
+                    self._set_pending(user_id, profile)
                 else:
                     # M2/P11: pass the DRAWN batch_size so _trigger_auto_reflection
                     # does not re-draw and possibly under-fetch below min_records.

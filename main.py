@@ -15,12 +15,37 @@ import os
 import atexit
 import logging
 
+logger = logging.getLogger("EchoMind.main")
+
 _pkg_dir = os.path.dirname(os.path.abspath(__file__))
 if _pkg_dir not in sys.path:
     sys.path.insert(0, _pkg_dir)
 
 # Module-level agent cache: keyed by resolved config_path
 _call_agents: dict = {}
+# P2-17 (v1.2.16 audit): each unique config_path builds an agent that holds an
+# open SQLite connection; a long-running Hermes REPL that rotates config paths
+# would grow this dict without bound. Keep the most recent _CALL_AGENTS_MAX
+# agents; on eviction disable persistence (closes the DB connection) so the
+# memory no longer leaks file descriptors.
+_CALL_AGENTS_MAX = 8
+
+
+def _evict_call_agent(path: str):
+    """Shut down one cached (agent, cfg) pair and drop it from the cache.
+
+    Runs while the pair is still inserted, then removes it. Used when the
+    cache exceeds _CALL_AGENTS_MAX and on process exit.
+    """
+    pair = _call_agents.get(path)
+    if pair is None:
+        return
+    agent, _cfg = pair
+    try:
+        agent.shutdown()
+    except Exception:
+        logger.exception("evict call-agent for %s failed", path)
+    _call_agents.pop(path, None)
 
 
 def _default_user_id() -> str:
@@ -59,6 +84,11 @@ def call(tool_name: str, config_path: str = None, **kwargs):
         agent.enable_persistence()
         cfg.on_reload(agent.refresh_config)
         _call_agents[resolved] = (agent, cfg)
+        # P2-17: bound the cache — evict the OLDEST entry (dict preserves
+        # insertion order) beyond _CALL_AGENTS_MAX. Only one eviction per new
+        # insert keeps the bound tight while never degrading the hot path.
+        if len(_call_agents) > _CALL_AGENTS_MAX:
+            _evict_call_agent(next(iter(_call_agents)))
     else:
         agent, cfg = _call_agents[resolved]
         if not agent.is_persistence_enabled():
@@ -190,22 +220,17 @@ def call(tool_name: str, config_path: str = None, **kwargs):
 def _cleanup_call_agents():
     """Gracefully close all cached agent connections on process exit.
 
-    P2.8: mirrors hermes_provider.shutdown — pending reflections are flushed
-    and the reflection thread joined BEFORE disable_persistence() closes the
-    DB, or the reflection is deterministically dropped (get_recent_episodic
-    and save_reflection are both gated on _persistence_enabled).
+    P2.8 / P0-1 (v1.2.16 audit): delegates to MainMemoryAgent.shutdown() —
+    pending reflections are flushed to their recorded owner and the reflection
+    thread joined BEFORE disable_persistence() closes the DB, or the
+    reflection is deterministically dropped (get_recent_episodic and
+    save_reflection are both gated on _persistence_enabled). Previously this
+    called _trigger_auto_reflection(platform="hermes") without the required
+    user_id, which raised TypeError and was swallowed — every Hermes pending
+    reflection was lost at exit.
     """
-    for path, (agent, _) in list(_call_agents.items()):
-        try:
-            pending = getattr(agent, "_pending_reflection", False)
-            if pending:
-                agent._trigger_auto_reflection(platform="hermes")
-            t = getattr(agent, "_reflection_thread", None)
-            if t is not None and t.is_alive():
-                t.join(timeout=30)
-            agent.disable_persistence()
-        except Exception:
-            pass
+    for path in list(_call_agents.keys()):
+        _evict_call_agent(path)
 
 
 def init(config_path: str = None):

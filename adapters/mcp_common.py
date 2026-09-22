@@ -87,6 +87,22 @@ def _resolve_project(explicit: str) -> str:
     return explicit or "default"
 
 
+def _safe_int(value, default: int = 0) -> int:
+    """Coerce an MCP argument to int without raising.
+
+    P2-15 (v1.2.16 audit): client arguments arrive as JSON values; a float
+    like ``3.9`` truncates to 3, a numeric string ``"4"`` parses, and anything
+    else (``"abc"``, ``None``) falls back to ``default`` instead of bubbling a
+    ValueError out of the tool handler with a stack-trace leak.
+    """
+    if isinstance(value, bool):
+        return default
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def _resolve_api_key() -> str:
     """Resolve the API key using the SAME precedence as the HTTP server.
 
@@ -399,7 +415,10 @@ def handle_tool_call(name, arguments, session_id: str = "",
             # v1.2.14: origin provenance (explicit arg > captured clientInfo).
             "origin_client": _default_origin_client(arguments, session_id, header_client),
             # F3b (v1.2.15 audit): turn index recorded on evolution rows.
-            "turn": int(arguments.get("turn", 0) or 0),
+            # P2-15 (v1.2.16 audit): guard the coercion — a non-numeric `turn`
+            # string from a client used to raise ValueError and leak
+            # "-32603 ... path/to/store" back to the caller; safe-coerce to 0.
+            "turn": _safe_int(arguments.get("turn", 0), default=0),
         })
         if "error" in result:
             return {"content": [{"type": "text", "text": f"Error storing: {result['error']}"}]}

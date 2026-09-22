@@ -1,5 +1,30 @@
 # EchoMind 更新日志
 
+## v1.2.16 — 全数据链路审计修复：退出收口、租户隔离、TTL 与完整性 (2026-09-22)
+
+本轮精读记忆全数据链路（存储 → 读取 → 删除 → 适配），跨各层修复 32 项缺陷——反思/退出路径收敛为单一契约，知识/标签/状态机检索做到租户正确，删除级联一致，配置与工具调用的加固消除了静默失败模式。
+
+| 领域 | 改动 |
+|------|------|
+| **退出收口统一（P0-1、P1-8/9/10/13）** | `MainMemoryAgent.shutdown()` 成为四个入口（main.py atexit、hermes_provider、http lifespan、call-agent 淘汰）的统一退出契约：先冲刷待反思到其记录的 user+profile，再 join 反思线程（上限按 LLM 重试预算 `max(30, 3×timeout+5)` 秒），最后禁持久化。修复：atexit 路径调用 `_trigger_auto_reflection(platform=...)` 缺必填 `user_id` → 每次退出必抛 TypeError 且被静默吞掉；HTTP lifespan 从不 join 反思线程（每次重启丢反思）；固定 30s join 在慢 LLM 重试超 30s 时放弃反思。`store()` 的 correction 与计数路径都改为传入已抽取 batch（`_get_adaptive_batch`），`_run` 把 `batch_size` 钳制到 ≥ `min_records`——batch 与 min_records 相矛盾（约 1/8 反思触发被确定性丢弃）在单一改点闭环 |
+| **稀疏标签检索（P1-1）** | tags 此前在 `LIMIT ?` 之后才做 Python 侧过滤——查询稀疏 tag（150 行中只有 1 行）返回空。现把 LIKE 预过滤（`json_each` 元素 + 原始 JSON 串，大小写不敏感）下推进 SQL、在 LIMIT 之前执行，fetch 乘数降至 2× |
+| **reflections profile 级删除（P1-3）** | `delete_user_memories` 按 profile 删除时不再误删该用户所有 profile 的 reflections（该表无 profile 列）；profile 级删除跳过它，user 级删除保持全量语义 |
+| **删除级联一致性（P1-4、P2-8）** | `delete_expired` 现在与 `delete_memory` 一样级联清理 `memory_states`、`knowledge_evolution`、`context_archive`；HTTP 单条 DELETE 改走 `MainMemoryAgent.delete_memory`，同时从内存快路径（knowledge `_content_index`/store、experience 索引、context/task store）移除——此前删除的记录在重启前仍可被检索 |
+| **TTL 时间戳对齐（P1-5、P2-18）** | `delete_expired` 以字符串比较 ISO 与 SQLite 时间戳，与截止日同日的存量 ISO 行被永久漏删；现两侧统一用 `julianday()`，两格式解析一致正确 |
+| **状态机扫描隔离（P1-7）** | `_update_memory_states` 的 SELECT 加 `WHERE user_id = ?`（四表）+ `ORDER BY created_at DESC LIMIT ?`——任一用户的检索不再可能归档另一用户的记忆；状态转换批量放入单事务（`_migrate_cognitive_pos` 外置，因其私有 commit） |
+| **内存写前镜像（P1-11）** | `store()` 原先在 DB 提交之后才把 knowledge/experience 镜像进内存——内存侧后置失败会留下"DB 已写、内存未镜像"半态并返回 False；现内存镜像在 DB 事务之前完成，副作用链原子化 |
+| **反思知识持久化与租户隔离（P1-12、P2-7）** | 反思产出的 insights/knowledge/rules 此前 metadata 缺 `user_id` → 落入共享 "default" 桶（任意用户可检索）且从不持久化、重启即失。`_merge_semantic`/`_procedural` 现携带真实 `user_id`，`store_reflection_knowledge` 以租户维度 id（`md5(user \x00 content)`、metadata 含 user/domain/epistemic 模式）幂等落库（ON CONFLICT: access_count+1），并失效 core-term 缓存 |
+| **反思幂等（P1-2）** | `save_reflection` 由 `INSERT OR REPLACE`（同 id 重放整行覆盖）改为 `INSERT OR IGNORE`——首次写入获胜 |
+| **检索后内存 last_access 回写（P1-6）** | knowledge/experience 内存条目在检索时同步刷新 `last_access_at` 与 DB 一致——归档状态与 freshness 打分共用一个来源 |
+| **配置一致性与打包（P2-9、P2-16）** | `get_section()` 对 schema 无效键改以 `FALLBACK_CONFIG` 值替补（此前 pop → 键 MISSING，与 `get()` 不一致）；bundled keywords/language YAML 先走 `importlib.resources`、再走源码树——pip 安装的 wheel 不再静默退化为空 domain 检测（`package_data` 已含） |
+| **RL 并发与守卫（P2-13、P2-14）** | `add_feedback` 的桶交换（`del`+`setdefault`）移入锁内；`_update_weights` 增加 n==0 守卫（直接调空桶不崩 ZeroDivision） |
+| **MCP/HTTP 加固（P2-15、P2-10、P2-11、P2-17）** | `turn` 用 `_safe_int` 解析（`"abc"` 不再泄漏 ValueError）；autoreflection/archive 错误响应返回通用 `detail`（不再泄漏路径/SQL）；CORS 允许 DELETE；`main.py` call-agent 缓存上限为 8 并优雅关闭淘汰 |
+| **reload 缓存失效（P2-12）** | `refresh_config` 与其它派生缓存一并清空 `research_agent._domain_cache` |
+
+**迁移：** 无——无新表或新列。行为说明：(1) 反思知识现持久化且租户隔离；此前仅驻留内存的 insights 不做回填。(2) 状态机转换不再跨用户边界。(3) profile 级删除不影响其他 profile 的 reflections。验证：每项均配套 E2E/回归检查——稀疏标签、profile 删除、TTL 级联、内存删除、跨用户状态扫描、重启持久化、半写回滚、RL 桶交换、bundled YAML 加载、配置回退语义、HTTP 错误不透传。
+
+---
+
 ## v1.2.15 — 深度审计修复：死路径复活、租户隔离与 MCP 串号修复 (2026-09-21)
 
 外部深度审计轮次：四项高危发现曾使三大宣传能力（自动反思、生命周期状态机、知识进化检测）在主路径上成为死代码——全部发现均已复现、修复并通过回归/集成验证。另含默认用户身份统一与 MCP 客户端串号修复。

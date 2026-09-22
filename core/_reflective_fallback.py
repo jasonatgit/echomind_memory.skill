@@ -236,12 +236,28 @@ def _process_reflection(
     if memory_agent is not None:
         knowledge_agent = getattr(memory_agent, "knowledge_agent", None)
         if knowledge_agent is not None:
-            _merge_semantic(output, knowledge_agent)
-            _merge_procedural(output, knowledge_agent)
+            # P1-12 (v1.2.16 audit): pass user_id so reflection knowledge lands
+            # in the user's own tenant, not the shared "default" bucket.
+            _merge_semantic(output, knowledge_agent, user_id)
+            _merge_procedural(output, knowledge_agent, user_id)
         user_agent = getattr(memory_agent, "user_agent", None)
         if user_agent is not None:
             _merge_user_preferences(output, user_id, platform, user_agent)
         _update_rl_weights(output, memory_agent)
+        # P1-12: persist the reflection-derived knowledge to SQLite so it
+        # survives restart. _merge_semantic/_merge_procedural only updated the
+        # in-memory store; without this the insights vanished on reload and
+        # could never be retrieved after a restart.
+        try:
+            persist = getattr(memory_agent, "store_reflection_knowledge", None)
+            if persist is not None:
+                items = list(output.get("key_insights") or []) + \
+                        list(output.get("new_knowledge") or []) + \
+                        list(output.get("procedural_rules") or [])
+                if items:
+                    persist(user_id, items)
+        except Exception as e:
+            logger.warning(f"Failed to persist reflection knowledge: {e}")
 
     # Persist a reflection record (gated by the persistence flag).
     import time as _time
@@ -301,42 +317,48 @@ def _prepare_reflection_context(records):
     return prompt
 
 
-def _merge_semantic(output, knowledge_agent):
+def _merge_semantic(output, knowledge_agent, user_id=None):
     """P1-A: write reflection insights/new knowledge back to the knowledge store.
 
     Consumes the output dict schema (output.key_insights / output.new_knowledge).
     Guarded per item so a bad entry never aborts the whole merge.
+
+    P1-12 (v1.2.16 audit): carries ``user_id`` into each item's metadata so the
+    entries are NOT dropped into the shared "default" bucket — a reflection for
+    user A used to be retrievable by every user (knowledge_agent.search treats
+    "default" as globally shared). Persistent persistence is handled by
+    memory_agent.store_reflection_knowledge, which calls back with the items.
     """
     if not isinstance(output, dict):
         return
     for insight in output.get("key_insights") or []:
         try:
-            knowledge_agent.add_document(
-                content=insight,
-                metadata={"domain": "insight", "source": "reflection"},
-            )
+            meta = {"domain": "insight", "source": "reflection"}
+            if user_id:
+                meta["user_id"] = user_id
+            knowledge_agent.add_document(content=insight, metadata=meta)
         except Exception as e:
             logger.warning(f"Failed to store reflection insight: {e}")
     for item in output.get("new_knowledge") or []:
         try:
-            knowledge_agent.add_document(
-                content=item,
-                metadata={"domain": "knowledge", "source": "reflection"},
-            )
+            meta = {"domain": "knowledge", "source": "reflection"}
+            if user_id:
+                meta["user_id"] = user_id
+            knowledge_agent.add_document(content=item, metadata=meta)
         except Exception as e:
             logger.warning(f"Failed to store reflection knowledge: {e}")
 
 
-def _merge_procedural(output, knowledge_agent):
+def _merge_procedural(output, knowledge_agent, user_id=None):
     """P1-A: write reflection procedural rules back to the knowledge store."""
     if not isinstance(output, dict):
         return
     for rule in output.get("procedural_rules") or []:
         try:
-            knowledge_agent.add_document(
-                content=rule,
-                metadata={"domain": "procedural", "source": "reflection"},
-            )
+            meta = {"domain": "procedural", "source": "reflection"}
+            if user_id:
+                meta["user_id"] = user_id
+            knowledge_agent.add_document(content=rule, metadata=meta)
         except Exception as e:
             logger.warning(f"Failed to store reflection rule: {e}")
 

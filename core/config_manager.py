@@ -38,20 +38,45 @@ def _try_load_ext_params() -> dict:
         return {}
 
 
+def _load_bundled_yaml(resource_name: str) -> object:
+    """Load a bundled YAML resource, from the packaged wheel OR the source tree.
+
+    P2-16 (v1.2.16 audit): the old loader resolved ``../<resource>`` relative
+    to core/config_manager.py, which works in a source checkout but silently
+    falls back to an empty config once the package is pip-installed (the YAMLs
+    live outside site-packages). Try ``importlib.resources`` inside the ``core``
+    package first (packaged data), then the repo-root path next to the package
+    (source clone). Returns the parsed value, or None on any failure.
+    """
+    import importlib.resources
+    try:
+        # Wheel / editable-install layout: the YAMLs ship inside core/.
+        ref = importlib.resources.files("core").joinpath(resource_name)
+        if ref.is_file():
+            with ref.open("r", encoding="utf-8") as f:
+                return yaml.safe_load(f)
+    except Exception:
+        logger.debug("Bundled %s not found as package resource", resource_name)
+    try:
+        # Source-clone layout: the YAMLs sit at the repo root, a level above core/.
+        _root = os.path.normpath(os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), ".."))
+        _path = os.path.join(_root, resource_name)
+        if os.path.isfile(_path):
+            with open(_path, "r", encoding="utf-8") as f:
+                return yaml.safe_load(f)
+    except Exception:
+        pass
+    logger.debug("Failed to load bundled %s, using defaults", resource_name)
+    return None
+
+
 def _load_bundled_keywords() -> dict:
     """Load domain keywords from the bundled domain_keywords.yaml.
     Returns empty dict on any failure — domain detection proceeds gracefully.
     """
-    try:
-        _here = os.path.dirname(os.path.abspath(__file__))
-        _kw_path = os.path.join(_here, "..", "domain_keywords.yaml")
-        with open(os.path.normpath(_kw_path), "r", encoding="utf-8") as f:
-            data = yaml.safe_load(f)
-        if isinstance(data, dict):
-            return data
-    except Exception:
-        logger.debug("Failed to load bundled domain keywords, using defaults")
-    return {}
+    data = _load_bundled_yaml("domain_keywords.yaml")
+    return data if isinstance(data, dict) else {}
 
 
 def _load_bundled_language_profiles() -> dict:
@@ -59,16 +84,8 @@ def _load_bundled_language_profiles() -> dict:
     This file is tracked in git and distributed to all users.
     Returns empty dict on any failure — language detection degrades gracefully.
     """
-    try:
-        _here = os.path.dirname(os.path.abspath(__file__))
-        _lp_path = os.path.join(_here, "..", "language_profiles.yaml")
-        with open(os.path.normpath(_lp_path), "r", encoding="utf-8") as f:
-            data = yaml.safe_load(f)
-        if isinstance(data, dict):
-            return data
-    except Exception:
-        logger.debug("Failed to load bundled language profiles, using defaults")
-    return {}
+    data = _load_bundled_yaml("language_profiles.yaml")
+    return data if isinstance(data, dict) else {}
 
 FALLBACK_CONFIG = {
     # Identity fallback (v1.2.14 usage-path fix): when an entrypoint does
@@ -322,6 +339,19 @@ class ConfigManager:
                 runtime[parts[1]] = kv
         if runtime:
             _deep_update(base, runtime)
+        # P2-9 (v1.2.16 audit): drop schema-invalid keys from the merged
+        # section and substitute the FALLBACK default in their place, so
+        # get_section() agrees with get() (which already returns the fallback
+        # for such keys). Removing them outright would leave the key MISSING —
+        # callers using sec.get(k) would see None instead of the fallback.
+        for section_key in getattr(self, "_invalid_keys", ()):
+            sec, key = section_key.split(".", 1)
+            if sec == section:
+                fb_sec = FALLBACK_CONFIG.get(sec, {})
+                if isinstance(fb_sec, dict) and key in fb_sec:
+                    base[key] = copy.deepcopy(fb_sec[key])
+                else:
+                    base.pop(key, None)
         return base
 
     def set_runtime(self, key_path: str, value: Any):
