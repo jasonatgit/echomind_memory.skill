@@ -1552,6 +1552,29 @@ class SqliteStore:
         "reflection": ("reflections", "created_at", "key_insights", "id"),
     }
 
+    def _table_columns(self, table: str) -> set:
+        """Cached column-name set for a table (P0-1 v1.2.17 review).
+
+        The memory tables do NOT share one schema (reflections has no profile
+        column, several tables have no tags/origin columns). Query predicates
+        must be gated on the real columns or they raise OperationalError, which
+        query_memory() treats as "skip this table" — silently dropping whole
+        memory types. Uses PRAGMA table_info, cached per (connection, table).
+        """
+        cache = getattr(self, "_column_cache", None)
+        if cache is None:
+            cache = self._column_cache = {}
+        if table in cache:
+            return cache[table]
+        try:
+            rows = self._conn.execute(
+                f"PRAGMA table_info({table})").fetchall()
+            cols = {r[1] for r in rows}
+        except sqlite3.Error:
+            cols = set()
+        cache[table] = cols
+        return cols
+
     def _query_rows(self, type_name: str, table: str, captured_col: str,
                     content_col: str, id_col: str,
                     user_id: str, profile: str, project: str,
@@ -1565,18 +1588,25 @@ class SqliteStore:
         origin filters use the origin_* columns; the legacy `platform` column
         answers transport queries on context/reflections.
         """
+        cols = self._table_columns(table)
         where = ["user_id = ?"]
         params: list = [user_id]
-        if profile:
+        # P0-1 (v1.2.17 review): reflections has no profile column and several
+        # tables (context_transcripts, research_papers, reflections) have no
+        # tags column. Referencing a missing column raised OperationalError,
+        # which query_memory swallowed as "skip this table" — so tagged queries
+        # silently dropped whole memory types. Gate every optional predicate on
+        # the table's actual columns instead of assuming a uniform schema.
+        if profile and "profile" in cols:
             where.append("profile = ?")
             params.append(profile)
         if project:
             where.append("project = ?")
             params.append(project)
         # Transport: origin_platform where it exists, legacy platform elsewhere.
-        transport_col = "origin_platform" if table not in (
-            "context_memory", "reflections") else "platform"
-        if origin_platform:
+        # (P0-1 v1.2.17: also gate on the column actually existing.)
+        transport_col = "origin_platform" if "origin_platform" in cols else "platform"
+        if origin_platform and transport_col in cols:
             # Observation fix (v1.2.14 review): rows whose transport is the
             # migration-era 'default' placeholder (or empty) count as
             # "no origin" and pass any transport filter, consistent with the
@@ -1584,7 +1614,7 @@ class SqliteStore:
             where.append(
                 f"({transport_col} = ? OR {transport_col} = '' OR {transport_col} = 'default')")
             params.append(origin_platform)
-        if origin_client:
+        if origin_client and "origin_client" in cols:
             where.append("origin_client = ?")
             params.append(origin_client)
         if date_from:
@@ -1593,32 +1623,46 @@ class SqliteStore:
         if date_to:
             where.append(f"date({captured_col}) <= date(?)")
             params.append(date_to)
-        # P1-1 (v1.2.16 audit): the SQL LIMIT previously applied BEFORE the
-        # Python-side tags filter, so a sparse tag (say 1 row tagged 'audit' in
-        # 150) was systematically missed whenever the newest `limit` rows didn't
-        # include it. Two changes make the filter lossless:
-        #   1. push a LIKE pre-filter down into SQL (json_each array-element
-        #      text, plus the raw JSON string) so only potentially-matching
-        #      rows are ever subject to the LIMIT — Python-side tags_match
-        #      still applies the exact case-insensitive OR/AND semantics;
-        #   2. keep a small safety multiplier for rows whose JSON string
-        #      escapes the tag (e.g. non-ASCII case variants that LOWER can't
-        #      fold), so no width is needed and the result set stays bounded.
-        if tags:
-            like_clauses = []
-            for t in tags or []:
-                if not isinstance(t, str) or not t.strip():
-                    continue
-                pat = f"%{t.strip()}%"
-                like_clauses.append(f"LOWER(tags) LIKE LOWER(?)")
-                like_clauses.append(
-                    "EXISTS (SELECT 1 FROM json_each(tags) "
-                    "WHERE LOWER(json_each.value) LIKE LOWER(?))")
-                params.extend([pat, pat])
-            if like_clauses:
-                where.append(f"({' OR '.join(like_clauses)})")
+        # P1-1 (v1.2.16 audit) + P0-1/P1-5 (v1.2.17 review): the SQL LIMIT
+        # previously applied BEFORE the Python-side tags filter, so a sparse tag
+        # (say 1 row tagged 'audit' in 150) was systematically missed whenever
+        # the newest `limit` rows didn't include it. The predicate is now pushed
+        # into SQL, but ONLY for tables that actually own a tags column, and the
+        # json_each call is guarded by json_valid so a legacy non-JSON value
+        # cannot abort the whole table. AND semantics are expressed exactly in
+        # SQL (one EXISTS per tag) so the LIMIT window can never starve them.
+        has_tags_col = "tags" in cols
+        if tags and has_tags_col:
+            _tag_vals = [t.strip() for t in tags or []
+                         if isinstance(t, str) and t.strip()]
+            if _tag_vals:
+                if tags_match_all:
+                    # Every tag must be present → AND of per-tag EXISTS.
+                    for t in _tag_vals:
+                        where.append(
+                            "(CASE WHEN json_valid(tags) THEN EXISTS ("
+                            "SELECT 1 FROM json_each(tags) "
+                            "WHERE LOWER(json_each.value) = LOWER(?)) ELSE 0 END)")
+                        params.append(t)
+                else:
+                    # Any tag present → OR across tags; a tag matches either the
+                    # raw JSON string or one array element.
+                    or_parts = []
+                    for t in _tag_vals:
+                        or_parts.append(
+                            "(LOWER(tags) LIKE LOWER(?) OR "
+                            "(CASE WHEN json_valid(tags) THEN EXISTS ("
+                            "SELECT 1 FROM json_each(tags) "
+                            "WHERE LOWER(json_each.value) LIKE LOWER(?)) ELSE 0 END))")
+                        pat = f"%{t}%"
+                        params.extend([pat, pat])
+                    where.append(f"({' OR '.join(or_parts)})")
         _TAG_FETCH_MULTIPLIER = 2
-        fetch_limit = max(limit, 1) * _TAG_FETCH_MULTIPLIER if tags else max(limit, 1)
+        # Exact SQL pushdown means no starvation; the small multiplier only
+        # absorbs rows whose JSON string escapes a LIKE (rare). Keep a floor so
+        # limit=1 still gets a usable window.
+        fetch_limit = (max(limit, 1) * _TAG_FETCH_MULTIPLIER
+                       if (tags and has_tags_col) else max(limit, 1))
         rows = self._conn.execute(
             f"SELECT * FROM {table} WHERE {' AND '.join(where)} "
             f"ORDER BY {captured_col} DESC LIMIT ?",
@@ -1903,6 +1947,12 @@ class SqliteStore:
                 removed_states += self._delete_memory_states(mtype, ids)
             results["memory_states"] = removed_states
             results["knowledge_evolution"] = self._delete_evolution_edges(knowledge_ids)
+            # P2-4 (v1.2.17 review): the context rows are gone but their
+            # evicted-message archive was left behind (a ghost session the user
+            # believes they erased). Cascade it, mirroring delete_expired.
+            ctx_ids = state_ids.get("context", [])
+            if ctx_ids:
+                results["context_archive"] = self._delete_context_archive(ctx_ids)
             try:
                 cur = self._conn.execute(
                     "DELETE FROM hit_history WHERE user_id=?", (user_id,))
@@ -1980,21 +2030,36 @@ class SqliteStore:
                 # so TTL deletion never fired for ISO rows (verified against the
                 # real reflections/knowledge_memory data). julianday() parses
                 # both formats as instants and compares as real numbers.
-                def _ts_expr(col: str) -> str:
-                    return f"julianday({col})"
-
+                #
+                # P1-6 (v1.2.17 review): julianday() returns NULL for a value it
+                # cannot parse (empty string, "not-a-date", truncated garbage),
+                # and `NULL < x` is NULL — never true — so such rows were never
+                # deleted, leaking forever. Treat an unparseable timestamp as
+                # expired: `_expired(expr)` is true when the value is missing OR
+                # dates before the cutoff.
                 def _cutoff_expr() -> str:   # now - N days as a julian day
-                    return f"julianday(datetime('now', ?))"
+                    # P1-6 (v1.2.17 review): the numbered placeholder ?1 lets a
+                    # single bound "-N days" serve every branch of the CASE
+                    # below — plain `?` would require one binding per occurrence,
+                    # and the two _expired() calls would raise
+                    # ProgrammingError("Incorrect number of bindings").
+                    return "julianday(datetime('now', ?1))"
+
+                def _expired(expr: str) -> str:
+                    j = f"julianday({expr})"
+                    return f"({j} IS NULL OR {j} < {_cutoff_expr()})"
 
                 if "last_access_at" in cols and has_ts:
                     where_sql = (
-                        f"(CASE WHEN last_access_at = '' THEN {_ts_expr(fallback)} "
-                        f"ELSE {_ts_expr('last_access_at')} END) < {_cutoff_expr()}")
+                        f"(CASE WHEN last_access_at = '' THEN "
+                        f"{_expired(fallback)} "
+                        f"ELSE {_expired('last_access_at')} END)")
                 elif "last_access_at" in cols:
-                    where_sql = (
-                        f"last_access_at != '' AND {_ts_expr('last_access_at')} < {_cutoff_expr()}")
+                    # A blank last_access_at with no fallback column: treat the
+                    # row as expired rather than keeping it forever.
+                    where_sql = f"(last_access_at = '' OR {_expired('last_access_at')})"
                 elif has_ts:
-                    where_sql = f"{_ts_expr(fallback)} < {_cutoff_expr()}"
+                    where_sql = _expired(fallback)
                 else:
                     logger.warning(
                         "delete_expired: table %s has no last_access_at or "
@@ -2034,7 +2099,26 @@ class SqliteStore:
                 if mem_type:
                     self._delete_memory_states(mem_type, ids)
                 if table == "context_memory":
-                    self._delete_context_archive(ids)
+                    # P1-3 (v1.2.17 review): context_archive holds EVICTED
+                    # messages for a session; the expired ids are context_memory
+                    # rows. Deleting the archive whenever ANY row of a session
+                    # expired wiped the archive of sessions that still have live
+                    # rows (multiple context rows share one session_id). Only
+                    # purge the archive for sessions with NO remaining
+                    # context_memory row — i.e. fully gone.
+                    live = set()
+                    try:
+                        for chunk in self._chunked(ids):
+                            ph = ",".join("?" for _ in chunk)
+                            live.update(
+                                r[0] for r in self._conn.execute(
+                                    f"SELECT DISTINCT session_id FROM context_memory "
+                                    f"WHERE session_id IN ({ph})", chunk).fetchall())
+                    except sqlite3.OperationalError:
+                        live = set(ids)   # err conservative: keep the archive
+                    gone = [i for i in ids if i not in live]
+                    if gone:
+                        self._delete_context_archive(gone)
             if evolution_ids:
                 self._delete_evolution_edges(evolution_ids)
 

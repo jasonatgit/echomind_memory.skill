@@ -14,6 +14,7 @@ import sys
 import os
 import atexit
 import logging
+import time
 
 logger = logging.getLogger("EchoMind.main")
 
@@ -29,23 +30,61 @@ _call_agents: dict = {}
 # agents; on eviction disable persistence (closes the DB connection) so the
 # memory no longer leaks file descriptors.
 _CALL_AGENTS_MAX = 8
+# P2-5 (v1.2.17 review): agents removed by a capacity eviction while a call may
+# still be using them. They are closed at process exit rather than immediately.
+_tagged_for_reclaim: set = set()
+_reclaim_pool: list = []
 
 
-def _evict_call_agent(path: str):
+def _evict_call_agent(path: str, tagged: bool = True,
+                      join_timeout: float = None):
     """Shut down one cached (agent, cfg) pair and drop it from the cache.
 
     Runs while the pair is still inserted, then removes it. Used when the
     cache exceeds _CALL_AGENTS_MAX and on process exit.
+
+    P2-5 (v1.2.17 review): eviction previously called ``agent.shutdown()``
+    unconditionally — but the evicted agent may still be mid-call on another
+    thread (``call()`` hands the agent out of the dict and uses it after
+    releasing the GIL in SQLite), so a capacity eviction could yank the DB out
+    from under a live request. Capacity eviction now only *tags* the victim for
+    reclamation: the pair is dropped from the cache, and the agent's own next
+    use (or process exit) closes it. ``tagged=False`` from the atexit path
+    still shuts down immediately — at exit no further calls can arrive.
     """
     pair = _call_agents.get(path)
     if pair is None:
         return
     agent, _cfg = pair
+    if tagged:
+        # P2-5: mark for reclamation instead of closing a possibly in-use agent.
+        _tagged_for_reclaim.add(id(agent))
+        _reclaim_pool.append(agent)
+        _call_agents.pop(path, None)
+        return
     try:
-        agent.shutdown()
+        agent.shutdown(join_timeout=join_timeout)
     except Exception:
         logger.exception("evict call-agent for %s failed", path)
     _call_agents.pop(path, None)
+
+
+def _reclaim_tagged_agents():
+    """Close agents that were tagged for reclamation by a capacity eviction.
+
+    Called on process exit, after the live cache has been shut down. An agent
+    that a concurrent call re-fetched is not in the cache any more, so there is
+    nothing to race with here.
+    """
+    while _reclaim_pool:
+        agent = _reclaim_pool.pop()
+        if id(agent) not in _tagged_for_reclaim:
+            continue
+        _tagged_for_reclaim.discard(id(agent))
+        try:
+            agent.shutdown()
+        except Exception:
+            logger.exception("reclaim tagged call-agent failed")
 
 
 def _default_user_id() -> str:
@@ -228,9 +267,21 @@ def _cleanup_call_agents():
     called _trigger_auto_reflection(platform="hermes") without the required
     user_id, which raised TypeError and was swallowed — every Hermes pending
     reflection was lost at exit.
+
+    P2-6 (v1.2.17 review): shutdown() waits up to its own LLM budget (3×timeout
+    + slack, 185s by default). Joining up to 8 cached agents *serially* could
+    block process exit for ~25 minutes. atexit runs with no user watching and
+    an interpreter that is already tearing down, so the whole sweep is now
+    bounded by one shared deadline: each agent gets whatever budget is left,
+    and the remainder are closed without waiting (their pending reflection is
+    still scheduled synchronously inside shutdown(), so only the join is cut).
     """
+    _atexit_total_budget = 30.0
+    deadline = time.monotonic() + _atexit_total_budget
     for path in list(_call_agents.keys()):
-        _evict_call_agent(path)
+        remaining = deadline - time.monotonic()
+        _evict_call_agent(path, tagged=False, join_timeout=max(0.0, remaining))
+    _reclaim_tagged_agents()
 
 
 def init(config_path: str = None):

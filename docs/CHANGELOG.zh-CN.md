@@ -1,5 +1,26 @@
 # EchoMind 更新日志
 
+## v1.2.17 — Review 复核与驱逐/退出加固 (2026-09-23)
+
+对 v1.2.16 基线的后续复核轮。所有已实施的修复均对照真实 SQLite 引擎重验（15 项发现共 48 断言 + store/retrieve/query/delete 全链路冒烟，全部通过）；复核过程中浮出两个潜在数据完整性缺陷并已修复，剩下两项资源管理类发现也已落地。
+
+| 领域 | 改动 |
+|------|------|
+| **TTL 绑定数缺陷（P1-6 续）** | `delete_expired` 的 `_expired()` 展开成含 **两个** `julianday(datetime('now', ?))` 的 CASE 表达式，但语句只绑定了一个 "-N days" 参数——凡同时具备 `last_access_at` 与 fallback 时间戳列的表（knowledge/experience/task）一旦有行超龄即抛 `ProgrammingError`。占位符改为编号 `?1`，单次绑定即可服务所有分支 |
+| **Schema 门控查询（P0-1）** | `_query_rows` 以 `PRAGMA table_info` 门控 profile/project/origin/tags 谓词——此前带 tag 或 profile 的 `query_memory` 会在缺列的表（reflections 无 profile/tags，部分表无 origin_*）上静默跳过整个记忆类型。已验：带 tag 的全类型查询不再跳过任何表 |
+| **稀疏标签预过滤复核（P1-1）** | 150 行仅 1 行带 `#audit` 的夹具：OR/AND/大小写/无 tags/全类型全部精确命中（json_valid 守护使遗留非 JSON tags 不会破坏 json_each） |
+| **驱逐改延迟回收（P2-5）** | `main.py` call-agent 容量驱逐不再急切调用 `agent.shutdown()`——被逐 agent 可能正在其他线程中被调用；容量驱逐只把 agent 标记待回收，atexit 扫描在不可能再有调用竞态时才关闭。已验：被逐 agent 的 DB 在进程退出前保持打开、退出时被关闭 |
+| **atexit join 整体预算（P2-6）** | `_cleanup_call_agents` 现在在**单一 30s 共享截止线**内清扫缓存 agent（每个 agent 分得剩余预算），而不是逐个 join（最多 8 agent × 每个至多 185s）。已验：8 个慢 agent 在 30.00s 内完成；传递给各 agent 的预算按预期递减 |
+| **配置回退一致性复核（P0-2、P2-9）** | 隔离配置下：合法的 `batch_size: [7]` 在 `get()` 与 `get_section()` 均读 `[7]`；非法的 `max_daily: -3` 两侧都回退 `[5, 20]`；对同一 key 的运行时覆盖在两侧都生效——两条 API 不再可能读出不同结果 |
+| **反思 batch 钳制复核（P1-9、P1-8）** | `_run` 把已抽取 batch 钳制到 `>= min_records`——已验证确定性 `batch_size=5` 抽取产出 `get_recent_episodic(count=6)`，到期反思不会因 sub-min_records 抓取而丢弃。correction 路径传入具体 batch |
+| **跨用户状态隔离复核（P1-7）** | 用户 A 的一次 `retrieve_for_task` 不再触碰用户 B 的 memory_states |
+| **删除路径复核（P1-2/3/4、P2-8）** | 反思重放幂等（首写胜出）；按 profile 的 `delete_user_memories` 保留其他 profile 的行并级联该 profile 的 context_archive；`delete_expired` 级联 memory_states/evolution/archive 同时保留新鲜行 |
+| **反思 knowledge 持久化复核（P1-12）** | `store_reflection_knowledge` 写入租户隔离（`user_id`、`domain=insight`、`origin_client=reflection`）且**重启后仍在**的行，并失效 core-term 缓存（P2-12 重置也一并验证） |
+
+**Migration:** 无。行为说明：(1) 容量驱逐原先立即关闭 DB——现改为推迟到进程退出，避免被逐 agent 的并发调用撞上已关闭连接；内存在进程退出时回收。(2) v1.2.16 中 aged knowledge/experience/task 行在 `delete_expired` 上会抛的 `ProgrammingError` 已消除——部署中在日志见过此类错误的现已修复。
+
+---
+
 ## v1.2.16 — 全数据链路审计修复：退出收口、租户隔离、TTL 与完整性 (2026-09-22)
 
 本轮精读记忆全数据链路（存储 → 读取 → 删除 → 适配），跨各层修复 32 项缺陷——反思/退出路径收敛为单一契约，知识/标签/状态机检索做到租户正确，删除级联一致，配置与工具调用的加固消除了静默失败模式。

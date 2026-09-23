@@ -12,6 +12,9 @@ include plugin.yaml
 include skill.yaml
 include SKILL.md
 include domain_keywords.yaml
+include language_profiles.yaml
+include core/domain_keywords.yaml
+include core/language_profiles.yaml
 include echomind_config.yaml
 include config.example.yaml
 include requirements.txt

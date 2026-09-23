@@ -39,18 +39,19 @@ def _try_load_ext_params() -> dict:
 
 
 def _load_bundled_yaml(resource_name: str) -> object:
-    """Load a bundled YAML resource, from the packaged wheel OR the source tree.
+    """Load a bundled YAML resource next to this module.
 
-    P2-16 (v1.2.16 audit): the old loader resolved ``../<resource>`` relative
-    to core/config_manager.py, which works in a source checkout but silently
-    falls back to an empty config once the package is pip-installed (the YAMLs
-    live outside site-packages). Try ``importlib.resources`` inside the ``core``
-    package first (packaged data), then the repo-root path next to the package
-    (source clone). Returns the parsed value, or None on any failure.
+    P2-16 (v1.2.16 audit) + P2-1 (v1.2.17 review): the resources now live
+    INSIDE ``core/`` and ship as package data, so the ``importlib.resources``
+    lookup actually resolves in an installed wheel (previously the files sat at
+    the repo root and the packaged lookup could never hit — pip installs
+    silently got empty domain keywords / language profiles). The filesystem
+    fallback covers a source checkout run without the package being importable.
+    Returns the parsed value, or None on any failure.
     """
     import importlib.resources
     try:
-        # Wheel / editable-install layout: the YAMLs ship inside core/.
+        # Wheel / installed layout: the YAMLs ship inside the core package.
         ref = importlib.resources.files("core").joinpath(resource_name)
         if ref.is_file():
             with ref.open("r", encoding="utf-8") as f:
@@ -58,10 +59,9 @@ def _load_bundled_yaml(resource_name: str) -> object:
     except Exception:
         logger.debug("Bundled %s not found as package resource", resource_name)
     try:
-        # Source-clone layout: the YAMLs sit at the repo root, a level above core/.
-        _root = os.path.normpath(os.path.join(
-            os.path.dirname(os.path.abspath(__file__)), ".."))
-        _path = os.path.join(_root, resource_name)
+        # Source checkout: the YAMLs sit NEXT TO this module (core/).
+        _path = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), resource_name)
         if os.path.isfile(_path):
             with open(_path, "r", encoding="utf-8") as f:
                 return yaml.safe_load(f)
@@ -331,7 +331,25 @@ class ConfigManager:
         yaml_sec = copy.deepcopy(self._yaml_cache.get(section, {}))
         if isinstance(yaml_sec, dict):
             _deep_update(base, yaml_sec)
-        # Apply runtime overrides (set via set_runtime)
+        # P2-9 (v1.2.16 audit) + P0-2 (v1.2.17 review): a schema-invalid YAML
+        # value falls back to the FALLBACK default, so get_section() agrees with
+        # get() (which already returns the fallback for such keys). This must
+        # run BEFORE runtime overrides: otherwise a hot-update
+        # (/api/config/parameter → set_runtime) on an invalid key was silently
+        # reverted to the default here, while get() kept serving the override —
+        # the two APIs disagreed and the override never took effect. A runtime
+        # override is an explicit, validated operator action and always wins.
+        for section_key in getattr(self, "_invalid_keys", ()):
+            sec, key = section_key.split(".", 1)
+            if sec == section:
+                if f"{sec}.{key}" in self._runtime_overrides:
+                    continue
+                fb_sec = FALLBACK_CONFIG.get(sec, {})
+                if isinstance(fb_sec, dict) and key in fb_sec:
+                    base[key] = copy.deepcopy(fb_sec[key])
+                else:
+                    base.pop(key, None)
+        # Apply runtime overrides (set via set_runtime) — highest priority.
         runtime = {}
         for kp, kv in self._runtime_overrides.items():
             parts = kp.split(".", 1)
@@ -339,19 +357,6 @@ class ConfigManager:
                 runtime[parts[1]] = kv
         if runtime:
             _deep_update(base, runtime)
-        # P2-9 (v1.2.16 audit): drop schema-invalid keys from the merged
-        # section and substitute the FALLBACK default in their place, so
-        # get_section() agrees with get() (which already returns the fallback
-        # for such keys). Removing them outright would leave the key MISSING —
-        # callers using sec.get(k) would see None instead of the fallback.
-        for section_key in getattr(self, "_invalid_keys", ()):
-            sec, key = section_key.split(".", 1)
-            if sec == section:
-                fb_sec = FALLBACK_CONFIG.get(sec, {})
-                if isinstance(fb_sec, dict) and key in fb_sec:
-                    base[key] = copy.deepcopy(fb_sec[key])
-                else:
-                    base.pop(key, None)
         return base
 
     def set_runtime(self, key_path: str, value: Any):

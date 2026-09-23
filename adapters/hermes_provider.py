@@ -214,17 +214,17 @@ class EchomindMemoryProvider:
     def shutdown(self):
         """Hermes called on exit"""
         if self._agent:
-            # P0-1/P1-13 (v1.2.16 audit): delegate to the unified shutdown —
-            # flush pending reflection to its recorded user+profile, join the
-            # in-flight thread bounded by the LLM retry budget, then disable
-            # persistence. The previous per-provider copy used a fixed
-            # join(timeout=30) which abandoned reflections when chat retries
-            # (3×60s) ran longer than 30s. If no pending flag was recorded
-            # (legacy path), give shutdown() a best-effort owner so a
-            # late-scheduled thread can still be attributed.
+            # P0-1/P1-13 (v1.2.16 audit), P2-7 (v1.2.17 review): delegate to the
+            # unified shutdown — flush pending reflection to its recorded
+            # user+profile, join the in-flight thread bounded by the LLM retry
+            # budget, then disable persistence. If no owner was recorded yet
+            # (legacy path), record one as a best-effort attribution — but do
+            # NOT mark a reflection as pending: doing so made every Hermes exit
+            # fire an unrequested LLM reflection and burn the daily quota.
             if not self._agent._pending_reflection:
-                self._agent._set_pending(
-                    self._user_id, getattr(self, "_profile", "default"))
+                self._agent._set_pending_owner(
+                    self._user_id, getattr(self, "_profile", "default"),
+                    platform=PLATFORM)
             try:
                 self._agent.shutdown()
             except Exception:

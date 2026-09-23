@@ -7,11 +7,14 @@ handle_mcp_request from this module.
 """
 
 import json
+import logging
 import os
 import urllib.request
 import urllib.error
 
 from core._reflective_version import ECHOMIND_VERSION
+
+logger = logging.getLogger("McpCommon")
 
 ECHOMIND_URL = "http://127.0.0.1:8005"
 
@@ -147,7 +150,20 @@ def _api_post(path, body):
         with urllib.request.urlopen(req, timeout=10) as resp:
             return json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as e:
-        return {"error": f"HTTP {e.code}: {e.read().decode('utf-8', errors='replace')}"}
+        # P2-9 (v1.2.17 review): don't paste the raw response body back to the
+        # MCP client — it can carry internal paths/SQL that the HTTP-layer
+        # sanitisation (P2-10) just removed. Surface status + the parsed
+        # `detail` field only, and log the body server-side.
+        status = getattr(e, "code", "?")
+        detail = ""
+        try:
+            _body = json.loads(e.read().decode("utf-8", errors="replace"))
+            if isinstance(_body, dict):
+                detail = str(_body.get("detail") or _body.get("status") or "")
+        except Exception:
+            detail = ""
+        logger.error("_api_post HTTP %s: %s", status, detail or "(no detail)")
+        return {"error": f"HTTP {status}" + (f": {detail}" if detail else "")}
     except Exception as e:
         return {"error": str(e)}
 
@@ -427,7 +443,11 @@ def handle_tool_call(name, arguments, session_id: str = "",
     elif name == "echomind_search":
         q = urllib.request.quote(arguments.get("query", ""))
         uid = _default_user_id(arguments)
-        limit = arguments.get("limit", 5)
+        # P2-8 (v1.2.17 review): limit is interpolated into the query string —
+        # an uncoerced value could inject extra params ("5&user_id=other").
+        # Coerce to a bounded int like `turn` (P2-15) instead of trusting it.
+        limit = _safe_int(arguments.get("limit", 5), default=5)
+        limit = max(1, min(limit, 100))
         path = f"/api/memory/search-sessions?q={q}&limit={limit}"
         if uid:
             path += f"&user_id={urllib.request.quote(uid)}"

@@ -113,6 +113,9 @@ class MainMemoryAgent:
         # main.py's atexit call could not supply the required user_id).
         self._pending_reflection_user = ""
         self._pending_reflection_profile = ""
+        # P2-2 (v1.2.17 review): platform of the pending reflection, so shutdown
+        # attributes it to the right transport rather than hardcoding hermes.
+        self._pending_reflection_platform = ""
         self._store_lock = threading.Lock()
         self._research_kw_cache = None
         # Core-term novelty cache: {(user_id, domain, limit) -> set[str]}
@@ -410,8 +413,10 @@ class MainMemoryAgent:
         self._pending_reflection = False
         self._pending_reflection_user = ""
         self._pending_reflection_profile = ""
+        self._pending_reflection_platform = ""
 
-    def _set_pending(self, user_id: str, profile: str = None):
+    def _set_pending(self, user_id: str, profile: str = None,
+                     platform: str = None):
         """Mark a pending auto-reflection and the user/profile it belongs to.
 
         P0-1 (v1.2.16 audit): a bare boolean told the exit path only that a
@@ -419,10 +424,31 @@ class MainMemoryAgent:
         supply the required user_id and every Hermes pending reflection was
         dropped at exit. Storing the owner makes shutdown() flush to the right
         user+profile instead of the configured default.
+
+        P2-2 (v1.2.17 review): platform is recorded too. shutdown() used to
+        hardcode platform="hermes", so HTTP/atexit flushes were misattributed
+        to the hermes platform and skewed platform-weighted retrieval.
         """
         self._pending_reflection = True
         self._pending_reflection_user = user_id
         self._pending_reflection_profile = profile or ""
+        if platform:
+            self._pending_reflection_platform = platform
+
+    def _set_pending_owner(self, user_id: str, profile: str = None,
+                           platform: str = None):
+        """Record WHO a reflection would belong to, WITHOUT marking one due.
+
+        P2-7 (v1.2.17 review): hermes_provider.shutdown() used _set_pending() as
+        a best-effort owner hint, but that method sets _pending_reflection=True
+        — so every Hermes session exit fabricated a pending reflection and
+        fired a real LLM reflection that was never due, burning the daily
+        quota. Owner attribution must not schedule work.
+        """
+        self._pending_reflection_user = user_id
+        self._pending_reflection_profile = profile or ""
+        if platform:
+            self._pending_reflection_platform = platform
 
     def shutdown(self, join_timeout: float = None):
         """Gracefully flush pending reflections and close persistence.
@@ -443,8 +469,12 @@ class MainMemoryAgent:
             if self._pending_reflection:
                 owner = self._pending_reflection_user or ""
                 profile = self._pending_reflection_profile or None
+                # P2-2 (v1.2.17 review): attribute to the recorded transport,
+                # not a hardcoded "hermes" (which mislabeled every HTTP/atexit
+                # flush and skewed platform-weighted retrieval).
+                platform = self._pending_reflection_platform or "http"
                 self._trigger_auto_reflection(
-                    owner, profile=profile, platform="hermes")
+                    owner, profile=profile, platform=platform)
         except Exception:
             logger.exception("shutdown: failed to schedule pending reflection")
         t = getattr(self, "_reflection_thread", None)
@@ -1317,16 +1347,18 @@ class MainMemoryAgent:
                         elif freshness < self._FRESHNESS_STALE_THRESHOLD and current == "active":
                             self.db.save_memory_state(mem_type, r["rid"], "stale",
                                                       "freshness_decay", source="system")
-                    # cognitive_pos lifecycle (knowledge only) — outside the
-                    # batch: _migrate_cognitive_pos commits itself, and a
-                    # nested private commit inside the batch would end the
-                    # outer transaction prematurely.
-                    if mem_type == "knowledge":
-                        for r in rows:
-                            current = self.db.get_memory_state(mem_type, r["rid"])
-                            if current in ("archived", "superseded"):
-                                continue
-                            self._migrate_cognitive_pos(r["rid"], self._freshness(dict(r)))
+                # cognitive_pos lifecycle (knowledge only) — truly OUTSIDE the
+                # batch (P1-4 v1.2.17 review: the earlier "outside" comment was
+                # aspirational; the loop actually sat inside the `with`). It
+                # takes db._lock itself and is swallowed-by-design, so running
+                # it after the batch keeps the transaction boundary exactly the
+                # four-table state transitions and nothing else.
+                if mem_type == "knowledge":
+                    for r in rows:
+                        current = self.db.get_memory_state(mem_type, r["rid"])
+                        if current in ("archived", "superseded"):
+                            continue
+                        self._migrate_cognitive_pos(r["rid"], self._freshness(dict(r)))
         except Exception as e:
             # F2 (v1.2.15 audit): data-loss path (zero lifecycle transitions);
             # it must be observable, not debug-silent.
@@ -1853,7 +1885,7 @@ profile=profile, language=lang, experience_id=exp_id,
             # O-3/O-4: Correction triggers immediate reflection; use adaptive batch otherwise
             if correction:
                 logger.info("Correction detected — triggering immediate reflection")
-                self._set_pending(user_id, profile)
+                self._set_pending(user_id, profile, platform=platform)
                 with self._store_lock:
                     self._store_count.pop(user_id, None)
                 if platform != "hermes":
@@ -1961,7 +1993,8 @@ profile=profile, language=lang, experience_id=exp_id,
                     # so the Hermes shutdown/atexit flush can target the right
                     # user+profile (previously only a bare bool was set and
                     # main.py:202 could not supply the required user_id).
-                    self._set_pending(user_id, profile)
+                    # P2-2 (v1.2.17): record the platform too.
+                    self._set_pending(user_id, profile, platform=platform)
                 else:
                     # M2/P11: pass the DRAWN batch_size so _trigger_auto_reflection
                     # does not re-draw and possibly under-fetch below min_records.

@@ -426,26 +426,31 @@ class RLWeightOptimizer:
         # self.weights is exactly the feedback's owner — applying only that
         # user's bucket is then correct.
         uid = feedback.user_id or "default"
-        bucket = self.feedback_buffers.setdefault(uid, [])
-        bucket.append(feedback)
-        self.feedback_buffer = bucket  # keep the legacy alias in sync
         _update_threshold = min(10, self.max_buffer_size)
-        if len(bucket) >= _update_threshold:
-            # P5-A audit (MED-5): the flush mutates the shared weights/EMA/cursor;
-            # serialize it against concurrent retrieve/feedback threads.
-            with self._lock:
+        # P1-2 (v1.2.17 review): the bucket lookup, append and flush-check must
+        # all happen under one lock. Previously setdefault()+append() ran
+        # unlocked, so this interleaving lost feedback:
+        #   T1: bucket = setdefault(uid, [])   # grabs list L
+        #   T2: (lock) _update_weights(); del buffers[uid]; new list
+        #   T1: bucket.append(fb)              # appends to the DISCARDED L
+        # T1's feedback then never counted toward a flush. Now every append
+        # lands in whatever list the NEXT flush will drain.
+        with self._lock:
+            bucket = self.feedback_buffers.setdefault(uid, [])
+            bucket.append(feedback)
+            self.feedback_buffer = bucket  # keep the legacy alias in sync
+            if len(bucket) >= _update_threshold:
+                # P5-A audit (MED-5): the flush mutates the shared
+                # weights/EMA/cursor; serialize it against concurrent
+                # retrieve/feedback threads (the lock is reentrant).
                 self._update_weights(user_id=uid)
-                # P2-13 (v1.2.16 audit): the bucket swap must also happen
-                # inside the lock. Previously `del` ran after the lock
-                # released, so a concurrent thread that grabbed the bucket
-                # reference BEFORE the flush kept appending the drained list
-                # 'from the left' — its feedback was silently dropped by the
-                # flush that consumed the drained list. Moving the swap in-lock
-                # means every append lands in the list the next flush drains.
+                # P2-13 (v1.2.16 audit) + P1-2 (v1.2.17): swap in-lock so the
+                # drained bucket is retired atomically with the flush.
                 del self.feedback_buffers[uid]
                 self.feedback_buffer = self.feedback_buffers.setdefault(uid, [])
-        if len(bucket) > self.max_buffer_size:
-            bucket.pop(0)
+                bucket = self.feedback_buffer
+            if len(bucket) > self.max_buffer_size:
+                bucket.pop(0)
 
     def _update_weights(self, user_id: str = None):
         # B-H1/P6: only flush the given user's buffered records. With user_id

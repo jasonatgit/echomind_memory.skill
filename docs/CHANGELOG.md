@@ -1,5 +1,26 @@
 # EchoMind Changelog
 
+## v1.2.17 — Review Verifications & Eviction/Join Hardening (2026-09-23)
+
+Follow-up review round on the v1.2.16 baseline. Every implemented fix was re-verified against the live SQLite engine (48 assertions across 15 findings + full-chain store/retrieve/query/delete smoke, all green); two latent data-integrity bugs surfaced by the verification were fixed, and the two remaining resource-management findings were implemented.
+
+| Area | Change |
+|------|--------|
+| **TTL binding-count bug (P1-6 follow-up)** | `delete_expired`'s `_expired()` helper expanded into a CASE expression containing TWO `julianday(datetime('now', ?))` occurrences, but the statement was executed with ONE bound "-N days" parameter — every table with both `last_access_at` and a fallback timestamp column (knowledge/experience/task) raised `ProgrammingError` as soon as any row aged. The placeholder is now numbered (`?1`), so a single binding serves every branch |
+| **Schema-gated queries (P0-1)** | `_query_rows` gates profile/project/origin/tags predicates on `PRAGMA table_info` — before, tagged or profile-scoped `query_memory` silently dropped whole memory types whose table lacked those columns (reflections has no profile/tags, several have no origin_*). Verified: tagged all-types query no longer skips any table |
+| **Sparse-tag prefilter verified (P1-1)** | 150-row fixture with a single `#audit` row: OR/AND/case-insensitive/untagged/all-types all match exactly (json_valid guard keeps legacy non-JSON tags from breaking json_each) |
+| **Double-write eviction (P2-5)** | `main.py` call-agent capacity eviction no longer calls `agent.shutdown()` eagerly — the victim may still be mid-call on another thread. Capacity eviction tags the agent for reclamation; the atexit sweep closes tagged agents when no further calls can race. Verified: evicted agent's DB stays open until exit; atexit closes it |
+| **Bounded atexit join budget (P2-6)** | `_cleanup_call_agents` now sweeps the cached agents under ONE shared 30s deadline (each agent takes the remaining budget), instead of joining up to 8 agents × up to 185s each. Verified: 8 slow agents finish in 30.00s; budgets passed to agents decrease as expected |
+| **Config fallback agreement re-verified (P0-2, P2-9)** | With an isolated config: a valid `batch_size: [7]` reads `[7]` from both `get()` and `get_section()`; an invalid `max_daily: -3` falls back to `[5, 20]` in both; a runtime override on the same key wins in both — the two APIs can no longer disagree |
+| **Reflection batch clamp re-verified (P1-9, P1-8)** | `_run` clamps the drawn batch to `>= min_records` — verified a deterministic `batch_size=5` draw yields `get_recent_episodic(count=6)`, so a due reflection is never dropped by an under-min_records fetch. The correction path passes a concrete batch |
+| **Cross-user state isolation re-verified (P1-7)** | A `retrieve_for_task` by user A leaves user B's memory_states untouched |
+| **Delete paths re-verified (P1-2/3/4, P2-8)** | Reflection replay is idempotent (first write wins); profile-scoped `delete_user_memories` keeps other profiles' rows and cascades that profile's context_archive; `delete_expired` cascades memory_states/evolution/archive while preserving fresh rows |
+| **Reflection knowledge persistence re-verified (P1-12)** | `store_reflection_knowledge` writes tenant-scoped (`user_id`, `domain=insight`, `origin_client=reflection`) rows that SURVIVE restart, and invalidates the core-term cache (P2-12 reset verified too) |
+
+**Migration:** none. Behavior notes: (1) capacity eviction used to close DBs immediately — it now defers to exit, so concurrent callers on an evicted agent can't hit a closed connection; memory is reclaimed at process exit. (2) `delete_expired` prevented the `ProgrammingError` it would have raised on aged knowledge/experience/task rows in v1.2.16 — deployments that saw those errors in logs should be fixed now.
+
+---
+
 ## v1.2.16 — Full-Data-Path Audit Fixes: Shutdown Unification, Tenancy, TTL & Integrity (2026-09-22)
 
 This round deep-read the full memory data path (store → read → delete → adapter). 32 findings were fixed across every layer — the reflection/exit path is now one unified contract, knowledge/tag/state-machine retrieval is tenancy-correct, deletion cascades consistently, and config/tool-call hardening removes silent failure modes.
