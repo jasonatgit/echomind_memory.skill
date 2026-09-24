@@ -6,6 +6,8 @@ from .user_agent import UserMemoryAgent
 from .knowledge_agent import KnowledgeMemoryAgent
 from .experience_agent import ExperienceMemoryAgent
 from .research_agent import ResearchMemoryAgent
+from .evolution_agent import KnowledgeEvolutionAgent
+from .entity_agent import EntityAgent
 
 __all__ = [
     "ContextMemoryAgent",
@@ -14,4 +16,6 @@ __all__ = [
     "KnowledgeMemoryAgent",
     "ExperienceMemoryAgent",
     "ResearchMemoryAgent",
+    "KnowledgeEvolutionAgent",
+    "EntityAgent",
 ]

@@ -35,6 +35,9 @@ from .lang_utils import detect_language, get_features, get_inference_keywords, t
 from .chunking import chunk_text
 from . import scoring as _scoring
 from . import lang_novelty as _lang_novelty
+from .lifecycle import MemoryLifecycle
+from .agents.evolution_agent import KnowledgeEvolutionAgent
+from .agents.entity_agent import EntityAgent
 
 
 class MainMemoryAgent:
@@ -112,7 +115,8 @@ class MainMemoryAgent:
         self._pending_reflection_platform = ""
         self._store_lock = threading.Lock()
         self._research_kw_cache = None
-        # Core-term novelty cache: {(user_id, domain, limit) -> set[str]}
+        # Core-term novelty cache now lives on self.evolution_agent (created
+        # below); this placeholder keeps attribute access safe during __init__.
         self._core_term_cache: Dict[tuple, set] = {}
         # RL significance verification:
         # baseline hits (fixed window) + per-user feedback counter since last verify
@@ -127,6 +131,32 @@ class MainMemoryAgent:
 
         ref_config = self.cfg.get_section("reflection")
         self.reflective = ReflectiveAgent(self.db, self, config=ref_config)
+
+        # P2 (v1.2.18 refactor): lifecycle state machine extracted to
+        # core/lifecycle.py; the two delegate methods below call into it.
+        self.lifecycle = MemoryLifecycle(
+            self.db, self.knowledge_agent, self.cfg,
+            freshness_fn=self._freshness,
+            persistence_enabled_fn=lambda: self._persistence_enabled,
+            stale_threshold=self._FRESHNESS_STALE_THRESHOLD,
+            archive_threshold=self._FRESHNESS_ARCHIVE_THRESHOLD,
+            cognitive_fok_threshold=self._COGNITIVE_FOK_THRESHOLD,
+            cognitive_exo_threshold=self._COGNITIVE_EXO_THRESHOLD,
+        )
+        # P2 (v1.2.18 refactor): evolution detection + entity extraction moved
+        # to core/agents/*; the delegates below call into them.
+        self.evolution_agent = KnowledgeEvolutionAgent(
+            self.db, self.knowledge_agent, self.cfg,
+            llm_getter=lambda: (self._get_llm_client() if hasattr(self, '_get_llm_client') else None),
+            persistence_enabled_fn=lambda: self._persistence_enabled,
+            novelty_threshold=self._NOVELTY_THRESHOLD,
+            min_term_store_size=self._MIN_TERM_STORE_SIZE,
+            term_limit=self._TERM_LIMIT,
+        )
+        self.entity_agent = EntityAgent(
+            self.cfg,
+            llm_getter=lambda: (self._get_llm_client() if hasattr(self, '_get_llm_client') else None),
+        )
 
     def enable_persistence(self):
         if self._persistence_enabled:
@@ -386,7 +416,8 @@ class MainMemoryAgent:
         # takes effect everywhere (previously the LLM domain map and the
         # core-term novelty cache kept stale pre-reload data).
         self.__dict__.pop("_llm_domain_cache", None)
-        self._core_term_cache = {}
+        if getattr(self, "evolution_agent", None) is not None:
+            self.evolution_agent.cache = {}
         # P2-12 (v1.2.16 audit): the research agent's domain list is loaded
         # lazily from ConfigManager and likewise must drop its derived cache on
         # reload, or an edited domain_keywords never takes effect until restart.
@@ -1144,109 +1175,12 @@ class MainMemoryAgent:
         return _scoring.freshness(record, self.cfg, self._DECAY_HALF_LIFE)
 
     def _update_memory_states(self, user_id: str = ""):
-        """Scan recent memories and update states based on Ebbinghaus freshness.
-
-        Maps freshness scores to states:
-          freshness 0.1-0.3 → stale
-          freshness < 0.1  → archived
-        Transitions: active→stale, active/stale→archived.
-
-        Knowledge entries additionally migrate cognitive_pos (nok/fok/exo) in
-        lockstep with the freshness decay, using independent thresholds so the
-        cognitive-position axis can be tuned separately from lifecycle state.
-        """
-        if not self._persistence_enabled or not self.db._conn:
-            return
-        try:
-            limit = self.cfg.get("retrieval", "state_scan_limit", default=1000)
-        except Exception:
-            limit = 1000
-        try:
-            limit = int(limit)
-        except (TypeError, ValueError):
-            limit = 1000
-        try:
-            for mem_type, table, id_col in [
-                ("knowledge", "knowledge_memory", "id"),
-                ("experience", "experience_memory", "id"),
-                ("task", "task_memory", "id"),
-                ("context", "context_memory", "session_id"),
-            ]:
-                with self.db._lock:
-                    # P1-7 (v1.2.16 audit): the scan was NOT user-scoped — a
-                    # single retrieve_for_task/store on any account swept EVERY
-                    # user's most recent rows and let one user's activity push
-                    # another user's idle memories into stale/archived. Every
-                    # one of the four tables carries user_id, so the scan is now
-                    # bound to the acting user (multi-tenant hygiene).
-                    rows = self.db._conn.execute(
-                        f"SELECT {id_col} as rid, created_at, last_access_at "
-                        f"FROM {table} WHERE user_id = ? "
-                        f"ORDER BY created_at DESC LIMIT ?",
-                        (user_id, limit),
-                    ).fetchall()
-                # Batch the lifecycle transitions in one transaction (P1-7):
-                # previously each transition committed independently and the
-                # whole scan was a cross-user side effect on the hot path.
-                # save_memory_state's _maybe_commit no-ops inside a batch, so
-                # the COMMITs collapse to a single one on exit.
-                with self.db.transaction():
-                    for r in rows:
-                        current = self.db.get_memory_state(mem_type, r["rid"])
-                        if current in ("archived", "superseded"):
-                            continue
-                        freshness = self._freshness(dict(r))
-                        if freshness < self._FRESHNESS_ARCHIVE_THRESHOLD:
-                            if current in ("active", "stale"):
-                                self.db.save_memory_state(mem_type, r["rid"], "archived",
-                                                           "freshness_decay", source="system")
-                        elif freshness < self._FRESHNESS_STALE_THRESHOLD and current == "active":
-                            self.db.save_memory_state(mem_type, r["rid"], "stale",
-                                                      "freshness_decay", source="system")
-                # cognitive_pos lifecycle (knowledge only) — truly OUTSIDE the
-                # batch (P1-4 v1.2.17 review: the earlier "outside" comment was
-                # aspirational; the loop actually sat inside the `with`). It
-                # takes db._lock itself and is swallowed-by-design, so running
-                # it after the batch keeps the transaction boundary exactly the
-                # four-table state transitions and nothing else.
-                if mem_type == "knowledge":
-                    for r in rows:
-                        current = self.db.get_memory_state(mem_type, r["rid"])
-                        if current in ("archived", "superseded"):
-                            continue
-                        self._migrate_cognitive_pos(r["rid"], self._freshness(dict(r)))
-        except Exception as e:
-            # F2 (v1.2.15 audit): data-loss path (zero lifecycle transitions);
-            # it must be observable, not debug-silent.
-            logger.warning("Memory state update skipped: %s", e)
+        """Scan recent memories and update states. See core.lifecycle.MemoryLifecycle."""
+        return self.lifecycle.update_memory_states(user_id)
 
     def _migrate_cognitive_pos(self, knowledge_id: str, freshness: float):
-        """Migrate a knowledge entry's cognitive_pos by freshness.
-
-        nok (current context) → fok (fading) → exo (external deep memory).
-        Persists to both the DB metadata JSON and the in-memory agent so the
-        markdown archive reflects the migration without a reload.
-        """
-        if freshness < self._COGNITIVE_EXO_THRESHOLD:
-            new_pos = "exo"
-        elif freshness < self._COGNITIVE_FOK_THRESHOLD:
-            new_pos = "fok"
-        else:
-            new_pos = "nok"
-        try:
-            with self.db._lock:
-                self.db._conn.execute(
-                    "UPDATE knowledge_memory SET metadata = json_set("
-                    "CASE WHEN json_type(metadata) IS NULL THEN '{}' ELSE metadata END, "
-                    "'$.cognitive_pos', ?) WHERE id = ?",
-                    (new_pos, knowledge_id),
-                )
-            self.db._maybe_commit()
-        except Exception as e:
-            logger.debug("cognitive_pos DB migration failed: %s", e)
-        entry = self.knowledge_agent.store.get(knowledge_id)
-        if entry is not None:
-            entry.metadata["cognitive_pos"] = new_pos
+        """Migrate a knowledge entry's cognitive_pos. See core.lifecycle.MemoryLifecycle."""
+        return self.lifecycle.migrate_cognitive_pos(knowledge_id, freshness)
 
     def store_reflection_knowledge(self, user_id: str, items: List[str]):
         """Persist reflection-derived knowledge that _process_reflection merged.
@@ -2306,48 +2240,12 @@ profile=profile, language=lang, experience_id=exp_id,
 
     def _known_core_terms(self, user_id: str, domain: str = "",
                          limit: int = None) -> set:
-        """Build the "known core terms" set. In-memory store first; DB fallback
-        when the in-memory store is below _MIN_TERM_STORE_SIZE (cold start /
-        eviction), fixing AEIS's `query_nodes(limit=80)` incompleteness with an
-        exact SQL query instead of sampling.
-        """
-        limit = limit or self._TERM_LIMIT
-        cache_key = (user_id, domain or "*", limit)
-        if cache_key in self._core_term_cache:
-            return self._core_term_cache[cache_key]
-
-        known: set = set()
-        entries = list(self.knowledge_agent.store.values())
-        if domain:
-            entries = [e for e in entries
-                      if (e.metadata.get("domain") or e.metadata.get("category") or "") == domain]
-        entries = entries[:limit]
-
-        # DB fallback only when in-memory corpus is too thin (cold start/eviction)
-        if len(entries) < self._MIN_TERM_STORE_SIZE and self._persistence_enabled:
-            try:
-                for content in self.db.get_knowledge_content(user_id, domain, limit):
-                    self._add_core_grams(known, content)
-            except Exception:
-                logger.debug("Known-core-terms DB fallback failed; using memory only",
-                             exc_info=True)
-
-        for e in entries:
-            self._add_core_grams(known, e.content)
-
-        self._core_term_cache[cache_key] = known
-        return known
+        """Build the known-core-terms set. See core.agents.evolution_agent."""
+        return self.evolution_agent.known_core_terms(user_id, domain, limit)
 
     def _invalidate_core_term_cache(self, user_id: str = None):
-        """Drop cached known-term sets after a knowledge write/evict."""
-        if not self._core_term_cache:
-            return
-        if user_id is None:
-            self._core_term_cache.clear()
-        else:
-            self._core_term_cache = {
-                k: v for k, v in self._core_term_cache.items() if k[0] != user_id
-            }
+        """Drop cached known-term sets. See core.agents.evolution_agent."""
+        return self.evolution_agent.invalidate_cache(user_id)
 
     @staticmethod
     def _jaccard_similarity(text1: str, text2: str) -> float:
@@ -2359,26 +2257,8 @@ profile=profile, language=lang, experience_id=exp_id,
         return _lang_novelty.classify_relation(sim)
 
     def _llm_classify_relation(self, source_text: str, target_text: str, sim: float) -> Optional[str]:
-        """Use LLM to precisely classify relation (replaces/enriches/confirms/challenges)."""
-        try:
-            llm = self._get_llm_client() if hasattr(self, '_get_llm_client') else None
-            if not llm or not llm.available:
-                return self._classify_relation(sim)
-            prompt = (
-                "Compare these two knowledge statements. Reply with ONE word:\n"
-                "- 'replaces' if statement B makes statement A obsolete\n"
-                "- 'enriches' if B adds useful detail to A\n"
-                "- 'confirms' if B independently validates A\n"
-                "- 'challenges' if B contradicts A\n"
-                "- 'none' if unrelated\n\n"
-                f"A: {source_text[:300]}\n\nB: {target_text[:300]}\n\n"
-                "Relation:"
-            )
-            result = llm.chat(prompt, temperature=0, max_tokens=10).strip().lower()
-            valid = {"replaces", "enriches", "confirms", "challenges"}
-            return result if result in valid else self._classify_relation(sim)
-        except Exception:
-            return self._classify_relation(sim)
+        """LLM relation classification. See core.agents.evolution_agent."""
+        return self.evolution_agent.llm_classify_relation(source_text, target_text, sim)
 
     # ── P0-1: Hot tag statistics — domain-level knowledge count for tag-driven reflection ──
 
@@ -2455,81 +2335,27 @@ profile=profile, language=lang, experience_id=exp_id,
                                     origin_turn: int = 0):
         """Scan existing knowledge via Jaccard, classify relations, write evolution records.
 
-        origin_* fields are recorded on the evolution rows (provenance, migration v9)
-        so the relationship can be traced to the agent/session/turn that produced it.
+        See core.agents.evolution_agent.KnowledgeEvolutionAgent.detect.
         """
-        if not self._persistence_enabled or not content or len(content) < 20 or not knowledge_id:
-            return
-        try:
-            candidates = self.knowledge_agent.search(query=content, user_id=user_id,
-                                                      domain=domain, top_k=50)
-            best_sim, best_id, best_content = 0.0, None, ""
-            for c in candidates:
-                # F3 (v1.2.15 audit): the freshly saved entry itself is always
-                # in the candidate set with Jaccard 1.0, so the old post-loop
-                # self-reference check (`best_id == knowledge_id`) made
-                # evolution detection a deterministic no-op. Exclude it inside
-                # the loop instead.
-                c_id = c.get("id")
-                if c_id == knowledge_id:
-                    continue
-                sim = self._jaccard_similarity(content[:500], (c.get("content", "") or "")[:500])
-                if sim > best_sim:
-                    best_sim, best_id, best_content = sim, c_id, c.get("content", "")
-            # P-*: Core-term novelty gate — a sentence that mostly overlaps an old
-            # one but carries a brand-new concept (high novelty) must not be
-            # downgraded to replaces/enriches by the plain sentence-level Jaccard.
-            # Low novelty (well-known) keeps the existing replace/enrich path.
-            novelty = self._core_term_novelty(content, self._known_core_terms(user_id, domain))
-            if best_sim > 0.7 and best_id and novelty < self._NOVELTY_THRESHOLD:
-                relation = self._llm_classify_relation(best_content or "", content, best_sim)
-                if relation:
-                    self.db.save_evolution(best_id, knowledge_id, relation,
-                        confidence=best_sim, reason="jaccard_match",
-                        detection_method="llm" if best_sim < 0.9 else "jaccard",
-                        origin_agent=origin_agent, origin_session_id=origin_session_id,
-                        origin_turn=origin_turn)
-                    if relation == "replaces" and best_sim >= 0.9:
-                        self.db.save_memory_state("knowledge", best_id, "superseded",
-                            reason=f"replaced_by:{knowledge_id}", source="evolution")
-        except Exception as e:
-            logger.debug("Knowledge evolution detection skipped: %s", e)
+        return self.evolution_agent.detect(
+            content, user_id, domain, knowledge_id=knowledge_id,
+            origin_agent=origin_agent, origin_session_id=origin_session_id,
+            origin_turn=origin_turn)
 
     # ── P3-2: Entity extraction ────────────────────────
 
     def _extract_entities(self, content: str) -> List[Dict]:
-        """Extract entities using LLM if available, keyword fallback otherwise."""
-        llm = self._get_llm_client() if hasattr(self, '_get_llm_client') else None
-        if llm:
-            try:
-                return self._llm_extract_entities(llm, content)
-            except Exception:
-                pass
-        return self._keyword_extract_entities(content)
+        """Extract entities using LLM if available, keyword fallback otherwise.
+        See core.agents.entity_agent.EntityAgent."""
+        return self.entity_agent.extract(content)
 
     def _llm_extract_entities(self, llm, content: str) -> List[Dict]:
-        prompt = "Extract named entities (technologies, concepts, people, projects) from this text. Return JSON: [{\"type\":\"technology\",\"name\":\"...\"}]"
-        result = llm.chat(f"{prompt}\n\n{content[:600]}", temperature=0, max_tokens=200)
-        try:
-            parsed = __import__('json').loads(result)
-            if isinstance(parsed, list):
-                for e in parsed:
-                    e.setdefault("source", "llm")
-                    e.setdefault("confidence", 0.85)
-                return parsed
-        except Exception:
-            pass
-        return self._keyword_extract_entities(content)
+        """LLM entity extraction. See core.agents.entity_agent.EntityAgent."""
+        return self.entity_agent._llm_extract(llm, content)
 
     def _keyword_extract_entities(self, content: str) -> List[Dict]:
-        entities = []
-        kw_cfg = self.cfg.get("entities", "technologies", default=[])
-        if isinstance(kw_cfg, str):
-            kw_cfg = [kw_cfg]
-        for kw in kw_cfg:
-            if isinstance(kw, str) and kw.lower() in content.lower():
-                entities.append({"type": "technology", "name": kw, "confidence": 0.6, "source": "keyword"})
-        return entities[:10]
+        """Keyword entity fallback. See core.agents.entity_agent.EntityAgent."""
+        return self.entity_agent._keyword_extract(content)
 
     # ── Autoreflection score (P4-2 in autoreflection absorption) ──
 
