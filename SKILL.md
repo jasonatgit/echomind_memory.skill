@@ -1,6 +1,6 @@
 ---
 name: echomind-memory
-version: "1.2.17"
+version: "1.2.18"
 description: EchoMind Memory — AI 持久记忆系统。支持 Hermes、OpenCode、OpenClaw、Claude Code 等多平台。6 种记忆类型 + reflective agent + self-reflection (epistemic mode, provenance, self-diagnosis)。
 category: software-development
 platforms:
@@ -16,7 +16,7 @@ tags:
   - self-reflection
 ---
 
-# EchoMind Memory v1.2.16
+# EchoMind Memory v1.2.18
 
 ## 概述
 
@@ -167,16 +167,27 @@ echomind_config.yaml 内置 45 个知识领域，覆盖：运筹学、供应链�
 ├── echomind_config.yaml          ← 全量默认配置
 ├── requirements.txt
 ├── core/                  ← 跨框架记忆引擎（核心）
-│   ├── memory_agent.py    ← 6 Agent + RL + ReflectiveAgent
+│   ├── memory_agent.py    ← 编排层 + 委派子模块（v1.2.18 拆分后 ~2578 行）
+│   ├── scoring.py         ← 纯评分/排序/freshness（v1.2.18）
+│   ├── lang_novelty.py    ← 纯 Jaccard/CJK n-gram/关系分类（v1.2.18）
+│   ├── lifecycle.py       ← Active→Stale→Archived 状态机（v1.2.18）
 │   ├── reflective_agent.py ← Self-Reflective Agent (v1.1.0)
 │   ├── storage/
 │   │   ├── __init__.py
-│   │   └── sqlite_store.py ← 存储层 14 张表 (WAL)
+│   │   ├── sqlite_store.py ← 存储层 14 张表 (WAL)
+│   │   ├── schema.py      ← 基础 DDL + 增量迁移（v1.2.18）
+│   │   ├── keys.py        ← stable_memory_key（v1.2.18）
+│   │   └── rows.py        ← 行归一化 / JSON 安全解析（v1.2.18）
 │   ├── models/
 │   │   ├── context.py, task.py, user.py
 │   │   ├── knowledge.py, experience.py
+│   │   ├── memory_record.py ← 检索候选评分模型（v1.2.18）
 │   │   ├── research.py
 │   │   └── reflection.py
+│   ├── agents/            ← 记忆子 Agent
+│   │   ├── (context/task/user/knowledge/experience/research)_agent.py
+│   │   ├── evolution_agent.py ← 知识进化检测（v1.2.18）
+│   │   └── entity_agent.py    ← 实体抽取（v1.2.18）
 │   └── learning/
 │       └── rl_weight_optimizer.py
 ├── adapters/              ← 平台适配层

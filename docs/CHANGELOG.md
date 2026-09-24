@@ -1,5 +1,23 @@
 # EchoMind Changelog
 
+## v1.2.18 — Internal Refactor: Top-2 File Split (2026-09-23)
+
+Structural refactor of the two largest modules. **No behavior change** — every existing call site, import path and DB migration is preserved through same-named delegates and re-exports; verified by a parity harness + the full suite (74 → 113 tests, all green) and a production-DB-copy schema check.
+
+| Area | Change |
+|------|--------|
+| **MainMemoryAgent (2959 → 2578 lines)** | Extracted the self-free leaf helpers into independently-testable modules: `core/scoring.py` (`score_base` / `parse_db_ts` / `freshness` / `gspo_cluster` / `diversify_top_k`) and `core/lang_novelty.py` (`add_core_grams` / `core_term_novelty` / `jaccard_similarity` / `classify_relation`) |
+| **Models** | `MemoryRecord` sunk to `core/models/memory_record.py` (re-exported from `core.memory_agent` + `core.models`, identity stable) so scoring can reference it without a circular import |
+| **Sub-agents (2752 → 2578)** | Extracted the self-bound cohesive blocks: `core/lifecycle.py` (`MemoryLifecycle` — Active→Stale→Archived + cognitive_pos migration), `core/agents/evolution_agent.py` (`KnowledgeEvolutionAgent` — known-term corpus cache + relation detection), `core/agents/entity_agent.py` (`EntityAgent`) |
+| **SqliteStore (2370 → 1972 lines)** | Extracted the static schema DDL and pure row/key helpers: `core/storage/schema.py` (`SCHEMA_VERSION` / `_MIGRATIONS` / `_PROFILE_TABLES` / `BASE_SCHEMA_SQL` / `PROFILE_INDEX_SQL`), `core/storage/keys.py` (`stable_memory_key`), `core/storage/rows.py` (`_normalize_row` / `_safe_json_loads` / null-default constants). DDL is byte-for-byte identical |
+| **Tests** | New `tests/test_scoring.py` — 39 unit tests for the previously ZERO-coverage scoring/GSPO/novelty hot spots (74 → 113) |
+
+**Migration:** none — no schema/tables/columns changed; DDL bytes, migration order and `PRAGMA user_version` semantics are identical (verified against a copy of the live DB: user_version 11 unchanged, all 16 tables + columns identical).
+
+**Compatibility:** all public imports unchanged (`core.memory_agent.MainMemoryAgent/MemoryRecord`, `core.storage.sqlite_store.SqliteStore/stable_memory_key`, `core.__init__` re-exports, `plugin.yaml` entry). Refactor is behavior-preserving.
+
+---
+
 ## v1.2.17 — Review Verifications & Eviction/Join Hardening (2026-09-23)
 
 Follow-up review round on the v1.2.16 baseline. Every implemented fix was re-verified against the live SQLite engine (48 assertions across 15 findings + full-chain store/retrieve/query/delete smoke, all green); two latent data-integrity bugs surfaced by the verification were fixed, and the two remaining resource-management findings were implemented.

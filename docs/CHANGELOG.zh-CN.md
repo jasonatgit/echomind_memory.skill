@@ -1,5 +1,23 @@
 # EchoMind 更新日志
 
+## v1.2.18 — 内部重构：Top-2 大文件拆分 (2026-09-23)
+
+对两个最大模块进行结构性重构。**行为零变化**——全部调用点、导入路径与 DB 迁移经同名委派与重导保留；已通过对拍工具 + 全量测试（74 → 113，全绿）与生产库副本 schema 校验。
+
+| 领域 | 改动 |
+|------|------|
+| **MainMemoryAgent（2959 → 2578 行）** | 无 self 依赖的叶子助手抽入可独立测试的模块：`core/scoring.py`（`score_base` / `parse_db_ts` / `freshness` / `gspo_cluster` / `diversify_top_k`）与 `core/lang_novelty.py`（`add_core_grams` / `core_term_novelty` / `jaccard_similarity` / `classify_relation`） |
+| **模型** | `MemoryRecord` 下沉至 `core/models/memory_record.py`（从 `core.memory_agent` + `core.models` 重导，身份稳定），使 scoring 可引用它而不产生循环导入 |
+| **子 Agent（2752 → 2578）** | 抽出依赖 self 的成块逻辑：`core/lifecycle.py`（`MemoryLifecycle`——Active→Stale→Archived + cognitive_pos 迁移）、`core/agents/evolution_agent.py`（`KnowledgeEvolutionAgent`——已知词表缓存 + 关系检测）、`core/agents/entity_agent.py`（`EntityAgent`） |
+| **SqliteStore（2370 → 1972 行）** | 抽出静态 schema DDL 与纯行/键助手：`core/storage/schema.py`（`SCHEMA_VERSION` / `_MIGRATIONS` / `_PROFILE_TABLES` / `BASE_SCHEMA_SQL` / `PROFILE_INDEX_SQL`）、`core/storage/keys.py`（`stable_memory_key`）、`core/storage/rows.py`（`_normalize_row` / `_safe_json_loads` / null 默认常量）。DDL 逐字节一致 |
+| **测试** | 新增 `tests/test_scoring.py`——39 项单测覆盖此前零覆盖的评分/GSPO/新颖度热点（74 → 113） |
+
+**迁移：** 无——未改动 schema/表/列；DDL 字节、迁移顺序与 `PRAGMA user_version` 语义完全一致（对照真实库副本验证：user_version 11 不变，全部 16 张表 + 列一致）。
+
+**兼容性：** 全部公共导入不变（`core.memory_agent.MainMemoryAgent/MemoryRecord`、`core.storage.sqlite_store.SqliteStore/stable_memory_key`、`core.__init__` 重导、`plugin.yaml` 入口）。重构为行为保持型。
+
+---
+
 ## v1.2.17 — Review 复核与驱逐/退出加固 (2026-09-23)
 
 对 v1.2.16 基线的后续复核轮。所有已实施的修复均对照真实 SQLite 引擎重验（15 项发现共 48 断言 + store/retrieve/query/delete 全链路冒烟，全部通过）；复核过程中浮出两个潜在数据完整性缺陷并已修复，剩下两项资源管理类发现也已落地。
