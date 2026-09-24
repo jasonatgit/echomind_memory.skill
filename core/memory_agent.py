@@ -19,6 +19,7 @@ from .models.task import TaskMemory
 from .models.user import UserMemory
 from .models.knowledge import KnowledgeEntry
 from .models.experience import ExperienceEntry
+from .models.memory_record import MemoryRecord
 from .provenance import merge_tags
 from .models.research import ResearchPaper, ResearchNote
 from .reflective_agent import ReflectiveAgent
@@ -28,19 +29,12 @@ from .agents import (
 )
 
 
-class MemoryRecord(BaseModel):
-    source: str
-    content: str
-    importance: float
-    metadata: Dict[str, Any]
-    relevance: float = 0.5      # 检索时的相关性得分，供 RL 优化器使用
-    trust_score: float = 0.5    # 记忆的可信度得分，供 RL 优化器使用
-
-
 from .learning.rl_weight_optimizer import RLWeightOptimizer
 from .storage.sqlite_store import SqliteStore, stable_memory_key
 from .lang_utils import detect_language, get_features, get_inference_keywords, tokenize as adaptive_tokenize
 from .chunking import chunk_text
+from . import scoring as _scoring
+from . import lang_novelty as _lang_novelty
 
 
 class MainMemoryAgent:
@@ -908,20 +902,8 @@ class MainMemoryAgent:
 
     @staticmethod
     def _score_base(terms, boosts=()) -> float:
-        """P2.4: unified base score for RL-driven sources.
-
-        terms: (value, weight) pairs of the signals this source carries.
-        Normalizing by the sum of weights actually used keeps the base in
-        [0,1] regardless of which dims a source provides, so every RL
-        dimension is a real lever and no source is structurally shrunk by
-        missing dims. boosts: multiplicative factors applied after
-        normalization, capped at 1.0.
-        """
-        wsum = sum(w for _, w in terms)
-        base = sum(v * w for v, w in terms) / wsum if wsum > 0 else 0.0
-        for b in boosts:
-            base *= b
-        return min(1.0, base)
+        """P2.4: unified base score for RL-driven sources. See core.scoring.score_base."""
+        return _scoring.score_base(terms, boosts)
 
     def _compute_importance(self, retrieved: Dict[str, Any], query: str,
                             user_id: str, platform: Optional[str] = None,
@@ -1145,147 +1127,21 @@ class MainMemoryAgent:
         return scored
 
     def _gspo_cluster(self, scored: List[MemoryRecord]) -> List[MemoryRecord]:
-        """GSPO-style cluster aggregation: same-source same-session memories
-        share a geometric-mean importance score.
-
-        Geometric mean = exp(mean(log(importance))) — more robust to outliers
-        than arithmetic mean. Only active for clusters of size >= 2 where
-        within-cluster variance exceeds threshold.
-        """
-        clusters = {}
-        for mem in scored:
-            sid = ""
-            if isinstance(mem.metadata, dict):
-                sid = mem.metadata.get("session_id", "") or mem.metadata.get("metadata", {}).get("session_id", "")
-            if not sid:
-                # F4b (v1.2.15 audit): an empty session_id merged every
-                # same-source record into ONE cluster, flattening all their
-                # individually-scored importances. No session scope → no
-                # cluster.
-                continue
-            key = f"{mem.source}:{sid}"
-            clusters.setdefault(key, []).append(mem)
-        for key, members in clusters.items():
-            if len(members) < 2:
-                continue
-            imps = [max(m.importance, 1e-8) for m in members]
-            mean_imp = sum(imps) / len(imps)
-            variance = sum((x - mean_imp) ** 2 for x in imps) / len(imps)
-            cv = math.sqrt(variance) / max(mean_imp, 1e-8)
-            if cv < 0.15:
-                continue
-            log_mean = sum(math.log(x) for x in imps) / len(imps)
-            geo = math.exp(log_mean)
-            for m in members:
-                m.importance = geo
-        return scored
+        """GSPO cluster aggregation. See core.scoring.gspo_cluster."""
+        return _scoring.gspo_cluster(scored)
 
     def _diversify_top_k(self, ranked: List[MemoryRecord], top_k: int = 8) -> List[MemoryRecord]:
-        """Diversify top-K by domain grouping.
-
-        P2.5: two-pass bucketed selection. Pass 1 guarantees one
-        representative per domain present in the candidate pool (each
-        domain's single highest-ranked item); pass 2 fills the remaining
-        slots by global rank. The old single-pass form could let one dense
-        domain occupy every slot (its later items only needed >= 80% of the
-        last included item's importance), so the per-domain guarantee was
-        unenforceable whenever a domain's top items dominated the pool.
-        """
-        if not ranked:
-            return []
-
-        def _item_domain(mem: MemoryRecord) -> str:
-            if isinstance(mem.metadata, dict):
-                # Direct domain key (experience, research, context)
-                d = mem.metadata.get("domain", "") or mem.metadata.get("category", "") or ""
-                if d:
-                    return d
-                # Nested: knowledge_agent.search() puts whole result dict as metadata,
-                # with domain/category inside mem.metadata["metadata"]
-                inner = mem.metadata.get("metadata", {})
-                if isinstance(inner, dict):
-                    return inner.get("domain", "") or inner.get("category", "") or ""
-            return ""
-
-        # Pass 1: one guaranteed representative per domain, in global rank order.
-        domains_seen: set[str] = set()
-        result: List[MemoryRecord] = []
-        deferred: List[MemoryRecord] = []
-        for mem in ranked:
-            domain = _item_domain(mem)
-            if not domain or domain == "general":
-                # items without domain always pass through
-                result.append(mem)
-            elif domain not in domains_seen:
-                # First item of this domain — guaranteed spot
-                domains_seen.add(domain)
-                result.append(mem)
-            else:
-                deferred.append(mem)
-            if len(result) >= top_k:
-                break
-        # Pass 2: fill remaining slots by global rank from the deferred items.
-        for mem in deferred:
-            if len(result) >= top_k:
-                break
-            result.append(mem)
-        return result[:top_k]
+        """Diversify top-K by domain grouping. See core.scoring.diversify_top_k."""
+        return _scoring.diversify_top_k(ranked, top_k)
 
     @staticmethod
     def _parse_db_ts(value) -> Optional[datetime]:
-        """Parse a DB timestamp value (string or datetime) into an aware UTC datetime.
-
-        Handles both naive SQLite format ('YYYY-MM-DD HH:MM:SS') and aware ISO format.
-        Returns None when value is empty/invalid so callers can fall back to defaults.
-        """
-        if value is None:
-            return None
-        if isinstance(value, datetime):
-            if value.tzinfo is None:
-                return value.replace(tzinfo=timezone.utc)
-            return value
-        if isinstance(value, str) and value.strip():
-            s = value.strip().replace(" ", "T")
-            if "+" not in s and not s.endswith("Z") and not s.endswith("+00:00"):
-                s += "+00:00"
-            try:
-                return datetime.fromisoformat(s)
-            except ValueError:
-                return None
-        return None
+        """Parse a DB timestamp value. See core.scoring.parse_db_ts."""
+        return _scoring.parse_db_ts(value)
 
     def _freshness(self, record: Dict[str, Any]) -> float:
-        """Compute Ebbinghaus forgetting curve freshness.
-
-        freshness = 2^(-days_since_last_access / half_life)
-        Tries: last_access_at → created_at → last_updated.
-        Returns 1.0 if no date available.
-        """
-        date_str = (
-            record.get("last_access_at") or
-            record.get("metadata", {}).get("last_access_at", "") or
-            record.get("created_at") or
-            record.get("metadata", {}).get("created_at", "") or
-            record.get("last_updated") or
-            record.get("metadata", {}).get("last_updated", "") or
-            record.get("updated_at") or
-            record.get("metadata", {}).get("updated_at", "") or
-            ""
-        )
-        if not date_str or date_str == "":
-            return 1.0
-        dt = self._parse_db_ts(date_str)
-        if dt is None:
-            return 1.0
-        # D3 fix: compute fractional days (seconds / 86400) instead of the
-        # integer `.days` attribute. Records stored seconds/minutes ago were
-        # previously all "0 days" → freshness pinned at 1.0, so the Ebbinghaus
-        # decay did not begin until a full calendar day elapsed.
-        days = (datetime.now(timezone.utc) - dt).total_seconds() / 86400.0
-        if days < 0:
-            return 1.0
-        half_life = self.cfg.get("retrieval", "decay_half_life", default=self._DECAY_HALF_LIFE)
-        return 2.0 ** (-days / max(float(half_life), 0.01))
+        """Compute Ebbinghaus freshness. See core.scoring.freshness."""
+        return _scoring.freshness(record, self.cfg, self._DECAY_HALF_LIFE)
 
     def _update_memory_states(self, user_id: str = ""):
         """Scan recent memories and update states based on Ebbinghaus freshness.
@@ -2441,38 +2297,12 @@ profile=profile, language=lang, experience_id=exp_id,
 
     @staticmethod
     def _add_core_grams(bag: set, text: str):
-        """Extract 3-4 char CJK core n-grams from *text* into *bag* (in place).
-
-        Charset matches _jaccard_similarity's CJK bigram convention (hanzi +
-        kana + hangul). Pure digit/ASCII runs are dropped as noise (AEIS par).
-        """
-        if not text:
-            return
-        for seg in re.split(r'[^\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]+', text):
-            cleaned = seg
-            for n in (4, 3):
-                for i in range(len(cleaned) - n + 1):
-                    g = cleaned[i:i + n]
-                    if g and not re.fullmatch(r'[\dA-Za-z_]+', g):
-                        bag.add(g)
+        """Extract 3-4 char CJK core n-grams. See core.lang_novelty.add_core_grams."""
+        return _lang_novelty.add_core_grams(bag, text)
 
     def _core_term_novelty(self, text: str, known_corpus: set) -> float:
-        """Novelty ratio of new core terms (new info fraction, not new sentence).
-
-        Returns [0,1]: 1.0 = all core terms unseen, 0.0 = all seen. Special:
-        empty/no-core-term text → 0.0; empty known corpus (cold start) → 0.5
-        meaning "undetermined" rather than "half new" (aligned with AEIS).
-        """
-        if not text:
-            return 0.0
-        grams = set()
-        self._add_core_grams(grams, text)
-        if not grams:
-            return 0.0
-        if not known_corpus:
-            return 0.5
-        novel = sum(1 for g in grams if g not in known_corpus)
-        return novel / len(grams)
+        """Novelty ratio of new core terms. See core.lang_novelty.core_term_novelty."""
+        return _lang_novelty.core_term_novelty(text, known_corpus)
 
     def _known_core_terms(self, user_id: str, domain: str = "",
                          limit: int = None) -> set:
@@ -2521,49 +2351,12 @@ profile=profile, language=lang, experience_id=exp_id,
 
     @staticmethod
     def _jaccard_similarity(text1: str, text2: str) -> float:
-        """Jaccard similarity on tokens — fast, zero-LLM approx.
-
-        P8 fix: the previous `text.lower().split()` was whitespace-based, so
-        for CJK text (no spaces) it produced a single giant token per string
-        and Jaccard≈0 — silently disabling knowledge-evolution detection for
-        Chinese. Now tokenize via lang_utils (which handles EN words and ZH
-        char n-grams) and, for CJK, additionally union in character bigrams
-        so short overlapping phrases still score non-zero.
-        """
-        if not text1 or not text2:
-            return 0.0
-        from .lang_utils import tokenize as _tok, detect_language as _det
-
-        def _tokens(t: str) -> set:
-            lang = _det(t)
-            toks = set(_tok(t, lang)) if t.strip() else set()
-            # Audit (MED-8/R2): CJK bigrams must be added REGARDLESS of the
-            # overall language detection. The previous guard `if lang == "zh"`
-            # silently dropped all hanzi in a mixed zh/en string whose EN bytes
-            # dominated (detect_language -> "en"), re-introducing the P8 bug it
-            # was meant to fix; ja (kana) and ko (hangul) never got bigrams at
-            # all. Extracting character bigrams from any CJK/kana/hangul
-            # segment is a strict superset of the old behaviour \u2014 it only adds
-            # tokens, never removes them. R2 additionally fixed by covering
-            # \u3040-\u30ff (kana) and \uac00-\ud7af (hangul).
-            segs = re.findall(r"[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]+", t.lower())
-            big = {s[i:i+2] for s in segs for i in range(len(s) - 1) if len(s) >= 2}
-            toks |= big
-            return toks
-
-        set1 = _tokens(text1)
-        set2 = _tokens(text2)
-        inter = len(set1 & set2)
-        union = len(set1 | set2)
-        return inter / union if union > 0 else 0.0
+        """Jaccard similarity on tokens. See core.lang_novelty.jaccard_similarity."""
+        return _lang_novelty.jaccard_similarity(text1, text2)
 
     def _classify_relation(self, sim: float) -> Optional[str]:
-        """Classify relation type from Jaccard similarity alone."""
-        if sim >= 0.9:
-            return "replaces"
-        if sim >= 0.7:
-            return "enriches"
-        return None
+        """Classify relation type from Jaccard similarity alone. See core.lang_novelty.classify_relation."""
+        return _lang_novelty.classify_relation(sim)
 
     def _llm_classify_relation(self, source_text: str, target_text: str, sim: float) -> Optional[str]:
         """Use LLM to precisely classify relation (replaces/enriches/confirms/challenges)."""
