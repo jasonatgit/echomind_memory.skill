@@ -12,7 +12,7 @@
 | **SqliteStore（2370 → 1972 行）** | 抽出静态 schema DDL 与纯行/键助手：`core/storage/schema.py`（`SCHEMA_VERSION` / `_MIGRATIONS` / `_PROFILE_TABLES` / `BASE_SCHEMA_SQL` / `PROFILE_INDEX_SQL`）、`core/storage/keys.py`（`stable_memory_key`）、`core/storage/rows.py`（`_normalize_row` / `_safe_json_loads` / null 默认常量）。DDL 逐字节一致 |
 | **测试** | 新增 `tests/test_scoring.py`——39 项单测覆盖此前零覆盖的评分/GSPO/新颖度热点（74 → 113） |
 
-**迁移：** 无——未改动 schema/表/列；DDL 字节、迁移顺序与 `PRAGMA user_version` 语义完全一致（对照真实库副本验证：user_version 11 不变，全部 16 张表 + 列一致）。
+**迁移：** 无——未改动 schema/表/列；DDL 字节、迁移顺序与 `PRAGMA user_version` 语义完全一致（对照真实库副本验证：user_version 11 不变，全部 14 张内存表 + 列一致）。
 
 **兼容性：** 全部公共导入不变（`core.memory_agent.MainMemoryAgent/MemoryRecord`、`core.storage.sqlite_store.SqliteStore/stable_memory_key`、`core.__init__` 重导、`plugin.yaml` 入口）。重构为行为保持型。
 

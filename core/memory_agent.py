@@ -115,9 +115,6 @@ class MainMemoryAgent:
         self._pending_reflection_platform = ""
         self._store_lock = threading.Lock()
         self._research_kw_cache = None
-        # Core-term novelty cache now lives on self.evolution_agent (created
-        # below); this placeholder keeps attribute access safe during __init__.
-        self._core_term_cache: Dict[tuple, set] = {}
         # RL significance verification:
         # baseline hits (fixed window) + per-user feedback counter since last verify
         self._baseline_hits: Dict[str, List[bool]] = {}

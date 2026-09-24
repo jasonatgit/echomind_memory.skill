@@ -3,6 +3,7 @@ prune core/__pycache__
 prune .git
 prune doc
 prune test
+prune tests
 prune build
 prune dist
 prune .claude

@@ -12,7 +12,7 @@ Structural refactor of the two largest modules. **No behavior change** — every
 | **SqliteStore (2370 → 1972 lines)** | Extracted the static schema DDL and pure row/key helpers: `core/storage/schema.py` (`SCHEMA_VERSION` / `_MIGRATIONS` / `_PROFILE_TABLES` / `BASE_SCHEMA_SQL` / `PROFILE_INDEX_SQL`), `core/storage/keys.py` (`stable_memory_key`), `core/storage/rows.py` (`_normalize_row` / `_safe_json_loads` / null-default constants). DDL is byte-for-byte identical |
 | **Tests** | New `tests/test_scoring.py` — 39 unit tests for the previously ZERO-coverage scoring/GSPO/novelty hot spots (74 → 113) |
 
-**Migration:** none — no schema/tables/columns changed; DDL bytes, migration order and `PRAGMA user_version` semantics are identical (verified against a copy of the live DB: user_version 11 unchanged, all 16 tables + columns identical).
+**Migration:** none — no schema/tables/columns changed; DDL bytes, migration order and `PRAGMA user_version` semantics are identical (verified against a copy of the live DB: user_version 11 unchanged, all 14 memory tables + columns identical).
 
 **Compatibility:** all public imports unchanged (`core.memory_agent.MainMemoryAgent/MemoryRecord`, `core.storage.sqlite_store.SqliteStore/stable_memory_key`, `core.__init__` re-exports, `plugin.yaml` entry). Refactor is behavior-preserving.
 
