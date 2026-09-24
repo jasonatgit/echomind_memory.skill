@@ -2,7 +2,6 @@
 # Fix: WAL Enable + write lock + threading import + datetime import
 
 import functools
-import hashlib
 import json
 import logging
 import os
@@ -15,19 +14,16 @@ from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
-
-def stable_memory_key(user_id: str, task_id: str) -> str:
-    """Deterministic, delimiter-safe composite key for task-scoped records.
-
-    B5/B6 fix: task_id itself can contain ':' (e.g. Hermes "{session}:turn{n}"),
-    so the old f"{user_id}:{task_id}" made the primary key ambiguous and
-    impossible to split reliably — breaking delete/state lookups. This hashes
-    the pair with a NUL separator so the key is unambiguous and stable across
-    every call site (task_memory.id, context_memory.session_id,
-    knowledge_memory.id, memory_states.memory_id).
-    """
-    digest = hashlib.sha256(f"{user_id}\x00{task_id}".encode("utf-8")).hexdigest()
-    return f"t:{digest[:24]}"
+# v1.2.18 refactor (P3): keys/rows/schema split out. Re-exported here so
+# `from core.storage.sqlite_store import stable_memory_key` etc. keep working.
+from .keys import stable_memory_key  # noqa: E402
+from .rows import (  # noqa: E402
+    _normalize_row, _safe_json_loads, _NULLABLE_TEXT_COLS, _JSON_DEFAULTS,
+)
+from .schema import (  # noqa: E402
+    SCHEMA_VERSION, _MIGRATIONS, _PROFILE_TABLES,
+    BASE_SCHEMA_SQL, PROFILE_INDEX_SQL, _LANG_TABLES,
+)
 
 
 DB_DIR = Path.home() / ".echomind"
@@ -47,193 +43,8 @@ DB_PATH = DB_DIR / "memory.db"
 # >5000 records at once.
 _LOAD_LIMIT = 5000
 
-# Text columns that should never be None when loaded from DB
-# (ALTER TABLE ADD COLUMN leaves NULL in existing rows even with DEFAULT)
-_NULLABLE_TEXT_COLS = {
-    "session_id", "session_title", "project", "profile", "platform",
-    "language", "compressed_summary",
-    # JSON columns: ALTER TABLE ADD COLUMN leaves NULL
-    "preferences", "habits", "history",
-    "steps", "metadata", "tags",
-    "steps_sequence",
-    "messages",
-    "prerequisites", "output_template",
-    "authors", "keywords", "key_points",
-    "linked_papers",
-    "key_decisions",
-}
-
-# Default values for JSON columns when NULL is encountered
-_JSON_DEFAULTS = {
-    "preferences": "{}", "habits": "{}", "history": "[]",
-    "steps": "[]", "metadata": "{}", "tags": "[]",
-    "steps_sequence": "[]",
-    "messages": "[]",
-    "prerequisites": "[]", "output_template": "",
-    "authors": "[]", "keywords": "[]", "key_points": "[]",
-    "linked_papers": "[]",
-    "key_decisions": "[]",
-}
-
-
-def _normalize_row(row) -> Dict:
-    """Normalize None values in text columns to empty string/json default.
-    Returns a mutable dict (converts sqlite3.Row if needed)."""
-    if not isinstance(row, dict):
-        row = dict(row)
-    for k in list(row.keys()):
-        if k in _NULLABLE_TEXT_COLS and row[k] is None:
-            row[k] = _JSON_DEFAULTS.get(k, "")
-    return row
-
-
-def _safe_json_loads(value, default):
-    """Parse a JSON column safely; return default on malformed input."""
-    if value is None:
-        return default
-    try:
-        return json.loads(value)
-    except (json.JSONDecodeError, TypeError):
-        return default
-
-SCHEMA_VERSION = 3  # v1: 无 profile 列 (v1.1.5-), v2: 有 profile 列 (v1.1.6+), v3: user_memory 复合PK (v1.2.0)
-
-# Incremental migrations beyond v3 (stored as PRAGMA user_version)
-# Each entry: (version_num, description, sql_statements_or_callable)
-# Version 4+: added incrementally via _run_schema_migrations()
-_MIGRATIONS = [
-    (4, "Add last_access_at to 6 memory tables",
-     [
-         "ALTER TABLE user_memory ADD COLUMN last_access_at TEXT DEFAULT ''",
-         "ALTER TABLE task_memory ADD COLUMN last_access_at TEXT DEFAULT ''",
-         "ALTER TABLE experience_memory ADD COLUMN last_access_at TEXT DEFAULT ''",
-         "ALTER TABLE context_memory ADD COLUMN last_access_at TEXT DEFAULT ''",
-         "ALTER TABLE knowledge_memory ADD COLUMN last_access_at TEXT DEFAULT ''",
-         "ALTER TABLE research_papers ADD COLUMN last_access_at TEXT DEFAULT ''",
-         "CREATE INDEX IF NOT EXISTS idx_user_last_access ON user_memory(last_access_at)",
-         "CREATE INDEX IF NOT EXISTS idx_task_last_access ON task_memory(last_access_at)",
-         "CREATE INDEX IF NOT EXISTS idx_experience_last_access ON experience_memory(last_access_at)",
-         "CREATE INDEX IF NOT EXISTS idx_knowledge_last_access ON knowledge_memory(last_access_at)",
-         "CREATE INDEX IF NOT EXISTS idx_context_last_access ON context_memory(last_access_at)",
-         "CREATE INDEX IF NOT EXISTS idx_papers_last_access ON research_papers(last_access_at)",
-     ]),
-    (5, "Add context_archive table for evicted session messages",
-     [
-         "CREATE TABLE IF NOT EXISTS context_archive ("
-         " id INTEGER PRIMARY KEY AUTOINCREMENT,"
-         " session_id TEXT NOT NULL,"
-         " role TEXT NOT NULL,"
-         " content TEXT NOT NULL,"
-         " archived_at TEXT DEFAULT (datetime('now'))"
-         ")",
-         "CREATE INDEX IF NOT EXISTS idx_archive_session ON context_archive(session_id)",
-     ]),
-    (6, "Add language column indexes for faster filtered retrieval",
-     [
-         "CREATE INDEX IF NOT EXISTS idx_task_language ON task_memory(language)",
-         "CREATE INDEX IF NOT EXISTS idx_experience_language ON experience_memory(language)",
-         "CREATE INDEX IF NOT EXISTS idx_knowledge_language ON knowledge_memory(language)",
-     ]),
-    (7, "Add memory_states table for lifecycle tracking",
-     [
-         "CREATE TABLE IF NOT EXISTS memory_states ("
-         " id INTEGER PRIMARY KEY AUTOINCREMENT,"
-         " memory_type TEXT NOT NULL,"
-         " memory_id TEXT NOT NULL,"
-         " state TEXT NOT NULL DEFAULT 'active',"
-         " state_changed_at TEXT DEFAULT (datetime('now')),"
-         " reason TEXT DEFAULT '',"
-         " previous_state TEXT DEFAULT '',"
-         " source TEXT DEFAULT 'system',"
-         " UNIQUE(memory_type, memory_id)"
-         ")",
-         "CREATE INDEX IF NOT EXISTS idx_memory_states_lookup ON memory_states(memory_type, memory_id)",
-         "CREATE INDEX IF NOT EXISTS idx_memory_states_current ON memory_states(memory_type, state)",
-         # Backfill: all existing memories start as 'active'
-         "INSERT OR IGNORE INTO memory_states (memory_type, memory_id, state, reason, source) "
-         "SELECT 'user', user_id, 'active', 'backfill', 'system' FROM user_memory",
-         "INSERT OR IGNORE INTO memory_states (memory_type, memory_id, state, reason, source) "
-         "SELECT 'task', id, 'active', 'backfill', 'system' FROM task_memory",
-         "INSERT OR IGNORE INTO memory_states (memory_type, memory_id, state, reason, source) "
-         "SELECT 'experience', id, 'active', 'backfill', 'system' FROM experience_memory",
-         "INSERT OR IGNORE INTO memory_states (memory_type, memory_id, state, reason, source) "
-         "SELECT 'context', session_id, 'active', 'backfill', 'system' FROM context_memory",
-         "INSERT OR IGNORE INTO memory_states (memory_type, memory_id, state, reason, source) "
-         "SELECT 'knowledge', id, 'active', 'backfill', 'system' FROM knowledge_memory",
-         "INSERT OR IGNORE INTO memory_states (memory_type, memory_id, state, reason, source) "
-         "SELECT 'paper', id, 'active', 'backfill', 'system' FROM research_papers",
-     ]),
-    (8, "Add knowledge_evolution table for tracking knowledge relationships",
-     [
-         "CREATE TABLE IF NOT EXISTS knowledge_evolution ("
-         " id INTEGER PRIMARY KEY AUTOINCREMENT,"
-         " source_id TEXT NOT NULL,"
-         " target_id TEXT NOT NULL,"
-         " relation_type TEXT NOT NULL,"
-         " confidence REAL DEFAULT 0.5,"
-         " reason TEXT DEFAULT '',"
-         " detection_method TEXT DEFAULT 'jaccard',"
-         " created_at TEXT DEFAULT (datetime('now'))"
-         ")",
-"CREATE INDEX IF NOT EXISTS idx_evolution_source ON knowledge_evolution(source_id)",
-          "CREATE INDEX IF NOT EXISTS idx_evolution_target ON knowledge_evolution(target_id)",
-      ]),
-    (9, "Add provenance columns to knowledge_evolution for memory provenance tracking",
-     [
-         "ALTER TABLE knowledge_evolution ADD COLUMN origin_agent TEXT DEFAULT ''",
-         "ALTER TABLE knowledge_evolution ADD COLUMN origin_session_id TEXT DEFAULT ''",
-         "ALTER TABLE knowledge_evolution ADD COLUMN origin_turn INTEGER DEFAULT 0",
-     ]),
-    (10, "Add origin provenance (transport + client) to all memory tables",
-     [
-         # v1.2.14 provenance: origin_platform = transport (mcp/http/hermes/cli),
-         # origin_client = producing client (claude-code/opencode/...).
-         # Legacy `platform` columns on context_memory/reflections are KEPT and
-         # dual-written; the empty default keeps old rows visible to any
-         # origin filter (audit-safe backward compatibility).
-         "ALTER TABLE knowledge_memory ADD COLUMN origin_platform TEXT DEFAULT ''",
-         "ALTER TABLE knowledge_memory ADD COLUMN origin_client TEXT DEFAULT ''",
-         "ALTER TABLE experience_memory ADD COLUMN origin_platform TEXT DEFAULT ''",
-         "ALTER TABLE experience_memory ADD COLUMN origin_client TEXT DEFAULT ''",
-         "ALTER TABLE task_memory ADD COLUMN origin_platform TEXT DEFAULT ''",
-         "ALTER TABLE task_memory ADD COLUMN origin_client TEXT DEFAULT ''",
-         "ALTER TABLE context_memory ADD COLUMN origin_client TEXT DEFAULT ''",
-         "ALTER TABLE research_papers ADD COLUMN origin_platform TEXT DEFAULT ''",
-         "ALTER TABLE research_papers ADD COLUMN origin_client TEXT DEFAULT ''",
-         "ALTER TABLE research_notes ADD COLUMN origin_platform TEXT DEFAULT ''",
-         "ALTER TABLE research_notes ADD COLUMN origin_client TEXT DEFAULT ''",
-         "ALTER TABLE session_transcripts ADD COLUMN origin_platform TEXT DEFAULT ''",
-         "ALTER TABLE session_transcripts ADD COLUMN origin_client TEXT DEFAULT ''",
-         "ALTER TABLE reflections ADD COLUMN origin_client TEXT DEFAULT ''",
-         "CREATE INDEX IF NOT EXISTS idx_knowledge_origin ON knowledge_memory(origin_platform, origin_client, project)",
-         "CREATE INDEX IF NOT EXISTS idx_experience_origin ON experience_memory(origin_platform, origin_client, project)",
-         "CREATE INDEX IF NOT EXISTS idx_task_origin ON task_memory(origin_platform, origin_client, project)",
-         # context_memory has no origin_platform column (the legacy `platform`
-         # column carries the transport), so its index uses that instead.
-         "CREATE INDEX IF NOT EXISTS idx_context_origin ON context_memory(platform, origin_client, project)",
-     ]),
-    (11, "Provenance review fixes: experience metadata column + client cleanup",
-     [
-         # P2-4 fix (v1.2.14 review): experience_memory had no metadata
-         # column, so the provenance envelope could not persist across
-         # restarts. ADD COLUMN is idempotent and keeps existing rows.
-         "ALTER TABLE experience_memory ADD COLUMN metadata TEXT DEFAULT '{}'",
-         # P1-1 fix (v1.2.14 review): rows stored while store() fell back to
-         # the transport value polluted the client column — an HTTP write got
-         # client='http'. Hermes rows (client='hermes') are plan-intended and
-         # stay. Empty client makes the row transparent to any client filter.
-         "UPDATE knowledge_memory SET origin_client='' WHERE origin_platform='http' AND origin_client='http'",
-         "UPDATE experience_memory SET origin_client='' WHERE origin_platform='http' AND origin_client='http'",
-         "UPDATE task_memory SET origin_client='' WHERE origin_platform='http' AND origin_client='http'",
-         "UPDATE context_memory SET origin_client='' WHERE platform='http' AND origin_client='http'",
-     ]),
-]
-# Tables that need a profile column
-_PROFILE_TABLES = [
-    "user_memory", "task_memory", "experience_memory",
-    "context_memory", "knowledge_memory", "research_papers",
-    "research_notes", "session_transcripts",
-]
+# _MIGRATIONS / _PROFILE_TABLES / SCHEMA_VERSION now live in core/storage/schema.py
+# and are imported at the top of this module.
 
 
 # ── SQLite BUSY retry decorator (Fix 3: concurrent write protection) ──────────
@@ -320,222 +131,13 @@ class SqliteStore:
         if not self._conn:
             return
         with self._lock:
-            self._conn.executescript("""
--- 1. User memory: preferences, habits, interaction history
-                    CREATE TABLE IF NOT EXISTS user_memory (
-                        user_id TEXT NOT NULL,
-                        profile TEXT NOT NULL DEFAULT 'default',
-                        preferences TEXT DEFAULT '{}',
-                        habits TEXT DEFAULT '{}',
-                        history TEXT DEFAULT '[]',
-                        last_updated TEXT DEFAULT (datetime('now')),
-                        last_access_at TEXT DEFAULT '',
-                        created_at TEXT DEFAULT (datetime('now')),
-                        version INTEGER DEFAULT 1,
-                        PRIMARY KEY (user_id, profile)
-                    );
-
-                -- 2. Task memory: status, steps, metadata
-                CREATE TABLE IF NOT EXISTS task_memory (
-                    id TEXT PRIMARY KEY,
-                    user_id TEXT,
-                    title TEXT,
-                    status TEXT,
-                    steps TEXT DEFAULT '[]',
-                    metadata TEXT DEFAULT '{}',
-                    project TEXT DEFAULT 'default',
-                    profile TEXT DEFAULT 'default',
-                    session_id TEXT DEFAULT '',
-                    session_title TEXT DEFAULT '',
-                    tags TEXT DEFAULT '[]',
-                    created_at TEXT DEFAULT (datetime('now')),
-                    updated_at TEXT DEFAULT (datetime('now')),
-                    language TEXT DEFAULT '',
-                    last_access_at TEXT DEFAULT ''
-                );
-
-                -- 3. Experience memory: success/failure experience, step sequences
-                CREATE TABLE IF NOT EXISTS experience_memory (
-                    id TEXT PRIMARY KEY,
-                    user_id TEXT,
-                    task_type TEXT,
-                    success INTEGER,
-                    steps_sequence TEXT DEFAULT '[]',
-                    summary TEXT,
-                    project TEXT DEFAULT 'default',
-                    profile TEXT DEFAULT 'default',
-                    session_id TEXT DEFAULT '',
-                    session_title TEXT DEFAULT '',
-                    tags TEXT DEFAULT '[]',
-                    created_at TEXT DEFAULT (datetime('now')),
-                    frequency INTEGER DEFAULT 1,
-                    language TEXT DEFAULT '',
-                    last_access_at TEXT DEFAULT ''
-                );
-
-                -- 4. Context memory: conversation context, token count, session ID、Platform source
-                CREATE TABLE IF NOT EXISTS context_memory (
-                    session_id TEXT PRIMARY KEY,
-                    user_id TEXT,
-                    messages TEXT DEFAULT '[]',
-                    token_count INTEGER DEFAULT 0,
-                    platform TEXT DEFAULT 'default',
-                    project TEXT DEFAULT 'default',
-                    profile TEXT DEFAULT 'default',
-                    created_at TEXT DEFAULT (datetime('now')),
-                    updated_at TEXT DEFAULT (datetime('now')),
-                    last_access_at TEXT DEFAULT ''
-                );
-
-                -- 5. Knowledge memory: domain knowledge, structured entries
-                CREATE TABLE IF NOT EXISTS knowledge_memory (
-                    id TEXT PRIMARY KEY,
-                    domain TEXT DEFAULT 'general',
-                    content TEXT,
-                    metadata TEXT DEFAULT '{}',
-                    trust_score REAL DEFAULT 0.5,
-                    entry_type TEXT DEFAULT 'fact',
-                    prerequisites TEXT DEFAULT '[]',
-                    output_template TEXT DEFAULT '',
-                    last_verified_at TEXT DEFAULT (datetime('now')),
-                    half_life_days INTEGER DEFAULT 90,
-                    access_count INTEGER DEFAULT 0,
-                    project TEXT DEFAULT 'default',
-                    profile TEXT DEFAULT 'default',
-                    session_id TEXT DEFAULT '',
-                    session_title TEXT DEFAULT '',
-                    tags TEXT DEFAULT '[]',
-                    user_id TEXT DEFAULT 'default',
-                    created_at TEXT DEFAULT (datetime('now')),
-                    updated_at TEXT DEFAULT (datetime('now')),
-                    language TEXT DEFAULT '',
-                    last_access_at TEXT DEFAULT ''
-                );
-
-                -- 6. Research papers: academic paper metadata
-                CREATE TABLE IF NOT EXISTS research_papers (
-                    id TEXT PRIMARY KEY,
-                    title TEXT NOT NULL,
-                    authors TEXT DEFAULT '[]',
-                    year INTEGER,
-                    journal TEXT,
-                    abstract TEXT DEFAULT '',
-                    keywords TEXT DEFAULT '[]',
-                    domain TEXT DEFAULT 'general',
-                    paper_type TEXT DEFAULT 'theory',
-                    key_points TEXT DEFAULT '[]',
-                    importance_score REAL DEFAULT 0.5,
-                    metadata TEXT DEFAULT '{}',
-                    project TEXT DEFAULT 'default',
-                    profile TEXT DEFAULT 'default',
-                    user_id TEXT DEFAULT 'default',
-                    created_at TEXT DEFAULT (datetime('now')),
-                    last_access_at TEXT DEFAULT ''
-                );
-
-                -- 7. Research notes: paper reading notes, research leads
-                CREATE TABLE IF NOT EXISTS research_notes (
-                    id TEXT PRIMARY KEY,
-                    user_id TEXT,
-                    topic TEXT NOT NULL,
-                    content TEXT DEFAULT '',
-                    linked_papers TEXT DEFAULT '[]',
-                    tags TEXT DEFAULT '[]',
-                    project TEXT DEFAULT 'default',
-                    profile TEXT DEFAULT 'default',
-                    created_at TEXT DEFAULT (datetime('now')),
-                    updated_at TEXT DEFAULT (datetime('now'))
-                );
-
-                -- 8. Reflection records table（v1.1.0）
-                CREATE TABLE IF NOT EXISTS reflections (
-                    id TEXT PRIMARY KEY,
-                    user_id TEXT NOT NULL,
-                    platform TEXT DEFAULT 'default',
-                    source_episodic_ids TEXT,
-                    key_insights TEXT,
-                    user_preferences TEXT,
-                    procedural_rules TEXT,
-                    new_knowledge TEXT,
-                    importance_scores TEXT,
-                    forget_suggestions TEXT,
-                    confidence REAL DEFAULT 0.0,
-                    meta TEXT,
-                    created_at TEXT DEFAULT (datetime('now'))
-                );
-
-                -- 9. Session transcripts: full conversation history + Compression summary
-                CREATE TABLE IF NOT EXISTS session_transcripts (
-                    session_id TEXT PRIMARY KEY,
-                    user_id TEXT,
-                    project TEXT DEFAULT 'default',
-                    profile TEXT DEFAULT 'default',
-                    messages TEXT,
-                    compressed_summary TEXT DEFAULT '',
-                    key_decisions TEXT DEFAULT '[]',
-                    created_at TEXT DEFAULT (datetime('now')),
-                    updated_at TEXT DEFAULT (datetime('now'))
-                );
-
-                -- 10. Reflection daily counters: per-(user, date) reflection quota
-                -- consumed by the daily limit. Persisted so the limit survives
-                -- process restarts and is isolated per user (P5-B).
-                CREATE TABLE IF NOT EXISTS reflection_daily_count (
-                    user_id TEXT NOT NULL,
-                    date TEXT NOT NULL,
-                    count INTEGER NOT NULL DEFAULT 0,
-                    PRIMARY KEY (user_id, date)
-                );
-
-                -- index
-                CREATE INDEX IF NOT EXISTS idx_task_project ON task_memory(project);
-                CREATE INDEX IF NOT EXISTS idx_task_updated ON task_memory(updated_at);
-                CREATE INDEX IF NOT EXISTS idx_task_session ON task_memory(session_id);
-                CREATE INDEX IF NOT EXISTS idx_experience_user ON experience_memory(user_id);
-                CREATE INDEX IF NOT EXISTS idx_experience_project ON experience_memory(project);
-                CREATE INDEX IF NOT EXISTS idx_experience_session ON experience_memory(session_id);
-                CREATE INDEX IF NOT EXISTS idx_context_user ON context_memory(user_id);
-                CREATE INDEX IF NOT EXISTS idx_knowledge_domain ON knowledge_memory(domain);
-                CREATE INDEX IF NOT EXISTS idx_knowledge_user ON knowledge_memory(user_id);
-                CREATE INDEX IF NOT EXISTS idx_knowledge_project ON knowledge_memory(project);
-                CREATE INDEX IF NOT EXISTS idx_research_domain ON research_papers(domain);
-                CREATE INDEX IF NOT EXISTS idx_research_user ON research_papers(user_id);
-                CREATE INDEX IF NOT EXISTS idx_notes_user ON research_notes(user_id);
-                CREATE INDEX IF NOT EXISTS idx_session_transcripts_user ON session_transcripts(user_id);
-                -- P6-A: missing join/lookup indexes (idempotent)
-                CREATE INDEX IF NOT EXISTS idx_knowledge_content ON knowledge_memory(content);
-                CREATE INDEX IF NOT EXISTS idx_task_user_created ON task_memory(user_id, created_at);
-                CREATE INDEX IF NOT EXISTS idx_experience_user_created ON experience_memory(user_id, created_at);
-                    CREATE INDEX IF NOT EXISTS idx_reflections_user ON reflections(user_id, created_at);
-
-                -- 11. Hit history: binary retrieval-hit log for RL significance
-                -- verification (verify_improvement). Persisted so the learning
-                -- verification loop survives restarts (unlike AEIS in-memory).
-                CREATE TABLE IF NOT EXISTS hit_history (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    user_id TEXT DEFAULT 'default',
-                    hit INTEGER DEFAULT 0,
-                    task_type TEXT DEFAULT '',
-                    ts TEXT DEFAULT (datetime('now'))
-                );
-                CREATE INDEX IF NOT EXISTS idx_hit_history_user ON hit_history(user_id, ts);
-            """)
+            self._conn.executescript(BASE_SCHEMA_SQL)
             self._maybe_commit()
             self._migrate_existing_tables()
             # build profile index after migration (ensure profile column exists)
-            self._conn.executescript("""
-                CREATE INDEX IF NOT EXISTS idx_user_profile ON user_memory(profile);
-                CREATE INDEX IF NOT EXISTS idx_task_profile ON task_memory(profile);
-                CREATE INDEX IF NOT EXISTS idx_experience_profile ON experience_memory(profile);
-                CREATE INDEX IF NOT EXISTS idx_context_profile ON context_memory(profile);
-                CREATE INDEX IF NOT EXISTS idx_knowledge_profile ON knowledge_memory(profile);
-                CREATE INDEX IF NOT EXISTS idx_papers_profile ON research_papers(profile);
-                CREATE INDEX IF NOT EXISTS idx_notes_profile ON research_notes(profile);
-                CREATE INDEX IF NOT EXISTS idx_transcripts_profile ON session_transcripts(profile);
-            """)
+            self._conn.executescript(PROFILE_INDEX_SQL)
             self._maybe_commit()
             # Auto-migrate: add language column to existing databases (idempotent)
-            _LANG_TABLES = ["task_memory", "experience_memory", "knowledge_memory"]
             for table in _LANG_TABLES:
                 try:
                     self._conn.execute(
