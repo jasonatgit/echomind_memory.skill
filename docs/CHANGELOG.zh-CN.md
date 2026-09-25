@@ -1,8 +1,8 @@
 # EchoMind 更新日志
 
-## v1.2.19 — Recuris 吸收 Top-4：Trace、归因、Fingerprint 与配对门 (2026-09-25)
+## v1.2.19 — Trace、归因、Fingerprint 与配对门 (2026-09-25)
 
-落地 Recuris 分析中价值最高的四项吸收（[arXiv:2608.24876](https://arxiv.org/abs/2608.24876)，`doc/竞品对比/recuris-analysis-report.md` 附录 F），基于 v1.2.18 模块布局——把反思从"总结"升级为"归因"，让知识更新有配对证据门。
+落地论文[arXiv:2608.24876](https://arxiv.org/abs/2608.24876)中价值最高的四项吸收，基于 v1.2.18 模块布局——把反思从"总结"升级为"归因"，让知识更新有配对证据门。
 
 | 领域 | 改动 |
 |------|------|
@@ -354,16 +354,26 @@ Satya, P. R. B. (2026).
 - **使用版本:** Echomind Memory Engine v1.2.8
 - **引用范围:** 知识认知状态分类、溯源追踪、架构自诊断、自我反思评分
 
+### 4、Recuris: Recursive Experiential–Working Memory Evolution for Long-Horizon Agent Harnesses
+
+Yu, Z., Wu, Y., Yin, Z., Chen, K., Zhao, Z., Wang, M., Yan, S., & Yang, L. (2026). 新加坡国立大学 · 斯坦福大学 · 牛津大学 · 普林斯顿大学。
+
+- **论文地址：** [arXiv:2608.24876](https://arxiv.org/abs/2608.24876)
+- **使用版本:** Echomind Memory Engine v1.2.19
+- **引用范围:** 结构化检索 trace（工作状态接地的证据记录）、组件归因反思、fingerprint 原则、配对 bootstrap 验证门等。
+
 
 ---
 
 ## 致谢
 
-We sincerely thank the authors of the above papers for their pioneering work on self-reflective memory mechanisms. Their research has provided valuable theoretical foundations and inspiration for the design of EchoMind-Memory.skill 's Self-Reflective Agent.
+We sincerely thank the authors of the above papers for their pioneering work on self-reflective memory mechanisms. Their research has provided valuable theoretical foundations and inspiration for the design of EchoMind Memory Engine's Self-Reflective Agent.
 
-本项目 Self-Reflective Agent 的技术方案设计受益于上述开创性研究的启发，在此向论文作者致以诚挚的学术谢意。
+Some of the technical design decisions in this project's engineering implementation benefit from the inspiration of the above groundbreaking research. We extend our sincere academic gratitude to the paper authors.
+At the same time, EchoMind Memory Engine's main difference from the above scientific research lies in its adoption of a testable, verifiable, mature engineering implementation — making it directly usable in production Multi-Agent systems without additional infrastructure. This is a production-grade agent application.
 
-同时，EchoMind-Memory.skill的 `自我进化` 与上述科学研究工作主要区别在于：采用**依赖反转**（核心引擎零 LLM 耦合）、**平台感知隔离**和**零配置部署**——使其可直接用于生产环境的 Multi-Agent 系统中，无需额外基础设施。这是一个产品级的智能体应用。
+本项目工程实现中的部分技术方案设计受益于上述开创性研究的启发，在此向各位论文作者致以诚挚的学术谢意。
+同时，EchoMind Memory Engine 与上述科学研究工作主要区别在于：采用可测试、可验证、成熟的工程化实现——使其可直接用于生产环境的 Multi-Agent 系统中，无需额外基础设施。这是一个产品级的智能体应用。
 
 
 

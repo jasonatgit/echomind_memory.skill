@@ -638,7 +638,7 @@ class SqliteStore:
     def save_context(self, session_id: str, user_id: str, messages: List,
                      token_count: int = 0, platform: str = "default",
                      project: str = "default", profile: str = "default",
-                     origin_client: str = None, trace: str = "{}"):
+                     origin_client: str = None, trace: str = None):
         with self._lock:
             # v1.2.14 provenance: the legacy `platform` column is kept and
             # dual-written (it carries the transport); origin_client records
@@ -646,21 +646,46 @@ class SqliteStore:
             # Recuris absorption #2: `trace` carries the structured retrieval
             # record (schema trace-v1: query / retrieved / state / checks) so
             # the reflection layer can attribute failures to memory components.
-            self._conn.execute("""
-                INSERT INTO context_memory (session_id, user_id, messages, token_count, platform, project, profile, origin_client, trace, updated_at, last_access_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
-                ON CONFLICT(session_id) DO UPDATE SET
-                    messages=excluded.messages, token_count=excluded.token_count,
-                    platform=excluded.platform,
-                    origin_client=excluded.origin_client,
-                    trace=excluded.trace,
-                    project=excluded.project,
-                    profile=excluded.profile,
-                    updated_at=datetime('now'),
-                    last_access_at=datetime('now')
-            """, (session_id, user_id, json.dumps(messages, ensure_ascii=False),
-                  token_count, platform, project, profile, origin_client or "",
-                  trace or "{}"))
+            #
+            # Audit (v1.2.19, P1-A): trace=None means "no trace on this write"
+            # — the upsert must NOT touch the stored trace. Before this fix the
+            # ON CONFLICT unconditionally set trace=excluded.trace, so any store
+            # call (which never passes trace) overwrote the retrieval trace the
+            # _persist_retrieval_trace path had just written — the structured
+            # trace→attribution evidence was blanked on the very next store.
+            # Retaining the existing trace on a None-aware-update keeps a row
+            # created by retrieval (no context yet) and then updated by store
+            # with both the conversation payload AND its prior trace.
+            if trace is None:
+                self._conn.execute("""
+                    INSERT INTO context_memory (session_id, user_id, messages, token_count, platform, project, profile, origin_client, trace, updated_at, last_access_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, '{}', datetime('now'), datetime('now'))
+                    ON CONFLICT(session_id) DO UPDATE SET
+                        messages=excluded.messages, token_count=excluded.token_count,
+                        platform=excluded.platform,
+                        origin_client=excluded.origin_client,
+                        project=excluded.project,
+                        profile=excluded.profile,
+                        updated_at=datetime('now'),
+                        last_access_at=datetime('now')
+                """, (session_id, user_id, json.dumps(messages, ensure_ascii=False),
+                      token_count, platform, project, profile, origin_client or ""))
+            else:
+                self._conn.execute("""
+                    INSERT INTO context_memory (session_id, user_id, messages, token_count, platform, project, profile, origin_client, trace, updated_at, last_access_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+                    ON CONFLICT(session_id) DO UPDATE SET
+                        messages=excluded.messages, token_count=excluded.token_count,
+                        platform=excluded.platform,
+                        origin_client=excluded.origin_client,
+                        trace=excluded.trace,
+                        project=excluded.project,
+                        profile=excluded.profile,
+                        updated_at=datetime('now'),
+                        last_access_at=datetime('now')
+                """, (session_id, user_id, json.dumps(messages, ensure_ascii=False),
+                      token_count, platform, project, profile, origin_client or "",
+                      trace))
             self._maybe_commit()
 
     @with_retry_on_busy()

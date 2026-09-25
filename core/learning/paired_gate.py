@@ -69,7 +69,7 @@ def held_out_paired_gate(base_items: Dict[str, float],
         statistics.mean(diffs[rng.randrange(len(diffs))] for _ in diffs)
         for _ in range(n_boot)
     )
-    lo = boots[int((alpha / 2) * n_boot)]
+    lo = boots[min(int((alpha / 2) * n_boot), n_boot - 1)]
     hi = boots[min(int((1 - alpha / 2) * n_boot) - 1, n_boot - 1)]
 
     accept = (lo > 0) and (n_dn <= reg_cap)

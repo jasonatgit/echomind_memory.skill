@@ -1344,10 +1344,25 @@ class MainMemoryAgent:
                         rec.get("user_id") or user_id, rec.get("task_id"))
                 try:
                     with self.db._lock:
-                        self.db._conn.execute(
-                            f"UPDATE {table} SET last_access_at=? WHERE {id_col}=?",
-                            (now, rec_id),
-                        )
+                        # v1.2.19 audit (P2-C): count a retrieval as an observed
+                        # hit for the knowledge fingerprint gate. Previously
+                        # access_count only grew on re-insert (@ dedup), never on
+                        # retrieval, so _entry_hit_scores / verify_improvement
+                        # observed ~0 coverage and the admission/fingerprint gate
+                        # could never fire. A successful retrieval is the
+                        # "was this memory actually used" signal — increment it
+                        # (knowledge only; other tables have no such counter).
+                        if source == "knowledge":
+                            self.db._conn.execute(
+                                "UPDATE knowledge_memory SET last_access_at=?, "
+                                "access_count = access_count + 1 WHERE id=?",
+                                (now, rec_id),
+                            )
+                        else:
+                            self.db._conn.execute(
+                                f"UPDATE {table} SET last_access_at=? WHERE {id_col}=?",
+                                (now, rec_id),
+                            )
                     # L-4 fix: keep the in-RAM ResearchPaper model in sync with the
                     # DB so paper freshness decays on subsequent searches (the RAM
                     # dict is the actual data source for search_papers).
@@ -1367,6 +1382,13 @@ class MainMemoryAgent:
                         entry = self.knowledge_agent.store.get(rec_id)
                         if entry is not None:
                             entry.last_access_at = now
+                            # P2-C: keep the in-RAM access_count in sync with the
+                            # DB bump above — _entry_hit_scores() reads it from
+                            # the in-memory entry, and without this the paired
+                            # gate would still see ~0 coverage after restart
+                            # syncs the counters.
+                            meta = entry.metadata if isinstance(entry.metadata, dict) else {}
+                            meta["access_count"] = int(meta.get("access_count", 0)) + 1
                     elif source == "experience":
                         entry = self.experience_agent.store.get(rec_id)
                         if entry is not None:

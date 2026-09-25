@@ -384,15 +384,22 @@ Satya, P. R. B. (2026).
 - **Release Version:** Echomind Memory Engine v1.2.8
 - **Scope:** epistemic knowledge classification, provenance tracking, architectural self-diagnosis, self-reflection scoring
 
+### 4. Recuris: Recursive Experiential–Working Memory Evolution for Long-Horizon Agent Harnesses
+
+Yu, Z., Wu, Y., Yin, Z., Chen, K., Zhao, Z., Wang, M., Yan, S., & Yang, L. (2026). National University of Singapore · Stanford University · University of Oxford · Princeton University.
+
+- **Paper:** [arXiv:2608.24876](https://arxiv.org/abs/2608.24876)
+- **Release Version:** Echomind Memory Engine v1.2.19
+- **Scope:** structured retrieval trace , component-attributed reflection, fingerprint principle, paired bootstrap validation gate for knowledge-update admission.
+
 ---
 
 ## Acknowledgments
 
-We sincerely thank the authors of the above papers for their pioneering work on self-reflective memory mechanisms. Their research has provided valuable theoretical foundations and inspiration for the design of EchoMind-Memory.skill's Self-Reflective Agent.
+We sincerely thank the authors of the above papers for their pioneering work on self-reflective memory mechanisms. Their research has provided valuable theoretical foundations and inspiration for the design of EchoMind Memory Engine's Self-Reflective Agent.
 
-The technical design of this project's Self-Reflective Agent benefits from the inspiration of the above groundbreaking research. We extend our sincere academic gratitude to the paper authors.
-
-At the same time, EchoMind-Memory.skill's "self-evolution" primarily differs from the above scientific research in its adoption of **dependency inversion** (core engine with zero LLM coupling), **platform-aware isolation**, and **zero-configuration deployment** — making it directly usable in production Multi-Agent systems without additional infrastructure. This is a production-grade agent application.
+Some of the technical design decisions in this project's engineering implementation benefit from the inspiration of the above groundbreaking research. We extend our sincere academic gratitude to the paper authors.
+At the same time, EchoMind Memory Engine's main difference from the above scientific research lies in its adoption of a testable, verifiable, mature engineering implementation — making it directly usable in production Multi-Agent systems without additional infrastructure. This is a production-grade agent application.
 
 
 

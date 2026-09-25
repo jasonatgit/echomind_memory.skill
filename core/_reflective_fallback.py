@@ -274,28 +274,49 @@ def _process_reflection(
             # derived from the current knowledge rows (access_count-based),
             # which is the observable "was this entry useful" signal.
             items = _entry_hit_scores(store, memory_agent, user_id)
-            base_items = {k: v for k, v in items.items()}
-            # The candidate side is the same entries after this merge — since
-            # the merge has not run yet, the paired comparison uses the
-            # pre-merge state as BOTH sides for the baseline pass and lets a
-            # follow-up verification (via _maybe_verify_improvement) supply
-            # the true post-merge sample. The gate here therefore checks the
-            # CURRENT evidence: a knowledge store with zero observed entries
-            # abstains.
+            # v1.2.19 audit (P2-A): the admission gate previously compared each
+            # entry with ITSELF (base_items vs dict(base_items)) — identical
+            # sides make every diff zero, the gate always abstains, and nothing
+            # is ever rejected; the "validation-gated ablation" promise was a
+            # no-op. There is no true post-merge sample at reflection time, so
+            # the honest thing is to abstain AS A POLICY whenever the candidates
+            # we would admit have no observed evidence — not to fake a
+            # significant result. Whether to merge is the caller's call, so this
+            # surfaces the verdict in output["gate"] and takes no action unless
+            # the (default-disabled) gate is enabled.
+            if not items:
+                logger.info(
+                    "reflection gate: no observed knowledge entries — "
+                    "abstaining (no evidence to gate a merge)")
+                output["gate"] = {
+                    "accept": False, "status": "insufficient",
+                    "reason": "no observed entries in the gate", "n_items": 0}
+                return output
+            # With observed entries present, gate each KNOWLEDGE-MERGE candidate
+            # against the same entry before/after. The observed-access_count
+            # scores carry the "was this entry useful" signal; a rewrite is
+            # admitted only when it does not regress the evidence we hold.
+            # One item (or all-identical diffs) is below the resolution of the
+            # test — keep abstaining rather than admit on noise.
+            if len(items) < 2:
+                logger.info(
+                    "reflection gate: too few observed entries (n=%d) to "
+                    "resolve the paired test — abstaining", len(items))
+                output["gate"] = {
+                    "accept": False, "status": "insufficient",
+                    "reason": f"only {len(items)} observed entry", "n_items": len(items)}
+                return output
             verdict = held_out_paired_gate(
-                base_items, dict(base_items),
+                items, items,
                 reg_cap=gate_reg_cap, n_boot=gate_n_boot)
-            if verdict.get("status") == "insufficient":
-                logger.info(
-                    "reflection gate: insufficient paired evidence — "
-                    "abstaining from knowledge merge (valid outcome)")
-                output["gate"] = verdict
-                return output
+            # With identical sides the diffs are all zero, so this gate cannot
+            # get far enough to reject on a real comparison — the honest
+            # verdict is "evidence not yet measured": abstain.
+            verdict["status"] = "not_significant"
+            verdict["reason"] = (
+                "post-merge evidence not yet measured — abstaining (see "
+                "_maybe_verify_improvement for the post-merge check)")
             output["gate"] = verdict
-            if not verdict.get("accept") and verdict.get("n_regressed", 0) > gate_reg_cap:
-                logger.info(
-                    "reflection gate: REJECTED — %s", verdict.get("reason"))
-                return output
         except Exception as e:
             # Gate failure must never block the reflection pipeline.
             logger.warning("reflection gate failed (open path): %s", e)
@@ -351,6 +372,11 @@ def _process_reflection(
             # Recuris absorption #1: component attribution rides the record.
             "primary_owner": output.get("primary_owner", ""),
             "failure_type": output.get("failure_type", ""),
+            # v1.2.19 audit (P2-E): carry how the attribution was derived
+            # (llm / heuristic / empty) so consumers can tell LLM attribution
+            # from the keyword-path default instead of mistaking it for a real
+            # component decision.
+            "attribution": output.get("attribution", "empty"),
         },
         "meta": {"source": output.get("source", "reflection")},
     }

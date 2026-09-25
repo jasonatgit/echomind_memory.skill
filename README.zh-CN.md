@@ -112,6 +112,7 @@ EchoMind 记忆系统专门针对*科研方向*的记忆进行了优化，对查
 
 | 日期 | 标题 |
 |:-----|:------|
+| 2026-09 | 🔁[EchoMind × Recuris：让记忆学会"归因"，而不只是"总结"](blog/echomind-recuris-absorption-article.md) |
 | 2026-08 | 🎯[ EchoMind： 集成 DSH 为长期记忆服务（MCP）— 实施报告](blog/echomind-dsh-mcp-integration-report.md) |
 | 2026-08 | 🧠[EchoMind: Markdown 呈现：让 AI 记忆从"黑盒"变为"可读文档"](blog/echomind-markdown-rendering-article.md) |
 | 2026-08 | 🎯[ 在"模型军备竞赛"的火线上，老梁的DSH 的插件化是一场豪赌还是一次押对？](blog/dsh-evolution-analysis.md) |
@@ -131,7 +132,7 @@ EchoMind 记忆系统专门针对*科研方向*的记忆进行了优化，对查
 
 | 版本 | 核心要点 |
 |:--------|:-----------|
-| v1.2.19 | *Recuris 吸收 Top-4：结构化检索 trace（迁移 v12）、组件归因反思（primary_owner/failure_type，双引擎统一）、fingerprint 门（零观测≠信号）、配对 bootstrap 门控知识更新（灰度默认关）。* |
+| v1.2.19 | *结构化检索 trace（迁移 v12）、组件归因反思（primary_owner/failure_type，双引擎统一）、fingerprint 门（零观测≠信号）、配对 bootstrap 门控知识更新（灰度默认关）。* |
 | v1.2.18 | *内部重构：从两个最大模块中抽出纯评分/新颖度助手、生命周期/进化/实体子 Agent、存储 schema/keys/rows——行为不变，全部调用点经委派/重导保留，新增 39 项评分数值单测。* |
 | v1.2.17 | *对 v1.2.16 的复核轮 — 全部修复逐个对照真实引擎重验：修复 TTL 绑定数缺陷、优化延迟回收、配置回退一致性复核与反思 batch 钳制复核。* |
 | v1.2.16 | *全数据链路审计：退出契约统一、LIMIT 下稀疏标签检索、reflections profile 级删除、删除级联一致、时间戳统一、状态机跨用户隔离、反思 knowledge 持久化与租户化、反思幂等、RL 锁加固、MCP/HTTP/CORS 加固、缓存限界。* |

@@ -113,6 +113,7 @@ When a query involves the following *domain keywords* or related *semantics*, th
 
 | Date | Title |
 |:-----|:------|
+| 2026-09 | 🔁[EchoMind × Recuris: Teaching Memory to Attribute, Not Just Summarize](blog/echomind-recuris-absorption-article-en.md) |
 | 2026-08 | 🎯[ EchoMind： 集成 DSH 为长期记忆服务（MCP）— 实施报告](blog/echomind-dsh-mcp-integration-report.md) |
 | 2026-08 | 🧠[EchoMind: Markdown Rendering: Turning AI Memory from a "Black Box" into a Readable Document](blog/echomind-markdown-rendering-article-en.md) |
 | 2026-08 | 🎯[ 在"模型军备竞赛"的火线上，老梁的DSH 的插件化是一场豪赌还是一次押对？](blog/dsh-evolution-analysis.md) |
@@ -130,7 +131,7 @@ When a query involves the following *domain keywords* or related *semantics*, th
 
 | Version | Highlights |
 |:--------|:-----------|
-| v1.2.19 | *Recuris absorption Top-4: structured retrieval trace (migration v12), component-attributed reflection (primary_owner/failure_type, both engines), fingerprint gate (unobserved ≠ signal), paired bootstrap gate for knowledge updates (grayscale OFF).* |
+| v1.2.19 | *structured retrieval trace (migration v12), component-attributed reflection (primary_owner/failure_type, both engines), fingerprint gate (unobserved ≠ signal), paired bootstrap gate for knowledge updates (grayscale OFF).* |
 | v1.2.18 | *Internal refactor: extracted pure scoring/novelty helpers, lifecycle/evolution/entity sub-agents, and storage schema/keys/rows out of the two largest modules — behavior unchanged, all call sites preserved via delegates/re-exports, +39 new scoring unit tests.* |
 | v1.2.17 | *Review round on v1.2.16 — re-verified every fix against the live engine (53 assertions green + full-chain smoke): fixed a `delete_expired` TTL binding-count bug (aged knowledge/experience/task rows raised `ProgrammingError`), double-write eviction (evicted in-use agents no longer closed mid-call), bounded atexit join budget (30s shared deadline instead of up to 8×185s serial joins), config fallback agreement & reflection batch clamp re-verified.* |
 | v1.2.16 | *Full-data-path audit (32 fixes): unified exit contract (`shutdown()` flushes pending reflections + LLM-budget join before disabling persistence — fixes silent atexit TypeError + HTTP restart drops), sparse-tag retrieval under LIMIT, profile-scoped reflections delete, delete-cascade parity (expired/memory_states/evolution/archive), julianday TTL across ISO/SQLite timestamps, cross-user state-scan isolation, reflection knowledge persistence & tenant scoping (default-bucket leak closed), reflection idempotency, config `get()`/`get_section()` agreement, RL lock hardening, MCP/HTTP/CORS hardening, bounded call-agent cache.* |
