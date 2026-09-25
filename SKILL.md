@@ -1,6 +1,6 @@
 ---
 name: echomind-memory
-version: "1.2.18"
+version: "1.2.19"
 description: EchoMind Memory — AI 持久记忆系统。支持 Hermes、OpenCode、OpenClaw、Claude Code 等多平台。6 种记忆类型 + reflective agent + self-reflection (epistemic mode, provenance, self-diagnosis)。
 category: software-development
 platforms:
@@ -16,7 +16,7 @@ tags:
   - self-reflection
 ---
 
-# EchoMind Memory v1.2.18
+# EchoMind Memory v1.2.19
 
 ## 概述
 
@@ -54,6 +54,13 @@ v1.2.13+ 评分统一：五个权重维度驱动所有被排序来源——fresh
 - **HTTP**：`POST /api/reflect` 端点，调用方自己的 LLM 处理 prompt
 - **输出**：key_insights → knowledge_memory / preferences → user_memory / rules → procedural；满足置信度阈值后消费写回各记忆 store，并按 (user, date) 持久化日限额
 - **安全**：confidence < 0.65 自动丢弃，失败静默降级
+
+### v1.2.19 Recuris 吸收（结构化反思 + 门控）
+
+- **结构化 trace（trace-v1）**：每次检索把「query / 命中记忆（id+source+importance）/ 各源计数」写入 `context_memory.trace`——反思层可据此**归因**失败到记忆组件（`primary_owner` + `failure_type`），而非泛泛总结。
+- **组件归因**：反思输出含 `primary_owner`（knowledge/experience/task/context/user/research/none）与 `failure_type`（knowledge_gap/invocation_miss）；不确定时弃权（`none`），不把模糊性强行变成归因。
+- **Fingerprint**：从未被检索过的知识条目（access_count=0）不参与 RL 显著性验证——零观测 ≠ 信号。
+- **配对门控（灰度）**：`reflection.gate_enabled: true` 启用后，知识更新需配对 bootstrap 证据（CI 排除零且回归 ≤ reg_cap）才准入；"不显著"弃权而非拒绝。
 
 ## 平台集成
 

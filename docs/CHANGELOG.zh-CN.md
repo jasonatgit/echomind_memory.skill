@@ -1,5 +1,20 @@
 # EchoMind 更新日志
 
+## v1.2.19 — Recuris 吸收 Top-4：Trace、归因、Fingerprint 与配对门 (2026-09-25)
+
+落地 Recuris 分析中价值最高的四项吸收（[arXiv:2608.24876](https://arxiv.org/abs/2608.24876)，`doc/竞品对比/recuris-analysis-report.md` 附录 F），基于 v1.2.18 模块布局——把反思从"总结"升级为"归因"，让知识更新有配对证据门。
+
+| 领域 | 改动 |
+|------|------|
+| **结构化检索 trace（迁移 v12）** | `context_memory` 增加 `trace` 列（schema `trace-v1`：query / `retrieved[]`（id+source+importance）/ 各源计数 / 捕获时间）。`retrieve_for_task` 组装并持久化——复用聚合检索字典，零额外扫描——使反思层可**归因**失败到记忆组件（Recuris 实证：无 trace 定位率 13.0%，有 trace 64.8%）。`save_context_trace` 只更新 trace 不重写消息；旧行保持 `trace='{}'` |
+| **组件归因反思** | `ReflectionOutput` 增加 `primary_owner`（knowledge/experience/task/context/user/research/none）与 `failure_type`（knowledge_gap/invocation_miss/none），默认 `""`——向后兼容。归一化收敛在 `ReflectiveAgent._normalize_attribution`，**覆盖双引擎的唯一单点**（native 引擎直接返回 `ReflectionOutput`，此前绕过 fallback 的归一化——已验证）。keyword 路径输出启发式默认并标注 `attribution:"heuristic"`。中英 `reflect` prompt 增加归因要求并显式弃权（不确定用 "none"——不把模糊性强行变成归因）。`save_reflection` 把 owner/failure_type 写入 `meta` JSON（无需迁移） |
+| **Fingerprint：零观测 ≠ 信号** | `verify_improvement` 接受 `observed_count`——验证窗口内知识条目**从未被检索**（access_count=0）时报 `insufficient`，而非让 decode noise 冒充学习信号；`_maybe_verify_improvement` 提供该计数；`record_feedback` 的 `save_hit` 现在记录 `task_type`（此前恒 `''`——仅按用户统计） |
+| **配对门控知识更新** | 新增 `core/learning/paired_gate.py`：`held_out_paired_gate` 以 **item（簇）为单位 bootstrap 而非单样本**（item 内样本相关，重采样会报出虚假过窄的区间），仅当 CI 排除零**且**回归 ≤ `reg_cap` 才 admit，"不显著"**弃权**（弃权是合法结论，不是拒绝——对齐 Recuris"显著有害才拒，弱证据不拒"）。`material` 吸收 dense 分数噪声（0.97 vs 0.95 不翻转回归计数）。经 `reflection.gate_enabled` 接入反思合并（**灰度默认关**），配置 `gate_reg_cap: 1` / `gate_n_boot: 3000` |
+
+**迁移：** v12 首次连接自动执行（幂等 `ADD COLUMN` + 索引）。既有流程无行为变化：trace 记录的是检索本就在做的事；gate 默认关；归因字段默认 `""`。
+
+---
+
 ## v1.2.18 — 内部重构：Top-2 大文件拆分 (2026-09-23)
 
 对两个最大模块进行结构性重构。**行为零变化**——全部调用点、导入路径与 DB 迁移经同名委派与重导保留；已通过对拍工具 + 全量测试（74 → 113，全绿）与生产库副本 schema 校验。

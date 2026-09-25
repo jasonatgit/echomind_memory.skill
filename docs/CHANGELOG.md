@@ -1,5 +1,20 @@
 # EchoMind Changelog
 
+## v1.2.19 — Recuris Absorption Top-4: Trace, Attribution, Fingerprint & Paired Gate (2026-09-25)
+
+Implements the four highest-value absorptions from the Recuris analysis ([arXiv:2608.24876](https://arxiv.org/abs/2608.24876), `doc/竞品对比/recuris-analysis-report.md` 附录 F) on the v1.2.18 module layout — turning reflection from "summarize" into "attribute", and gating knowledge updates on paired evidence.
+
+| Area | Change |
+|------|--------|
+| **Structured retrieval trace (migration v12)** | `context_memory` gains a `trace` column (schema `trace-v1`: query / `retrieved[]` with id+source+importance / counts-by-source / captured_at). `retrieve_for_task` assembles and persists it — reusing the aggregated retrieval dict, no extra scan — so the reflection layer can **attribute** a failure to a memory component (Recuris: localization 13.0% without trace vs 64.8% with). `save_context_trace` updates the trace without rewriting messages; legacy rows keep `trace='{}'` |
+| **Component-attributed reflection** | `ReflectionOutput` gains `primary_owner` (knowledge/experience/task/context/user/research/none) and `failure_type` (knowledge_gap/invocation_miss/none), default `""` — backward compatible. Normalization lives in `ReflectiveAgent._normalize_attribution`, **the single point covering BOTH engines** (the native engine returns `ReflectionOutput` directly and previously bypassed the fallback's normalization — verified). The keyword path emits heuristic defaults marked `attribution:"heuristic"`. en/zh `reflect` prompts ask for attribution with explicit abstention ("none" when unsure — never convert ambiguity into an attribution). `save_reflection` rides owner/failure_type in the `meta` JSON (no migration needed) |
+| **Fingerprint: unobserved ≠ signal** | `verify_improvement` takes `observed_count` — a verification window whose knowledge entries were **never retrieved** (access_count = 0) reports `insufficient` instead of letting decode noise pose as a learning signal; `_maybe_verify_improvement` supplies the count; `record_feedback` now records `task_type` on `save_hit` (previously always `''` — per-user only statistics) |
+| **Validation-gated knowledge updates** | New `core/learning/paired_gate.py`: `held_out_paired_gate` bootstraps over **items (clusters), not samples** (samples within one item are correlated — resampling them would report a falsely narrow interval), accepts only when the CI excludes zero AND regressions ≤ `reg_cap`, and **abstains** on "not significant" (abstention is a valid outcome, not a rejection — aligned with Recuris "significantly harmful rejects, weak evidence does not"). `material` floors dense-score noise (0.97 vs 0.95 must not flip the regression counter). Wired into the reflection merge behind `reflection.gate_enabled` (**grayscale default OFF**) with `gate_reg_cap: 1` / `gate_n_boot: 3000` |
+
+**Migration:** v12 runs automatically on first connect (idempotent `ADD COLUMN` + index). No behavior change for existing flows: the trace records what retrieval already did; the gate is OFF by default; attribution fields default to `""`.
+
+---
+
 ## v1.2.18 — Internal Refactor: Top-2 File Split (2026-09-23)
 
 Structural refactor of the two largest modules. **No behavior change** — every existing call site, import path and DB migration is preserved through same-named delegates and re-exports; verified by a parity harness + the full suite (74 → 113 tests, all green) and a production-DB-copy schema check.
