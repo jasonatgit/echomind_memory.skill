@@ -109,6 +109,10 @@ FALLBACK_CONFIG = {
         "batch_size": [5, 12],
         "max_daily":  [5, 20],
         "min_records": 6,
+        # Recuris absorption #4: paired bootstrap gate (grayscale default off).
+        "gate_enabled": False,
+        "gate_reg_cap": 1,
+        "gate_n_boot": 3000,
     },
     "retrieval": {
         "experience_top_k": 5,

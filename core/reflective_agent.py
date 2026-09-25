@@ -217,6 +217,22 @@ class ReflectiveAgent:
         """Return True if this user's daily reflection limit is reached."""
         return self._get_daily_count(user_id) >= self._daily_limit
 
+    # Recuris absorption #1: attribution normalization shared by BOTH engines.
+    # The fallback engine normalizes inside _process_reflection, but the native
+    # engine (when present) returns the LLM's raw fields — so the coercion
+    # layer here is the single point that guarantees unknown values degrade to
+    # "" instead of polluting the persisted record.
+    _VALID_OWNERS = {"knowledge", "experience", "task", "context", "user", "research", "none"}
+    _VALID_FAILURES = {"knowledge_gap", "invocation_miss", "none"}
+
+    @classmethod
+    def _normalize_attribution(cls, result: dict) -> dict:
+        owner = str(result.get("primary_owner") or "").strip().casefold()
+        result["primary_owner"] = owner if owner in cls._VALID_OWNERS else ""
+        ftype = str(result.get("failure_type") or "").strip().casefold()
+        result["failure_type"] = ftype if ftype in cls._VALID_FAILURES else ""
+        return result
+
     def reflect_with_llm(
         self,
         records: List[Dict],
@@ -248,7 +264,7 @@ class ReflectiveAgent:
             if isinstance(result, dict):
                 from .models.reflection import ReflectionOutput
                 try:
-                    output = ReflectionOutput(**result)
+                    output = ReflectionOutput(**self._normalize_attribution(result))
                 except Exception:
                     logger.warning("reflect_with_llm: failed to coerce dict to ReflectionOutput")
                     output = None
@@ -256,6 +272,12 @@ class ReflectiveAgent:
                 # Raw string from fallback — not a valid reflection output
                 output = None
             else:
+                # ReflectionOutput direct return (native engine) — normalize in
+                # place so unknown attribution values degrade to "".
+                if hasattr(result, "primary_owner"):
+                    normalized = self._normalize_attribution(result.model_dump())
+                    result.primary_owner = normalized["primary_owner"]
+                    result.failure_type = normalized["failure_type"]
                 output = result
         if output is None:
             # P1-4: the reserved slot is refunded so failed reflections
@@ -293,13 +315,18 @@ class ReflectiveAgent:
             if isinstance(result, dict):
                 from .models.reflection import ReflectionOutput
                 try:
-                    output = ReflectionOutput(**result)
+                    output = ReflectionOutput(**self._normalize_attribution(result))
                 except Exception:
                     logger.warning("process_result: failed to coerce dict to ReflectionOutput")
                     output = None
             elif isinstance(result, str):
                 output = None
             else:
+                # ReflectionOutput direct return (native engine) — normalize.
+                if hasattr(result, "primary_owner"):
+                    normalized = self._normalize_attribution(result.model_dump())
+                    result.primary_owner = normalized["primary_owner"]
+                    result.failure_type = normalized["failure_type"]
                 output = result
         if output is None:
             # P1-4: refund the reserved slot — a parse failure / low-confidence

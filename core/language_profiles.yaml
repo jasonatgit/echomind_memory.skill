@@ -114,7 +114,20 @@ en:
       Records:
       {records}
 
-      Respond in JSON format with keys: key_insights, user_preferences, procedural_rules, new_knowledge
+      5. Attribute the finding to ONE memory component (primary_owner):
+         knowledge | experience | task | context | user | research | none
+         - knowledge: a reusable fact/procedure/action-exemplar is missing or wrong
+         - experience: a success/failure lesson is missing
+         - task: the tracked task state was wrong or incomplete
+         - context: conversation context was lost or mismatched
+         - user: user preference/habit was missing
+         - none: cannot attribute (abstain — "no change this time" is a valid answer)
+      6. Classify the failure kind (failure_type):
+         knowledge_gap (the knowledge was missing) | invocation_miss (the knowledge
+         exists but was not retrieved in time) | none
+
+      Respond in JSON format with keys: key_insights, user_preferences, procedural_rules, new_knowledge, primary_owner, failure_type
+      Never convert ambiguity into an attribution — use "none" when unsure.
     hermes_sysprompt: |
       [EchoMind Memory]
       Long-term memory system activated. Your conversations will be automatically recorded and retrieved.
@@ -240,7 +253,19 @@ zh:
       记录:
       {records}
 
-      以 JSON 格式回复，键名为: key_insights, user_preferences, procedural_rules, new_knowledge
+      5. 把发现归因到唯一的记忆组件（primary_owner）:
+         knowledge | experience | task | context | user | research | none
+         - knowledge: 可复用的知识/过程/动作范例缺失或错误
+         - experience: 成功/失败经验缺失
+         - task: 被追踪的任务状态错误或不完整
+         - context: 会话上下文丢失或不匹配
+         - user: 用户偏好/习惯缺失
+         - none: 无法归因（弃权——"本次不改"也是合法结论）
+      6. 判定失败类型（failure_type）:
+         knowledge_gap（知识缺失）| invocation_miss（知识存在但未及时被检索）| none
+
+      以 JSON 格式回复，键名为: key_insights, user_preferences, procedural_rules, new_knowledge, primary_owner, failure_type
+      不要把模糊性强行变成归因——不确定时用 "none"。
     hermes_sysprompt: |
       [EchoMind 记忆系统]
       长期记忆系统已激活。对话将被自动记录和检索。

@@ -136,6 +136,16 @@ _MIGRATIONS = [
          "UPDATE task_memory SET origin_client='' WHERE origin_platform='http' AND origin_client='http'",
          "UPDATE context_memory SET origin_client='' WHERE platform='http' AND origin_client='http'",
      ]),
+    (12, "Add structured retrieval trace to context_memory",
+     [
+         # Recuris absorption #2 (structured trace Γ): record what was
+         # retrieved / what the task state was / what checks fired, so the
+         # reflection layer can ATTRIBUTE a failure to a memory component
+         # instead of only summarizing. ADD COLUMN is idempotent; legacy rows
+         # keep trace='{}' and stay fully compatible.
+         "ALTER TABLE context_memory ADD COLUMN trace TEXT DEFAULT '{}'",
+         "CREATE INDEX IF NOT EXISTS idx_context_trace ON context_memory(session_id, updated_at)",
+     ]),
 ]
 
 _PROFILE_TABLES = [

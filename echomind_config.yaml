@@ -52,6 +52,13 @@ reflection:
   batch_size: [5, 12]
   max_daily: [5, 20]
   min_records: 6
+  # Recuris absorption #4: paired bootstrap gate for knowledge-update
+  # admission. Grayscale default OFF — enable after observing retrieval
+  # quality. "Not significant" abstains (keeps the current knowledge); only
+  # a significant regression rejects.
+  gate_enabled: false
+  gate_reg_cap: 1
+  gate_n_boot: 3000
 
 retrieval:
   experience_top_k: 5

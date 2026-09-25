@@ -709,17 +709,28 @@ class RLWeightOptimizer:
 
     @staticmethod
     def verify_improvement(hits_bool: List[bool], baseline_bool: List[bool],
-                           min_tasks: int = None) -> Dict:
+                           min_tasks: int = None,
+                           observed_count: int = None) -> Dict:
         """Binary-significance verification of learning effect.
 
         Returns improved only if success > baseline + 2·SE (binomial standard
         error). Otherwise an actionable reflection list (matching AEIS
         _distill_reflection) is returned so the caller can roll back / lower LR.
+
+        Recuris absorption #3 (fingerprint): ``observed_count`` is the number
+        of memory entries that were actually retrieved/hit at least once in
+        the window. An entry never retrieved has NO observation — its
+        "effectiveness" is unknowable, so a window whose observed coverage is
+        zero reports ``insufficient`` instead of letting decode noise pose as
+        a learning signal.
         """
         min_tasks = min_tasks or RLWeightOptimizer.MIN_VERIFY_TASKS
         n = len(hits_bool)
         if n < min_tasks or not baseline_bool:
             return {"status": "insufficient", "n": n}
+        # Fingerprint gate: no observed entries in the window → no signal.
+        if observed_count is not None and observed_count <= 0:
+            return {"status": "insufficient", "n": n, "reason": "no observed entries"}
 
         success = sum(hits_bool) / n
         baseline = sum(baseline_bool) / len(baseline_bool)
@@ -732,6 +743,7 @@ class RLWeightOptimizer:
             "baseline": round(baseline, 3),
             "se": round(se, 3),
             "n": n,
+            "observed": observed_count,
             "reflections": [] if improved else [
                 "learning did not yield significant hit-rate gain — LR too high (oscillation)?",
                 "feedback signal noisy (casual upvotes)?",

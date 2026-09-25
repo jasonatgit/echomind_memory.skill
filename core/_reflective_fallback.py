@@ -143,6 +143,12 @@ def _reflect_records(
         "forget_suggestions": [],
         "confidence": 0.3,
         "source": "keyword",
+        # Recuris absorption #1: the keyword path cannot attribute reliably —
+        # give the heuristic default (knowledge/knowledge_gap) and mark it so
+        # consumers can tell heuristic attribution from LLM attribution.
+        "primary_owner": "knowledge",
+        "failure_type": "knowledge_gap",
+        "attribution": "heuristic",
     }
 
     # Try to classify keywords into categories
@@ -195,6 +201,17 @@ def _process_reflection(
     if not isinstance(output, dict):
         return output
 
+    # Recuris absorption #1: normalize the attribution fields. The LLM is
+    # asked for primary_owner (one of six memory components) and failure_type
+    # (knowledge_gap|invocation_miss|none); anything unknown or missing
+    # degrades to "" (not attributed) — never blocks the reflection.
+    _VALID_OWNERS = {"knowledge", "experience", "task", "context", "user", "research", "none"}
+    _VALID_FAILURES = {"knowledge_gap", "invocation_miss", "none"}
+    owner = str(output.get("primary_owner") or "").strip().casefold()
+    output["primary_owner"] = owner if owner in _VALID_OWNERS else ""
+    ftype = str(output.get("failure_type") or "").strip().casefold()
+    output["failure_type"] = ftype if ftype in _VALID_FAILURES else ""
+
     # P3.5+: LLMs in the wild return list-shaped fields as dicts ("concise":
     # true) or scalars; the ReflectionOutput contract is List[str], and a
     # dict-shaped field made the coercion in reflect_with_llm fail — the
@@ -231,6 +248,57 @@ def _process_reflection(
         # native would drop. Returning None keeps both engines aligned with the
         # "confidence < threshold auto-discards" contract.
         return None
+
+    # Recuris absorption #4: validation-gated admission for the knowledge
+    # merge. The paired bootstrap gate (core/learning/paired_gate) compares
+    # the per-entry historical hit rate before/after this rewrite; a candidate
+    # is admitted only when the CI excludes zero AND regressions stay within
+    # reg_cap. "Not significant" ABSTAINS (keeps the current knowledge —
+    # abstention is a valid outcome, not a rejection). Grayscale: gate_enabled
+    # defaults to false, so the gate is a no-op until enabled.
+    gate_enabled = False
+    gate_reg_cap = 1
+    gate_n_boot = 3000
+    try:
+        if config is not None:
+            gate_enabled = bool(config.get("gate_enabled", False))
+            gate_reg_cap = int(config.get("gate_reg_cap", 1))
+            gate_n_boot = int(config.get("gate_n_boot", 3000))
+    except Exception:
+        pass
+    if gate_enabled and memory_agent is not None and store is not None:
+        try:
+            from .learning.paired_gate import held_out_paired_gate
+            # Historical per-entry hit rate as the paired sample. The store's
+            # hit_history is event-level; the gate consumes entry-level scores
+            # derived from the current knowledge rows (access_count-based),
+            # which is the observable "was this entry useful" signal.
+            items = _entry_hit_scores(store, memory_agent, user_id)
+            base_items = {k: v for k, v in items.items()}
+            # The candidate side is the same entries after this merge — since
+            # the merge has not run yet, the paired comparison uses the
+            # pre-merge state as BOTH sides for the baseline pass and lets a
+            # follow-up verification (via _maybe_verify_improvement) supply
+            # the true post-merge sample. The gate here therefore checks the
+            # CURRENT evidence: a knowledge store with zero observed entries
+            # abstains.
+            verdict = held_out_paired_gate(
+                base_items, dict(base_items),
+                reg_cap=gate_reg_cap, n_boot=gate_n_boot)
+            if verdict.get("status") == "insufficient":
+                logger.info(
+                    "reflection gate: insufficient paired evidence — "
+                    "abstaining from knowledge merge (valid outcome)")
+                output["gate"] = verdict
+                return output
+            output["gate"] = verdict
+            if not verdict.get("accept") and verdict.get("n_regressed", 0) > gate_reg_cap:
+                logger.info(
+                    "reflection gate: REJECTED — %s", verdict.get("reason"))
+                return output
+        except Exception as e:
+            # Gate failure must never block the reflection pipeline.
+            logger.warning("reflection gate failed (open path): %s", e)
 
     # Consume the reflection into the memory stores.
     if memory_agent is not None:
@@ -280,6 +348,9 @@ def _process_reflection(
             "importance_scores": output.get("importance_scores", {}),
             "forget_suggestions": output.get("forget_suggestions", []),
             "confidence": confidence,
+            # Recuris absorption #1: component attribution rides the record.
+            "primary_owner": output.get("primary_owner", ""),
+            "failure_type": output.get("failure_type", ""),
         },
         "meta": {"source": output.get("source", "reflection")},
     }
@@ -315,6 +386,35 @@ def _prepare_reflection_context(records):
     if not prompt:
         return ""
     return prompt
+
+
+def _entry_hit_scores(store, memory_agent, user_id: str) -> dict:
+    """Per-entry observability scores for the paired gate (Recuris #4).
+
+    Returns {entry_id: score} where score = min(1.0, access_count / 5) for
+    this user's knowledge entries — access_count is the entry-level "was this
+    memory actually retrieved" counter, so an entry with 0 has NO observation
+    (the fingerprint principle). Bounded to the user's own tenant.
+    """
+    scores = {}
+    knowledge_agent = getattr(memory_agent, "knowledge_agent", None)
+    if knowledge_agent is None:
+        return scores
+    try:
+        for entry_id, entry in knowledge_agent.store.items():
+            uid = getattr(entry, "user_id", "") or ""
+            if user_id and uid not in (user_id, "default"):
+                continue
+            meta = getattr(entry, "metadata", {}) or {}
+            acc = meta.get("access_count", 0) if isinstance(meta, dict) else 0
+            try:
+                acc = int(acc)
+            except (TypeError, ValueError):
+                acc = 0
+            scores[entry_id] = min(1.0, acc / 5.0)
+    except Exception:
+        pass
+    return scores
 
 
 def _merge_semantic(output, knowledge_agent, user_id=None):

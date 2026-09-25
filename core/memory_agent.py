@@ -916,6 +916,20 @@ class MainMemoryAgent:
 
         self._update_memory_states(user_id)
 
+        # Recuris absorption #2 (structured trace): persist what was retrieved
+        # and what the task state was, so the reflection layer can ATTRIBUTE a
+        # failure to a memory component instead of only summarizing (Recuris:
+        # localization 13.0% without trace vs 64.8% with). Best-effort — a
+        # trace failure never breaks retrieval.
+        try:
+            self._persist_retrieval_trace(
+                task_context=task_context, user_id=user_id,
+                task_id=task_id, platform=platform, project=project,
+                profile=profile, session_id=session_id,
+                retrieved=retrieved, top_memories=top_memories)
+        except Exception as e:
+            logger.debug("retrieval trace persist failed: %s", e)
+
         return {
             "working_memory": top_memories,
             "behavior_hints": behavior_hints,
@@ -927,6 +941,56 @@ class MainMemoryAgent:
             "user": retrieved.get("user", {}),
         }
 
+
+    def _build_retrieval_trace(self, task_context: str, retrieved: Dict[str, Any],
+                               top_memories: List) -> Dict[str, Any]:
+        """Build the structured trace record (Recuris absorption #2, trace-v1).
+
+        retrieved[] reuses the aggregated `retrieved` dict — no extra scan.
+        """
+        hits = []
+        for m in top_memories:
+            hits.append({
+                "id": getattr(m, "metadata", {}).get("id", "") if isinstance(getattr(m, "metadata", None), dict) else "",
+                "source": m.source,
+                "importance": round(m.importance, 3),
+            })
+        per_source_counts = {src: len(mems) for src, mems in retrieved.items()
+                             if isinstance(mems, list)}
+        return {
+            "schema": "trace-v1",
+            "query": (task_context or "")[:200],
+            "retrieved": hits,
+            "retrieved_counts_by_source": per_source_counts,
+            "top_n": len(top_memories),
+            "captured_at": datetime.now(timezone.utc).isoformat(),
+        }
+
+    def _persist_retrieval_trace(self, task_context: str, user_id: str,
+                                 task_id: Optional[str], platform: Optional[str],
+                                 project: str, profile: str, session_id: str,
+                                 retrieved: Dict[str, Any], top_memories: List):
+        """Persist the retrieval trace onto the session's context row.
+
+        Recuris absorption #2: the trace rides the same context row the store
+        path writes (session key = stable_memory_key), so one row carries both
+        the conversation and the structured evidence the reflection layer
+        needs. Skips silently when persistence is off.
+        """
+        if not self._persistence_enabled:
+            return
+        trace = self._build_retrieval_trace(task_context, retrieved, top_memories)
+        ctx_key = stable_memory_key(user_id, task_id or session_id or "session")
+        row = self.db._conn.execute(
+            "SELECT 1 FROM context_memory WHERE session_id=?", (ctx_key,)).fetchone()
+        if row:
+            self.db.save_context_trace(ctx_key, trace)
+        else:
+            # No context row yet for this session — create one carrying the trace.
+            self.db.save_context(
+                session_id=ctx_key, user_id=user_id, messages=[],
+                platform=platform or "default", project=project,
+                profile=profile, trace=json.dumps(trace, ensure_ascii=False))
 
     @staticmethod
     def _score_base(terms, boosts=()) -> float:
@@ -2025,7 +2089,10 @@ profile=profile, language=lang, experience_id=exp_id,
         hit = (feedback == "positive")
         if self._persistence_enabled:
             try:
-                self.db.save_hit(user_id, hit=hit)
+                # Recuris absorption #3: record the task_type so hit_history
+                # can be grouped by task type (previously always '' —
+                # per-user only statistics).
+                self.db.save_hit(user_id, hit=hit, task_type=(task_id or "")[:64])
             except Exception:
                 logger.debug("save_hit failed", exc_info=True)
         self._feedback_since_verify[user_id] = self._feedback_since_verify.get(user_id, 0) + 1
@@ -2051,11 +2118,19 @@ profile=profile, language=lang, experience_id=exp_id,
             hits = self.db.get_hit_history(user_id, limit=50)
             hits_bool = [bool(r["hit"]) for r in hits]
             baseline_bool = self._baseline_hits.get(user_id) or []
+            # Recuris absorption #3 (fingerprint): how many of this user's
+            # knowledge entries were actually observed (access_count > 0) —
+            # an entry never retrieved has no observation, so a window with
+            # zero observed coverage carries no learning signal.
+            observed = self.db._conn.execute(
+                "SELECT count(*) FROM knowledge_memory "
+                "WHERE user_id=? AND access_count > 0", (user_id,)).fetchone()[0]
         except Exception as e:
             logger.debug("verify_improvement fetch failed: %s", e)
             return
 
-        verdict = self.rl_optimizer.verify_improvement(hits_bool, baseline_bool)
+        verdict = self.rl_optimizer.verify_improvement(
+            hits_bool, baseline_bool, observed_count=observed)
         if verdict["status"] == "insufficient":
             # too few samples to judge — backfill baseline now for later
             self._freeze_baseline(user_id)

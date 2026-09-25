@@ -638,24 +638,29 @@ class SqliteStore:
     def save_context(self, session_id: str, user_id: str, messages: List,
                      token_count: int = 0, platform: str = "default",
                      project: str = "default", profile: str = "default",
-                     origin_client: str = None):
+                     origin_client: str = None, trace: str = "{}"):
         with self._lock:
             # v1.2.14 provenance: the legacy `platform` column is kept and
             # dual-written (it carries the transport); origin_client records
             # the producing client alongside it.
+            # Recuris absorption #2: `trace` carries the structured retrieval
+            # record (schema trace-v1: query / retrieved / state / checks) so
+            # the reflection layer can attribute failures to memory components.
             self._conn.execute("""
-                INSERT INTO context_memory (session_id, user_id, messages, token_count, platform, project, profile, origin_client, updated_at, last_access_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+                INSERT INTO context_memory (session_id, user_id, messages, token_count, platform, project, profile, origin_client, trace, updated_at, last_access_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
                 ON CONFLICT(session_id) DO UPDATE SET
                     messages=excluded.messages, token_count=excluded.token_count,
                     platform=excluded.platform,
                     origin_client=excluded.origin_client,
+                    trace=excluded.trace,
                     project=excluded.project,
                     profile=excluded.profile,
                     updated_at=datetime('now'),
                     last_access_at=datetime('now')
             """, (session_id, user_id, json.dumps(messages, ensure_ascii=False),
-                  token_count, platform, project, profile, origin_client or ""))
+                  token_count, platform, project, profile, origin_client or "",
+                  trace or "{}"))
             self._maybe_commit()
 
     @with_retry_on_busy()
@@ -734,6 +739,24 @@ class SqliteStore:
                     "ORDER BY ts DESC, id DESC LIMIT ?",
                     (user_id, limit)).fetchall()
         return [dict(r) for r in rows]
+
+    @with_retry_on_busy()
+    @_require_conn
+    def save_context_trace(self, session_id: str, trace: Dict) -> bool:
+        """Update only the trace column of an existing context row.
+
+        Recuris absorption #2: the retrieval trace is written after a
+        retrieval without re-writing the messages payload. Returns False when
+        the session row does not exist (caller decides whether to create it).
+        """
+        with self._lock:
+            cursor = self._conn.execute(
+                """UPDATE context_memory SET trace=?, updated_at=datetime('now')
+                   WHERE session_id=?""",
+                (json.dumps(trace, ensure_ascii=False), session_id),
+            )
+            self._maybe_commit()
+            return cursor.rowcount > 0
 
     @with_retry_on_busy()
     @_require_conn
@@ -987,6 +1010,16 @@ class SqliteStore:
             # legacy `platform` column, which query_memory reads for
             # reflections. No envelope is attached by design.
             ref = data.get("reflection", {})
+            # Recuris absorption #1: the component attribution (primary_owner/
+            # failure_type) rides the meta JSON so reflections can be grouped
+            # and queried by owner without a schema migration.
+            _meta = dict(data.get("meta", {})) if isinstance(data.get("meta"), dict) else {}
+            if ref.get("primary_owner"):
+                _meta.setdefault("primary_owner", ref["primary_owner"])
+            if ref.get("failure_type"):
+                _meta.setdefault("failure_type", ref["failure_type"])
+            if ref.get("attribution"):
+                _meta.setdefault("attribution", ref["attribution"])
             # P1-2 (v1.2.16 audit): idempotent reflection write. The id is
             # unique per reflection (native + fallback use uuid/time_ns()), and
             # _process_reflection is the single writer, so a real collision is
@@ -1012,7 +1045,7 @@ class SqliteStore:
                     json.dumps(ref.get("importance_scores", {})),
                     json.dumps(ref.get("forget_suggestions", [])),
                     ref.get("confidence", 0.0),
-                    json.dumps(data.get("meta", {})),
+                    json.dumps(_meta),
                     data.get("created_at", datetime.now(timezone.utc).isoformat()),
                 ),
             )

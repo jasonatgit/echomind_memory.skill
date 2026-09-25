@@ -30,6 +30,19 @@ class ReflectionOutput(BaseModel):
         default_factory=list,
         description="Old memories suggested for weight decay",
     )
+    # Recuris absorption #1 (component-attributed reflection): which memory
+    # component the reflection attributes its findings to, and whether the
+    # failure is a knowledge gap or a missed invocation. Empty string means
+    # "not attributed" (backward compatible with older LLM outputs).
+    primary_owner: str = Field(
+        default="",
+        description="Memory component this reflection attributes its findings to: "
+                    "knowledge|experience|task|context|user|research|none",
+    )
+    failure_type: str = Field(
+        default="",
+        description="Failure kind: knowledge_gap|invocation_miss|none",
+    )
     confidence: float = Field(..., ge=0, le=1)
 
 
