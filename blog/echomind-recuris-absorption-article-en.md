@@ -3,7 +3,7 @@
 > How a recursive memory-evolution paper from NUS/Stanford/Oxford/Princeton shaped EchoMind v1.2.19: structured retrieval traces, component-attributed reflection, a fingerprint gate against decode noise, and a paired bootstrap gate for knowledge updates — with the math, the evidence, and what each piece buys the user.
 >
 > Author: EchoMind Team
-> Date: September 2026
+> Date: October 2026
 
 ---
 

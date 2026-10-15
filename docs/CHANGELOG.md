@@ -1,6 +1,6 @@
 # EchoMind Changelog
 
-## v1.2.19 — Recuris Absorption Top-4: Trace, Attribution, Fingerprint & Paired Gate (2026-09-25)
+## v1.2.19 — Recuris Absorption Top-4: Trace, Attribution, Fingerprint & Paired Gate (2026-10-15)
 
 Implements the four highest-value absorptions from the Recuris analysis ([arXiv:2608.24876](https://arxiv.org/abs/2608.24876), `doc/竞品对比/recuris-analysis-report.md` 附录 F) on the v1.2.18 module layout — turning reflection from "summarize" into "attribute", and gating knowledge updates on paired evidence.
 
