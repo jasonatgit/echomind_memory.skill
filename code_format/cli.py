@@ -60,7 +60,7 @@ def _write(agent, user_id):
         if not isinstance(data["preferences"], dict):
             print("error: 'preferences' must be an object", file=sys.stderr)
             sys.exit(1)
-        # v1.2.21: pass the FLAT payload plus an explicit platform. Previously
+        # v1.2.20: pass the FLAT payload plus an explicit platform. Previously
         # the already-nested in-memory shape was handed to save_user() WITHOUT
         # a platform; that branch wrapped it again, writing
         # {"_default": {"_default": {...}}} so every preference became

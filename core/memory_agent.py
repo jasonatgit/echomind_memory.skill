@@ -142,7 +142,7 @@ class MainMemoryAgent:
         # attributes it to the right transport rather than hardcoding hermes.
         self._pending_reflection_platform = ""
         self._store_lock = threading.Lock()
-        # v1.2.21: serialize the reset+reload that follows a bulk DB delete.
+        # v1.2.20: serialize the reset+reload that follows a bulk DB delete.
         # Two concurrent delete/cleanup calls could otherwise interleave their
         # clear/load phases; RLock so the helper can be called with the lock held.
         self._reload_lock = threading.RLock()
@@ -796,7 +796,7 @@ class MainMemoryAgent:
                 self._llm_client = new_llm_client(self.cfg.get_section("llm"))
                 self._llm_client_built = True
             except Exception:
-                # v1.2.21: do NOT cache the failure. The old code set
+                # v1.2.20: do NOT cache the failure. The old code set
                 # _llm_client_built=True in every case, so one transient /
                 # malformed config (e.g. a YAML-null api_key) disabled the LLM
                 # for the agent's whole lifetime with only a debug log. Stay
@@ -1056,7 +1056,7 @@ class MainMemoryAgent:
         (messages=[]) whose key is ``<session|task>:trace`` — it can never
         collide with the per-turn conversation row written by store().
 
-        v1.2.21: prefer session_id so the trace is ONE row per session
+        v1.2.20: prefer session_id so the trace is ONE row per session
         (updated in place, bounded); the old task-id-first order created a
         new row per turn. search_context() excludes empty-message rows, so a
         trace row never consumes the context recall budget. Skips silently

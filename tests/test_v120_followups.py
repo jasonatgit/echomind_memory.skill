@@ -1,6 +1,6 @@
-"""Regression tests for the v1.2.21 post-v1.2.20 audit fixes.
+"""Regression tests for the v1.2.20 follow-up audit fixes.
 
-Each test pins one defect found while auditing commit 7592eb8.
+Each test pins one defect found while auditing the v1.2.20 baseline.
 """
 
 import json

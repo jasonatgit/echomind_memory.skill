@@ -553,7 +553,7 @@ class SqliteStore:
                 if not isinstance(incoming, dict):
                     incoming = {}
                 if "_default" in incoming:
-                    # v1.2.21: the caller already passed the nested
+                    # v1.2.20: the caller already passed the nested
                     # platform-aware shape (e.g. echomind-cli forwards the
                     # in-memory UserMemory.preferences). Re-wrapping it here
                     # produced {"_default": {"_default": {...}}} and the real
@@ -925,7 +925,7 @@ class SqliteStore:
     def search_context(self, user_id: str, query: str = None,
                         platform: str = None, limit: int = 3,
                         profile: str = "default") -> List[Dict]:
-        # v1.2.21: retrieval-trace rows carry messages=[] and share this table
+        # v1.2.20: retrieval-trace rows carry messages=[] and share this table
         # with conversation rows. Because the query is ORDER BY updated_at
         # LIMIT ?, a freshly-written trace row always outranks the previous
         # turn's conversation row and consumes one context slot (default

@@ -230,7 +230,7 @@ def _process_reflection(
             # and the downstream coercion raised, discarding the reflection.
             output[field] = []
 
-    # v1.2.21: confidence must be numeric BEFORE the threshold compare. An
+    # v1.2.20: confidence must be numeric BEFORE the threshold compare. An
     # LLM returning "confidence": "0.9" raised TypeError here; _reflect_records
     # caught it and silently degraded the entire LLM reflection to keyword
     # extraction. Mirrors ReflectiveAgent._sanitize_output_dict so the two

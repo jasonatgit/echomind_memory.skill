@@ -132,10 +132,10 @@ EchoMind 记忆系统专门针对*科研方向*的记忆进行了优化，对查
 
 | 版本 | 核心要点 |
 |:--------|:-----------|
+| v1.2.20 | *适配 Hermes v0.23.1（按 profile 隔离配置/LLM、MemoryProvider 子类、上下文线程、recall/identity 钩子、环境变量 API key、model.default/providers.* LLM 同步）+ 全量审计修复（全局知识召回、删除/清理同步内存、反思上限、任务状态/id、access_count/trust 回填、C2、db.path/pragmas、extract_knowledge 开关）+ 后续修复（CLI 偏好嵌套、trace 行不占上下文配额、配置热更新重建 LLM client、save_config 标量 db/0600、identity_signature 配置派生、RL 游标保留、_safe_bool、分数截断）。* |
 | v1.2.19 | *结构化检索 trace（迁移 v12）、组件归因反思（primary_owner/failure_type，双引擎统一）、fingerprint 门（零观测≠信号）、配对 bootstrap 门控知识更新（灰度默认关）。* |
 | v1.2.18 | *内部重构：从两个最大模块中抽出纯评分/新颖度助手、生命周期/进化/实体子 Agent、存储 schema/keys/rows——行为不变，全部调用点经委派/重导保留，新增 39 项评分数值单测。* |
 | v1.2.17 | *对 v1.2.16 的复核轮 — 全部修复逐个对照真实引擎重验：修复 TTL 绑定数缺陷、优化延迟回收、配置回退一致性复核与反思 batch 钳制复核。* |
-| v1.2.20 | *适配 Hermes v0.23.1（按 profile 隔离配置/LLM、MemoryProvider 子类、上下文线程、recall/identity 钩子、环境变量 API key）+ 全量审计修复（全局知识召回、删除/清理同步内存、反思 >8 条、任务状态/id、access_count/trust 回填、C2、db.path/pragmas、extract_knowledge 开关）。* |
 | v1.2.16 | *全数据链路审计：退出契约统一、LIMIT 下稀疏标签检索、reflections profile 级删除、删除级联一致、时间戳统一、状态机跨用户隔离、反思 knowledge 持久化与租户化、反思幂等、RL 锁加固、MCP/HTTP/CORS 加固、缓存限界。* |
 | v1.2.15 | *深度审计修复：自动反思 / 生命周期状态机 / 知识进化检测死路径复活、知识主键租户隔离、MCP 客户端按会话隔离 + `/mcp` 鉴权、GSPO 改可选、检索路径 LLM 门控（最坏 181s → 5s）。* |
 | v1.2.14 | *来源追溯：origin 追踪（传输方式 + 客户端，MCP clientInfo 推断）、tags 过滤（调用方 tags + 自动主题 tags，OR/AND）、来源信封、来源行可见、结构化 `echomind_query`。* |
@@ -312,7 +312,7 @@ claude mcp add echomind -- python ~/.hermes/skills/echomind-memory/adapters/mcp_
 
 ### Q: MCP 有哪些可用工具？
 
-EchoMind 提供 7 个 MCP 工具：
+EchoMind 提供 8 个 MCP 工具：
 
 | 工具 | 说明 |
 |------|------|
@@ -321,6 +321,7 @@ EchoMind 提供 7 个 MCP 工具：
 | `echomind_search` | 搜索会话转录 |
 | `echomind_feedback` | 对检索结果提供反馈 |
 | `echomind_reflect` | 触发最近记忆的反思 |
+| `echomind_query` | 结构化来源查询（project/tags/origin/date，无评分） |
 | `echomind_delete` | 删除特定记忆条目 |
 | `echomind_health` | 检查服务健康状态 |
 
@@ -341,7 +342,7 @@ EchoMind 提供 7 个 MCP 工具：
 
 DeepSeek Harness (DSH) 是 DeepSeek 的 agent 框架。EchoMind 内置标准 MCP 网关（stdio + Streamable HTTP），可通过 DSH 的官方桥插件 `@deepseek-ai/dsh-mcp-client` 接入，作为 DSH 的永久记忆引擎。**无需修改 EchoMind 任何代码。**
 
-接入后，EchoMind 的 7 个 MCP 工具会以 `mcp__echomind__<tool>` 形式暴露给 DSH 的 agent：`echomind_retrieve`（检索）、`echomind_store`（存储）、`echomind_search`（搜索）、`echomind_feedback`（反馈，驱动 RL 自优化）、`echomind_reflect`（反思）、`echomind_delete`（删除）、`echomind_health`（健康检查）。
+接入后，EchoMind 的 8 个 MCP 工具会以 `mcp__echomind__<tool>` 形式暴露给 DSH 的 agent：`echomind_retrieve`（检索）、`echomind_store`（存储）、`echomind_search`（搜索）、`echomind_feedback`（反馈，驱动 RL 自优化）、`echomind_reflect`（反思）、`echomind_query`（结构化来源查询）、`echomind_delete`（删除）、`echomind_health`（健康检查）。
 
 > EchoMind 的 `mcp_gateway.py` 实际路径视安装方式而定（Hermes 安装为 `~/.hermes/skills/echomind-memory/`，独立安装以 `pip` 路径为准）。下文以 `<ECHOMIND_DIR>` 占位，请替换为实际目录。
 

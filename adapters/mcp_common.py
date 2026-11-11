@@ -109,7 +109,7 @@ def _safe_int(value, default: int = 0) -> int:
 def _safe_bool(value, default: bool = False) -> bool:
     """Coerce an MCP argument to bool without ``bool("false") == True``.
 
-    v1.2.21: ``bool(arguments.get("extract_knowledge", True))`` treated the
+    v1.2.20: ``bool(arguments.get("extract_knowledge", True))`` treated the
     string "false" (and "0") as True — clients that serialize flags as
     strings could never disable knowledge extraction.
     """

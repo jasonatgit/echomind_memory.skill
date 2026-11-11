@@ -4,7 +4,7 @@
 # unit-tested without the host. Reads the Hermes v0.23.1 schema:
 #
 #   model:
-#     default: <model id>          # canonical key (was ignored until v1.2.21)
+#     default: <model id>          # canonical key (was ignored until v1.2.20)
 #     base_url: <url | ${ENV}>
 #     provider: <name | custom:name>
 #   providers:
@@ -24,6 +24,14 @@ logger = logging.getLogger("HermesLLMSync")
 _COMPATIBLE_PROVIDERS = frozenset({
     "", "auto", "openai", "openai_compatible", "openai-compatible",
     "custom", "local", "vllm", "ollama", "lmstudio", "deepseek",
+})
+
+# Providers whose native API is NOT OpenAI-compatible chat-completions.
+# EchoMind cannot talk to these, so refuse rather than post an incompatible
+# payload. Named OpenAI-compatible gateways that aren't enumerated above are
+# still accepted when they carry an explicit endpoint (see the gate below).
+_NON_OPENAI_PROVIDERS = frozenset({
+    "anthropic", "claude", "google", "gemini", "bedrock", "vertex", "cohere",
 })
 
 
@@ -54,9 +62,8 @@ def parse_hermes_llm_config(hermes_conf: dict):
 
     provider = str(model_cfg.get("provider") or "").strip()
     p_norm = provider.casefold()
+    p_base = p_norm.split(":", 1)[0]
     is_custom = p_norm.startswith("custom:")
-    if not is_custom and p_norm not in _COMPATIBLE_PROVIDERS:
-        return None
 
     # Provider-scoped block: providers.<name> with name = the part after
     # "custom:" (Hermes' own config uses e.g. provider: custom:ustc).
@@ -74,6 +81,24 @@ def parse_hermes_llm_config(hermes_conf: dict):
                 provider_cfg = cand
                 break
 
+    endpoint = (model_cfg.get("endpoint")
+                or model_cfg.get("base_url")
+                or provider_cfg.get("api")
+                or provider_cfg.get("base_url")
+                or provider_cfg.get("endpoint")
+                or "")
+    has_endpoint = bool(str(endpoint or "").strip())
+
+    # Compatibility gate: reject known non-OpenAI providers outright, then
+    # accept a custom:<name> gateway or any provider that ships an explicit
+    # endpoint (named gateways we don't enumerate — openrouter/groq/together/…
+    # — are OpenAI-compatible in practice). Without an endpoint only the
+    # allowlist is trusted.
+    if p_base in _NON_OPENAI_PROVIDERS and not is_custom:
+        return None
+    if not is_custom and not has_endpoint and p_norm not in _COMPATIBLE_PROVIDERS:
+        return None
+
     # Canonical model key is `default`; `model`/`default_model` are legacy
     # spellings kept for older hosts and hand-written configs.
     model_name = (model_cfg.get("default")
@@ -82,12 +107,6 @@ def parse_hermes_llm_config(hermes_conf: dict):
                   or provider_cfg.get("default")
                   or provider_cfg.get("model")
                   or "")
-    endpoint = (model_cfg.get("endpoint")
-                or model_cfg.get("base_url")
-                or provider_cfg.get("api")
-                or provider_cfg.get("base_url")
-                or provider_cfg.get("endpoint")
-                or "")
     api_key = model_cfg.get("api_key") or provider_cfg.get("api_key") or ""
 
     overrides = {"llm.provider": "openai_compatible"}

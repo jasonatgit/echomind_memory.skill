@@ -49,7 +49,7 @@ def _default_user_id(cfg=None) -> str:
     """Configured default identity for entrypoints without an explicit
     user_id (v1.2.14 usage-path fix); falls back to "cli" when unset.
 
-    v1.2.21: accepts the provider's per-instance ConfigManager so a
+    v1.2.20: accepts the provider's per-instance ConfigManager so a
     multi-profile gateway resolves each profile's own default_user instead of
     the process-wide singleton (which another profile may have overwritten).
     """
@@ -198,7 +198,7 @@ class EchomindMemoryProvider(_MemoryProviderBase):
         self._skip_writes = False
         self._session_id = session_id
 
-        # v1.2.21: initialize() may run again on the same provider instance
+        # v1.2.20: initialize() may run again on the same provider instance
         # (host restart / session re-init). Close the previous agent first or
         # its SQLite connection and WAL handles leak for the process lifetime.
         if getattr(self, "_agent", None) is not None:
@@ -340,7 +340,7 @@ class EchomindMemoryProvider(_MemoryProviderBase):
             with open(config_path, encoding="utf-8") as f:
                 hermes_conf = yaml.safe_load(f) or {}
 
-            # v1.2.21: translate the ACTUAL Hermes v0.23.1 schema
+            # v1.2.20: translate the ACTUAL Hermes v0.23.1 schema
             # (model.default / model.base_url / model.provider + providers.*)
             # and expand ${ENV} references. The old code read only
             # model.endpoint/base_url and model/default_model, so the canonical
@@ -942,7 +942,7 @@ class EchomindMemoryProvider(_MemoryProviderBase):
                 server["api_key"] = values["api_key"]
             existing["server"] = server
             # db_path lives under the db section, which is what
-            # Core MainMemoryAgent actually reads (`db.path`). v1.2.21: a
+            # Core MainMemoryAgent actually reads (`db.path`). v1.2.20: a
             # legacy/scalar `db:` value made setdefault() return a str/None and
             # the subsequent item assignment raised — the outer handler then
             # dropped the WHOLE save, including the api_key just written above.
@@ -973,7 +973,7 @@ class EchomindMemoryProvider(_MemoryProviderBase):
         import os
         db_path = "~/.echomind/memory.db"
         try:
-            # v1.2.21: honour a customised db.path (hardcoding the legacy
+            # v1.2.20: honour a customised db.path (hardcoding the legacy
             # location silently omitted the real database from backups).
             cfg = self._cfg
             if cfg is None:
@@ -992,7 +992,7 @@ class EchomindMemoryProvider(_MemoryProviderBase):
 
     def _search(self, query: str) -> str:
         """Execute memory search"""
-        # v1.2.21: under a non-primary context (subagent/cron/flush) the
+        # v1.2.20: under a non-primary context (subagent/cron/flush) the
         # provider never initializes an agent or user id. Searching anyway
         # queried user "" and returned a misleading "No relevant memories".
         if self._skip_writes or not self._agent:
@@ -1047,7 +1047,7 @@ class EchomindMemoryProvider(_MemoryProviderBase):
         """Identity values that must bust a cached gateway agent when changed.
 
         Read-only and cheap; called even on an uninitialized instance (the
-        gateway memoizes one such instance). v1.2.21: every value used to come
+        gateway memoizes one such instance). v1.2.20: every value used to come
         from instance state that is empty before initialize(), so the signature
         was a CONSTANT and the hook could never bust the cache. Read the
         config-derived values directly when no agent exists yet.
@@ -1146,7 +1146,7 @@ def register(ctx, **kwargs):
     ctx.register_memory_provider(provider)
     logger.info("EchoMind Memory Provider registered for Hermes")
 
-# v1.2.21: the module-level singleton helper (`_get_llm_client` /
+# v1.2.20: the module-level singleton helper (`_get_llm_client` /
 # `_hermes_llm_fn`) was dead code since reflection moved to the per-agent
 # client (MainMemoryAgent._get_llm_client). It was also the exact cross-profile
 # leak this release removed, so it must not come back.

@@ -202,8 +202,23 @@ class ConfigManager:
         self._ext_params = (
             ext_params if ext_params is not None else _try_load_ext_params()
         )
-        self._search_paths = _SEARCH_PATHS.copy()
-        self._search_paths.append(self._config_path)
+        # Precedence: an explicit ``config_path`` or ECHOMIND_CONFIG must win
+        # over the default search locations. Previously the resolved path was
+        # appended LAST, so a ./echomind_config.yaml or
+        # ~/.echomind/echomind_config.yaml always shadowed it — ECHOMIND_CONFIG
+        # was effectively ignored whenever either default file existed.
+        explicit_or_env = (
+            config_path is not None or bool(os.environ.get("ECHOMIND_CONFIG"))
+        )
+        if explicit_or_env:
+            _resolved = os.path.expanduser(self._config_path)
+            self._search_paths = [self._config_path] + [
+                p for p in _SEARCH_PATHS
+                if os.path.expanduser(p) != _resolved
+            ]
+        else:
+            self._search_paths = _SEARCH_PATHS.copy()
+            self._search_paths.append(self._config_path)
         self._yaml_cache: dict = {}
         self._runtime_overrides: dict = {}
         self._active_path: Optional[str] = None

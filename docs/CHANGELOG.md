@@ -1,34 +1,8 @@
 # EchoMind Changelog
 
-## v1.2.21 — Post-v1.2.20 Audit Fixes (2026-11-11)
-
-Follow-up pass over the v1.2.20 commit (7592eb8). No schema migration.
-
-### Fixes
-
-| ID | Fix |
-|----|-----|
-| P1-1 | `echomind-cli write` no longer double-nests preferences: it passes the flat payload plus `platform="code_cli"`, and `save_user`'s no-platform branch adopts an already-nested input instead of wrapping it again (`{"_default": {"_default": …}}` made every preference invisible to `_extract_platform_prefs`) |
-| P1-2 | Retrieval-trace rows (`messages=[]`) are excluded from `search_context`, and the trace key is session-scoped when a session id is available. A freshly-written trace row always outranked the previous turn's conversation row by `updated_at` and consumed one of the `context_limit=2` slots — halving real context recall, and creating one trace row per turn |
-| P1-3 | Hermes LLM auto-sync now understands the v0.23.1 schema: `model.default` / `model.base_url` / `model.provider` plus `providers.<name>.{api\|base_url,api_key,model}`, expands `${ENV}` values, and refuses non-OpenAI-compatible providers with a warning. Previously `model.default` was never read and a `${VAR}` base_url was written verbatim (MissingSchema + 3 retries with backoff on every call) |
-| P2-1 | `POST /api/config/reload` and `/api/config/parameter` call `memory_agent.refresh_config()`. The per-agent LLM client introduced in v1.2.20 was never rebuilt, so hot-updating `llm.*` required a restart despite the documented behavior |
-| P2-2 | Removed the actually-dead `retrieval.experience_top_k` / `experience_min_success_rate_final` / `preference_score_boost` / `relevance_multiplier` keys from `FALLBACK_CONFIG` and the sample configs, and documented that `experience_min_success_rate_initial` is a switch (>0.5 drops failed experiences) rather than a rate |
-| P2-3 | Trace rows are now bounded to one per session and never consume the context recall budget; the trace remains write-only evidence (still no consumer — documented) |
-| P2-4 | `save_config` no longer discards the whole save when `db:` is a scalar; it writes the file (which holds `server.api_key`) with mode 0600, creates its directory owner-only, and `backup_paths` honours the configured `db.path` |
-| P2-5 | `identity_signature()` returns config-derived values on an uninitialized instance (it used to be a constant, so the gateway's cached-agent invalidation could never fire) |
-| P2-6 | delete-user/cleanup serialize their reset+reload under `_reload_lock` and restore the RL active-user cursor afterwards (a reload used to switch the optimizer to whichever user it found first) |
-| P2-7 | The fallback reflection engine coerces `confidence` to float before thresholding and normalizes scalar list fields, matching the native engine. A string confidence used to raise TypeError, silently downgrading the whole LLM reflection to keyword extraction |
-| P2-8 | `_get_llm_client` logs at warning level and no longer caches a construction failure forever; `_resolve_api_key` tolerates a YAML-null key; `_resolve_endpoint` expands `${ENV}`; `chat()` fails fast on a non-http(s) endpoint instead of retrying a guaranteed schema error |
-| P2-9 | Documented that the sanitizer keeps the top 8 insights by design (the model's 64 cap is validation tolerance), correcting the v1.2.20 ">8 insights are not discarded" wording |
-| P3 | `_parse_score("10.5")` → 1.0 (clamped) instead of 0.0; MCP `_safe_bool` (string `"false"` no longer reads as True); experience eviction clears `_summary_index`; `_search`/`_retrieve` refuse non-primary contexts; `initialize()` re-entry closes the previous agent; per-instance config resolves `default_user`; dead module-level LLM helpers removed; trailing newline in `adapters/__init__.py` |
-
-**Migration:** none.
-
----
-
 ## v1.2.20 — Hermes v0.23.1 Adaptation + Audit Fixes (2026-11-11)
 
-Compatibility update for the **Hermes v0.23.1** `MemoryProvider` contract plus a full fix pass over the independently audited defects. No schema migration. 141 → 158 tests, all green.
+Compatibility update for the **Hermes v0.23.1** `MemoryProvider` contract plus a full fix pass over the independently audited defects. No schema migration. 141 → 171 tests, all green (including the follow-up audit regressions).
 
 ### Hermes v0.23.1 adaptation
 
@@ -51,7 +25,7 @@ Compatibility update for the **Hermes v0.23.1** `MemoryProvider` contract plus a
 |----|-----|
 | P1-1 | Knowledge retrieval now unions the caller's index with the shared `"default"` tenant — global knowledge was invisible once a user had own entries |
 | P1-2 | `delete-user` / `cleanup` now purge the in-memory agents (reset + reload); erased memories were still retrievable until restart |
-| P1-3 | Reflection with >8 insights is no longer discarded: `ReflectionOutput.key_insights` cap raised, the keyword path caps at 8, and a sanitizer trims before coercion (a persisted reflection can no longer be reported as a failure with the quota refunded) |
+| P1-3 | Reflections with >8 insights are no longer rejected: the keyword path emits at most 8, and a sanitizer trims to the top 8 before coercion (the model cap is only validation tolerance), so an already-persisted reflection can no longer be reported as a failure with the quota refunded |
 | P1-4 | `echomind-cli write` now persists preferences/experience to SQLite (was in-memory only, lost on exit) |
 | P2-1 | `create_task` honours `task_status` instead of hardcoding `pending` |
 | P2-2 | The original `task_id` is persisted in task metadata and restored on reload (last-access no longer double-hashes it) |
@@ -64,7 +38,28 @@ Compatibility update for the **Hermes v0.23.1** `MemoryProvider` contract plus a
 | P2-10 | `_TransactionContext.__enter__` releases its lock if `BEGIN` fails |
 | P3-* | habits malformed-JSON default `{}`; `_parse_score` digit-boundary fix; transcript summary persists `user_id`; delete-user `profile` passthrough; `_retrieve` respects profile; local-hour habit inference; `julianday` growth queries; MCP schema default alignment |
 
-**Behavior notes:** `retrieval.experience_min_success_rate_initial` (default 0.7) is now actually applied, so failed experiences are filtered unless configured to 0.5; the Hermes per-turn path passes `extract_knowledge=false`. **Migration:** none.
+
+### Follow-up audit fixes (same release)
+
+Second pass over the initial v1.2.20 commit. IDs are prefixed `F` to distinguish them from the first-pass table above.
+
+| ID | Fix |
+|----|-----|
+| F-P1-1 | `echomind-cli write` no longer double-nests preferences: it passes the flat payload plus `platform="code_cli"`, and `save_user`'s no-platform branch adopts an already-nested input instead of wrapping it again (`{"_default": {"_default": …}}` made every preference invisible to `_extract_platform_prefs`) |
+| F-P1-2 | Retrieval-trace rows (`messages=[]`) are excluded from `search_context`, and the trace key is session-scoped when a session id is available. A freshly-written trace row always outranked the previous turn's conversation row by `updated_at` and consumed one of the `context_limit=2` slots — halving real context recall, and creating one trace row per turn |
+| F-P1-3 | Hermes LLM auto-sync now understands the v0.23.1 schema: `model.default` / `model.base_url` / `model.provider` plus `providers.<name>.{api\|base_url,api_key,model}`, expands `${ENV}` values, and refuses non-OpenAI-compatible providers with a warning. Previously `model.default` was never read and a `${VAR}` base_url was written verbatim (MissingSchema + 3 retries with backoff on every call) |
+| F-P2-1 | `POST /api/config/reload` and `/api/config/parameter` call `memory_agent.refresh_config()`. The per-agent LLM client introduced in v1.2.20 was never rebuilt, so hot-updating `llm.*` required a restart despite the documented behavior |
+| F-P2-2 | Removed the actually-dead `retrieval.experience_top_k` / `experience_min_success_rate_final` / `preference_score_boost` / `relevance_multiplier` keys from `FALLBACK_CONFIG` and the sample configs, and documented that `experience_min_success_rate_initial` is a switch (>0.5 drops failed experiences) rather than a rate |
+| F-P2-3 | Trace rows are now bounded to one per session and never consume the context recall budget; the trace remains write-only evidence (still no consumer — documented) |
+| F-P2-4 | `save_config` no longer discards the whole save when `db:` is a scalar; it writes the file (which holds `server.api_key`) with mode 0600, creates its directory owner-only, and `backup_paths` honours the configured `db.path` |
+| F-P2-5 | `identity_signature()` returns config-derived values on an uninitialized instance (it used to be a constant, so the gateway's cached-agent invalidation could never fire) |
+| F-P2-6 | delete-user/cleanup serialize their reset+reload under `_reload_lock` and restore the RL active-user cursor afterwards (a reload used to switch the optimizer to whichever user it found first) |
+| F-P2-7 | The fallback reflection engine coerces `confidence` to float before thresholding and normalizes scalar list fields, matching the native engine. A string confidence used to raise TypeError, silently downgrading the whole LLM reflection to keyword extraction |
+| F-P2-8 | `_get_llm_client` logs at warning level and no longer caches a construction failure forever; `_resolve_api_key` tolerates a YAML-null key; `_resolve_endpoint` expands `${ENV}`; `chat()` fails fast on a non-http(s) endpoint instead of retrying a guaranteed schema error |
+| F-P2-9 | Documented that the sanitizer keeps the top 8 insights by design (the model's 64 cap is validation tolerance), rather than the earlier ">8 insights are not discarded" wording |
+| F-P3 | `_parse_score("10.5")` → 1.0 (clamped) instead of 0.0; MCP `_safe_bool` (string `"false"` no longer reads as True); experience eviction clears `_summary_index`; `_search`/`_retrieve` refuse non-primary contexts; `initialize()` re-entry closes the previous agent; per-instance config resolves `default_user`; dead module-level LLM helpers removed; trailing newline in `adapters/__init__.py` |
+
+**Behavior notes:** `retrieval.experience_min_success_rate_initial` (default 0.7) is now actually honoured as a **switch**: values >0.5 drop failed experiences; set 0.5 (or lower) to include them. The Hermes per-turn path passes `extract_knowledge=false`. **Migration:** none.
 
 ---
 

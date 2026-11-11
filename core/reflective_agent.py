@@ -242,7 +242,7 @@ class ReflectiveAgent:
         ``ReflectionOutput(**result)`` raise) keeps a valid-but-misshaped
         reflection consumable instead of discarding it after it was persisted.
 
-        Note (v1.2.21): the 8-item cap on ``key_insights`` is a deliberate
+        Note (v1.2.20): the 8-item cap on ``key_insights`` is a deliberate
         prompt contract, not the model limit — ``ReflectionOutput`` accepts up
         to 64 only as validation tolerance. So >8 insights are trimmed here,
         not "kept"; the v1.2.20 changelog wording overstated this.

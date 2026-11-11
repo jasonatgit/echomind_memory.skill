@@ -131,12 +131,11 @@ When a query involves the following *domain keywords* or related *semantics*, th
 
 | Version | Highlights |
 |:--------|:-----------|
-| v1.2.21 | *Audit fixes: CLI preference double-nesting (storage root cause), retrieval-trace rows no longer consume the context recall budget (session-scoped key + read-side filter), Hermes v0.23.1 LLM sync (model.default, providers.*, ${ENV} expansion, provider gate), config hot-reload rebuilds per-agent LLM client, LLM client fail-fast/self-heal, fallback reflection confidence coercion, save_config hardening (scalar db, 0600), identity_signature config-derived, reload lock + RL cursor preservation.* |
+| v1.2.20 | *Hermes v0.23.1 adaptation (per-profile config/LLM isolation, MemoryProvider subclass, context-propagating threads, recall/identity hooks, env API key, model.default/providers.* LLM sync) + full audit fixes (global knowledge recall, delete/cleanup memory purge, reflection cap, task status/id, access_count/trust reload, C2, db.path/pragmas, extract_knowledge gate) + follow-up fixes (CLI preferences nesting, trace rows excluded from context recall, config hot-reload rebuilds the LLM client, save_config scalar-db/0600, config-derived identity_signature, RL cursor preserved, _safe_bool, score clamp).* |
 | v1.2.19 | *structured retrieval trace (migration v12), component-attributed reflection (primary_owner/failure_type, both engines), fingerprint gate (unobserved ≠ signal), paired bootstrap gate for knowledge updates (grayscale OFF).* |
 | v1.2.18 | *Internal refactor: extracted pure scoring/novelty helpers, lifecycle/evolution/entity sub-agents, and storage schema/keys/rows out of the two largest modules — behavior unchanged, all call sites preserved via delegates/re-exports, +39 new scoring unit tests.* |
 | v1.2.17 | *Review round on v1.2.16 — re-verified every fix against the live engine (53 assertions green + full-chain smoke): fixed a `delete_expired` TTL binding-count bug (aged knowledge/experience/task rows raised `ProgrammingError`), double-write eviction (evicted in-use agents no longer closed mid-call), bounded atexit join budget (30s shared deadline instead of up to 8×185s serial joins), config fallback agreement & reflection batch clamp re-verified.* |
 | v1.2.16 | *Full-data-path audit (32 fixes): unified exit contract (`shutdown()` flushes pending reflections + LLM-budget join before disabling persistence — fixes silent atexit TypeError + HTTP restart drops), sparse-tag retrieval under LIMIT, profile-scoped reflections delete, delete-cascade parity (expired/memory_states/evolution/archive), julianday TTL across ISO/SQLite timestamps, cross-user state-scan isolation, reflection knowledge persistence & tenant scoping (default-bucket leak closed), reflection idempotency, config `get()`/`get_section()` agreement, RL lock hardening, MCP/HTTP/CORS hardening, bounded call-agent cache.* |
-| v1.2.20 | *Hermes v0.23.1 adaptation (per-profile config/LLM isolation, MemoryProvider subclass, context-propagating threads, recall/identity hooks, env API key) + full audit fixes (global knowledge recall, delete/cleanup memory purge, reflection >8 insights, task status/id, access_count/trust reload, C2, db.path/pragmas, extract_knowledge gate).* |
 | v1.2.15 | *Deep-audit fixes: reactivated auto-reflection / lifecycle state machine / knowledge evolution (dead paths), tenant-scoped knowledge ids, per-session MCP client isolation + `/mcp` auth, GSPO opt-in, retrieve-path LLM gate (181s → 5s worst case).* |
 | v1.2.14 | *Source provenance: origin tracking (transport + client, MCP clientInfo inference), tag filters (caller tags + auto topic tags, OR/AND), provenance envelope, visible source lines, structured `echomind_query`.* |
 | v1.2.13 | *Deep-review hardening: tenant isolation, RL read concurrency, atomic reflection quota, unified scoring (freshness single lever, trust drives experience), config validation & security guards.* |
@@ -314,7 +313,7 @@ claude mcp add echomind -- python ~/.hermes/skills/echomind-memory/adapters/mcp_
 
 ### Q: What MCP tools are available?
 
-EchoMind exposes 7 MCP tools:
+EchoMind exposes 8 MCP tools:
 
 | Tool | Description |
 |------|-------------|
@@ -323,6 +322,7 @@ EchoMind exposes 7 MCP tools:
 | `echomind_search` | Search session transcripts |
 | `echomind_feedback` | Provide feedback on retrieval results |
 | `echomind_reflect` | Trigger reflection on recent memories |
+| `echomind_query` | Structured provenance query (project/tags/origin/date, no scoring) |
 | `echomind_delete` | Delete a specific memory entry |
 | `echomind_health` | Check service health and version |
 
@@ -343,7 +343,7 @@ Yes. MCP stdio is compatible with any MCP host (Claude Desktop, Cursor, Cline, e
 
 DeepSeek Harness (DSH) is DeepSeek's agent framework. EchoMind ships a standard MCP gateway (stdio + Streamable HTTP) that can be consumed by DSH via its official bridge plugin `@deepseek-ai/dsh-mcp-client`, serving as DSH's permanent memory engine. **No EchoMind code changes are required.**
 
-Once connected, EchoMind's 7 MCP tools are exposed to the DSH agent as `mcp__echomind__<tool>`: `echomind_retrieve`, `echomind_store`, `echomind_search`, `echomind_feedback` (drives RL self-optimization), `echomind_reflect`, `echomind_delete`, and `echomind_health`.
+Once connected, EchoMind's 8 MCP tools are exposed to the DSH agent as `mcp__echomind__<tool>`: `echomind_retrieve`, `echomind_store`, `echomind_search`, `echomind_feedback` (drives RL self-optimization), `echomind_reflect`, `echomind_query` (structured provenance query), `echomind_delete`, and `echomind_health`.
 
 > The actual path to `mcp_gateway.py` depends on how EchoMind is installed (e.g. `~/.hermes/skills/echomind-memory/` for Hermes, or your `pip` location). Replace `<ECHOMIND_DIR>` below with your install path.
 

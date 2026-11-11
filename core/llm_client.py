@@ -46,7 +46,7 @@ class LLMClient:
     def _resolve_endpoint(config: dict) -> str:
         endpoint = config.get("endpoint") or ""
         if endpoint:
-            # v1.2.21: expand a whole-value ${VAR} reference (the Hermes sync
+            # v1.2.20: expand a whole-value ${VAR} reference (the Hermes sync
             # path writes model.base_url verbatim; an unexpanded reference
             # produced "MissingSchema" and 3 wasted retries on every call).
             raw = str(endpoint).strip()
@@ -69,7 +69,7 @@ class LLMClient:
     def _resolve_api_key(config: dict) -> str:
         import re as _re
         key = config.get("api_key", "")
-        # v1.2.21: a YAML `api_key:` (null) used to raise TypeError inside
+        # v1.2.20: a YAML `api_key:` (null) used to raise TypeError inside
         # re.match; _get_llm_client swallowed it and disabled the LLM forever.
         if not isinstance(key, str):
             return ""
@@ -87,7 +87,7 @@ class LLMClient:
         Uses digit boundaries so an unrelated number (a year like "2024") is not
         mistaken for a score, and takes the FIRST standalone number ("8/10" →
         0.8) rather than a later one."""
-        # v1.2.21: accept out-of-range decimals like "10.5" (clamped to 10 →
+        # v1.2.20: accept out-of-range decimals like "10.5" (clamped to 10 →
         # 1.0). The old `10(?:\.0+)?` alternative refused them, so the whole
         # score parsed as 0.0 — the worst possible value for a top answer.
         tokens = re.findall(
@@ -110,7 +110,7 @@ class LLMClient:
         """
         if not self._available:
             return ""
-        # v1.2.21: fail fast on a non-http(s) endpoint (e.g. an unexpanded
+        # v1.2.20: fail fast on a non-http(s) endpoint (e.g. an unexpanded
         # ${VAR}) instead of retrying a guaranteed MissingSchema three times.
         if not re.match(r'^https?://', self._endpoint or ""):
             logger.warning("LLM endpoint is not an http(s) URL (%r); skipping call",
