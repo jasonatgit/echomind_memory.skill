@@ -142,6 +142,10 @@ class MainMemoryAgent:
         # attributes it to the right transport rather than hardcoding hermes.
         self._pending_reflection_platform = ""
         self._store_lock = threading.Lock()
+        # v1.2.21: serialize the reset+reload that follows a bulk DB delete.
+        # Two concurrent delete/cleanup calls could otherwise interleave their
+        # clear/load phases; RLock so the helper can be called with the lock held.
+        self._reload_lock = threading.RLock()
         self._research_kw_cache = None
         # RL significance verification:
         # baseline hits (fixed window) + per-user feedback counter since last verify
@@ -315,8 +319,12 @@ class MainMemoryAgent:
             # them in so scoring, export and the RL fingerprint gate agree with
             # the DB after a reload (previously only the JSON blob was restored,
             # so access_count reset to 0 and trust_score was always the 0.5 default).
-            metadata.setdefault("access_count", k.get("access_count", 0))
-            metadata.setdefault("trust_score", k.get("trust_score", 0.5))
+            # ``or`` guards: the columns are nullable, and a NULL must restore
+            # as 0 / 0.5 rather than a None that later breaks numeric scoring.
+            metadata.setdefault("access_count", k.get("access_count") or 0)
+            _trust = k.get("trust_score")
+            metadata.setdefault("trust_score",
+                                0.5 if _trust is None else _trust)
             if "category" not in metadata and "domain" in k:
                 metadata["category"] = k["domain"]
             entry = KnowledgeEntry(
@@ -786,10 +794,17 @@ class MainMemoryAgent:
             try:
                 from .llm_client import new_llm_client
                 self._llm_client = new_llm_client(self.cfg.get_section("llm"))
+                self._llm_client_built = True
             except Exception:
-                logger.debug("Per-agent LLM client init failed", exc_info=True)
+                # v1.2.21: do NOT cache the failure. The old code set
+                # _llm_client_built=True in every case, so one transient /
+                # malformed config (e.g. a YAML-null api_key) disabled the LLM
+                # for the agent's whole lifetime with only a debug log. Stay
+                # unbuilt so the next call retries; construction is local and
+                # cheap (no network).
+                logger.warning("Per-agent LLM client init failed; will retry",
+                               exc_info=True)
                 self._llm_client = None
-            self._llm_client_built = True
         return self._llm_client
 
     @staticmethod
@@ -1034,21 +1049,23 @@ class MainMemoryAgent:
                                  task_id: Optional[str], platform: Optional[str],
                                  project: str, profile: str, session_id: str,
                                  retrieved: Dict[str, Any], top_memories: List):
-        """Persist the retrieval trace onto the session's context row.
+        """Persist the retrieval trace as a dedicated, session-scoped row.
 
-        Recuris absorption #2: the trace rides the same context row the store
-        path writes (session key = stable_memory_key), so one row carries both
-        the conversation and the structured evidence the reflection layer
-        needs. Skips silently when persistence is off.
+        Recuris absorption #2: the trace is structured evidence for the
+        reflection layer, stored in its own context_memory row
+        (messages=[]) whose key is ``<session|task>:trace`` — it can never
+        collide with the per-turn conversation row written by store().
+
+        v1.2.21: prefer session_id so the trace is ONE row per session
+        (updated in place, bounded); the old task-id-first order created a
+        new row per turn. search_context() excludes empty-message rows, so a
+        trace row never consumes the context recall budget. Skips silently
+        when persistence is off.
         """
         if not self._persistence_enabled:
             return
         trace = self._build_retrieval_trace(task_context, retrieved, top_memories)
-        # Dedicated trace row: keyed separately from the conversation/task context
-        # key so a prefetch trace can never collide with (or overwrite) the
-        # per-turn context row written later by store(). One row per session,
-        # updated on each retrieval.
-        trace_scope = f"{task_id or session_id or 'session'}:trace"
+        trace_scope = f"{session_id or task_id or 'session'}:trace"
         ctx_key = stable_memory_key(user_id, trace_scope)
         row = self.db._conn.execute(
             "SELECT 1 FROM context_memory WHERE session_id=?", (ctx_key,)).fetchone()
@@ -1941,14 +1958,38 @@ profile=profile, language=lang, experience_id=exp_id,
         self.context_agent.clear_all()
         self.evolution_agent.invalidate_cache()
 
+    def _reload_memory_preserving_rl(self):
+        """Reset + reload the in-memory agents, keeping the RL cursor stable.
+
+        Caller must hold ``_reload_lock``. ``_load_from_db`` ends by loading
+        RL weights for whichever user it finds first, which silently moved the
+        optimizer's active-user cursor away from the caller's identity. Restore
+        the previous cursor (and weights) when that user still exists.
+        """
+        prev_user = getattr(self.rl_optimizer, "_active_user_id", "default")
+        try:
+            prev_weights = self.rl_optimizer.get_current_weights()
+        except Exception:
+            prev_weights = None
+        self._reset_memory_agents()
+        self._load_from_db()
+        if prev_user and prev_weights and any(
+                u.user_id == prev_user for u in self.user_agent.store.values()):
+            try:
+                self.rl_optimizer.load_weights_for_user(
+                    prev_weights, user_id=prev_user)
+            except Exception:
+                logger.debug("RL cursor restore after reload failed",
+                             exc_info=True)
+
     def delete_user_memories(self, user_id: str,
                              profile: str = None) -> Dict[str, int]:
         """Delete a user's memory rows AND purge them from the in-memory agents."""
         if not self._persistence_enabled:
             return {}
-        counts = self.db.delete_user_memories(user_id, profile=profile)
-        self._reset_memory_agents()
-        self._load_from_db()
+        with self._reload_lock:
+            counts = self.db.delete_user_memories(user_id, profile=profile)
+            self._reload_memory_preserving_rl()
         logger.info("delete_user_memories: %s (profile=%s) -> %s",
                     user_id, profile, counts)
         return counts
@@ -1957,9 +1998,9 @@ profile=profile, language=lang, experience_id=exp_id,
         """TTL-clean the DB AND sync the in-memory agents to the surviving rows."""
         if not self._persistence_enabled:
             return {}
-        counts = self.db.delete_expired(ttl_config)
-        self._reset_memory_agents()
-        self._load_from_db()
+        with self._reload_lock:
+            counts = self.db.delete_expired(ttl_config)
+            self._reload_memory_preserving_rl()
         logger.info("cleanup_expired -> %s", counts)
         return counts
 

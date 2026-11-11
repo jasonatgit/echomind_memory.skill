@@ -549,11 +549,24 @@ class SqliteStore:
                 # No platform: merge into _default, preserving existing platform keys
                 existing = self._get_user_raw(user_id, profile)
                 existing_prefs = existing.get("preferences", {})
-                if isinstance(existing_prefs, dict) and "_default" in existing_prefs:
-                    existing_prefs["_default"].update(preferences or {})
+                incoming = preferences or {}
+                if not isinstance(incoming, dict):
+                    incoming = {}
+                if "_default" in incoming:
+                    # v1.2.21: the caller already passed the nested
+                    # platform-aware shape (e.g. echomind-cli forwards the
+                    # in-memory UserMemory.preferences). Re-wrapping it here
+                    # produced {"_default": {"_default": {...}}} and the real
+                    # preferences became invisible to _extract_platform_prefs.
+                    # Route through the same wholesale-adoption branch (B-1)
+                    # the explicit-platform path uses so both agree.
+                    preferences = self._merge_platform_prefs(
+                        existing_prefs, incoming, "_default")
+                elif isinstance(existing_prefs, dict) and "_default" in existing_prefs:
+                    existing_prefs["_default"].update(incoming)
                     preferences = existing_prefs
                 else:
-                    preferences = {"_default": preferences or {}}
+                    preferences = {"_default": incoming}
             self._conn.execute("""
                 INSERT INTO user_memory (user_id, preferences, habits, history, profile, last_updated, last_access_at, version)
                 VALUES (?, ?, ?, ?, ?, datetime('now'), datetime('now'), ?)
@@ -912,7 +925,15 @@ class SqliteStore:
     def search_context(self, user_id: str, query: str = None,
                         platform: str = None, limit: int = 3,
                         profile: str = "default") -> List[Dict]:
-        where = "WHERE user_id = ? AND profile = ?"
+        # v1.2.21: retrieval-trace rows carry messages=[] and share this table
+        # with conversation rows. Because the query is ORDER BY updated_at
+        # LIMIT ?, a freshly-written trace row always outranks the previous
+        # turn's conversation row and consumes one context slot (default
+        # context_limit=2 -> only 1 real row, 0 when a project filter drops
+        # the other). Trace rows are write-only evidence, never context, so
+        # exclude empty payloads at the source.
+        where = ("WHERE user_id = ? AND profile = ? "
+                 "AND messages NOT IN ('[]', '')")
         params = [user_id, profile]
         if platform:
             where += " AND platform = ?"

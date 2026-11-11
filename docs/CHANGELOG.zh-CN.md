@@ -1,5 +1,31 @@
 # EchoMind 更新日志
 
+## v1.2.21 — v1.2.20 后续审计修复 (2026-11-11)
+
+针对 v1.2.20 提交（7592eb8）的补充修复。无 schema 迁移。
+
+### 修复
+
+| 编号 | 修复 |
+|------|------|
+| P1-1 | `echomind-cli write` 不再双重嵌套偏好：改为传扁平 payload + `platform="code_cli"`，且 `save_user` 的无 platform 分支会整体采纳已嵌套输入而不再二次包裹（此前写成 `{"_default": {"_default": …}}`，所有偏好对 `_extract_platform_prefs` 不可见） |
+| P1-2 | `search_context` 排除 `messages=[]` 的 trace 行；trace 键在有 session_id 时按会话收敛。此前新写入的 trace 行在 `updated_at` 排序上恒优先于上一轮对话行，固定占用 `context_limit=2` 中的一个配额（真实上下文召回减半），且每轮新增一行 |
+| P1-3 | Hermes LLM 自动同步适配 v0.23.1 schema：`model.default` / `model.base_url` / `model.provider` 及 `providers.<name>.{api\|base_url,api_key,model}`，展开 `${ENV}`，并对非 OpenAI 兼容 provider 记 warning 后跳过。此前永远读不到 `model.default`，`${VAR}` 端点原样写入（每次调用 MissingSchema + 3 次重试退避） |
+| P2-1 | `POST /api/config/reload` 与 `/api/config/parameter` 现在调用 `memory_agent.refresh_config()`。v1.2.20 引入的按 agent 独立 LLM client 从未被重建，`llm.*` 热更新实际需重启 |
+| P2-2 | 从 `FALLBACK_CONFIG` 与示例配置中移除真正无效的 `retrieval.experience_top_k` / `experience_min_success_rate_final` / `preference_score_boost` / `relevance_multiplier`；并注明 `experience_min_success_rate_initial` 是开关（>0.5 丢弃失败经验）而非"成功率" |
+| P2-3 | trace 行收敛为每会话一条，且不再占用上下文召回配额；trace 仍为只写证据（暂无消费者，已注明） |
+| P2-4 | `save_config` 在 `db:` 为标量时不再整体保存失败；写入的文件（含 `server.api_key`）权限改为 0600，目录按属主私有创建；`backup_paths` 读取配置的 `db.path` |
+| P2-5 | `identity_signature()` 在未初始化实例上返回配置派生值（此前是常量，gateway 的缓存失效钩子永远不触发） |
+| P2-6 | delete-user/cleanup 的 reset+reload 在 `_reload_lock` 下串行，并在重载后恢复 RL 活动用户游标（此前会被 `_load_from_db` 改成首个找到的用户） |
+| P2-7 | fallback 反思引擎在阈值比较前把 `confidence` 强制转为 float，并规范化标量列表字段，与 native 引擎一致。字符串置信度此前抛 TypeError，导致整段 LLM 反思静默降级为关键词 |
+| P2-8 | `_get_llm_client` 用 warning 记录失败且不再永久缓存失败结果；`_resolve_api_key` 容忍 YAML null；`_resolve_endpoint` 展开 `${ENV}`；`chat()` 对非 http(s) 端点快速失败，不再为必错的 schema 错误重试 |
+| P2-9 | 明确 sanitizer 保留前 8 条 insight 是设计契约（模型的 64 上限仅为校验容差），修正 v1.2.20 ">8 条不丢弃"的表述 |
+| P3 | `_parse_score("10.5")` 返回 1.0（截断）而非 0.0；MCP `_safe_bool`（字符串 `"false"` 不再为真）；经验淘汰清理 `_summary_index`；`_search`/`_retrieve` 在非主上下文拒绝返回误导性结果；`initialize()` 重入时关闭旧 agent；每实例配置解析 `default_user`；删除模块级 LLM 死代码；补 `adapters/__init__.py` 结尾换行 |
+
+**迁移：** 无。
+
+---
+
 ## v1.2.20 — 适配 Hermes v0.23.1 + 审计缺陷修复 (2026-11-11)
 
 适配 **Hermes v0.23.1** 的 `MemoryProvider` 契约，并修完独立审计发现的全部缺陷。无 schema 迁移。测试 141 → 158，全绿。

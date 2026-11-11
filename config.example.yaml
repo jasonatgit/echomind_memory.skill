@@ -34,7 +34,7 @@ reflection:
 
 # ── Retrieval ──
 retrieval:
-  experience_top_k: 5
+  experience_limit: 5
   state_scan_limit: 1000
 
 

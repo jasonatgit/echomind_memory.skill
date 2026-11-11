@@ -44,7 +44,21 @@ class LLMClient:
 
     @staticmethod
     def _resolve_endpoint(config: dict) -> str:
-        endpoint = config.get("endpoint", "")
+        endpoint = config.get("endpoint") or ""
+        if endpoint:
+            # v1.2.21: expand a whole-value ${VAR} reference (the Hermes sync
+            # path writes model.base_url verbatim; an unexpanded reference
+            # produced "MissingSchema" and 3 wasted retries on every call).
+            raw = str(endpoint).strip()
+            try:
+                from .config_manager import expand_env_value
+                expanded = expand_env_value(raw, "")
+            except Exception:
+                expanded = raw
+            # Keep the literal reference when the variable is unset: chat()
+            # then fails fast with the actual value in the log, instead of
+            # silently falling back to localhost and hitting the wrong service.
+            endpoint = expanded or raw
         if endpoint:
             return endpoint.rstrip("/")
         host = config.get("host") or "localhost"
@@ -55,10 +69,15 @@ class LLMClient:
     def _resolve_api_key(config: dict) -> str:
         import re as _re
         key = config.get("api_key", "")
+        # v1.2.21: a YAML `api_key:` (null) used to raise TypeError inside
+        # re.match; _get_llm_client swallowed it and disabled the LLM forever.
+        if not isinstance(key, str):
+            return ""
+        key = key.strip()
         _ENV_VAR_PATTERN = _re.compile(r'^\$\{[A-Za-z_][A-Za-z0-9_]*\}$')
-        if _ENV_VAR_PATTERN.match(key):
-            env_var = key[2:-1]
-            return os.environ.get(env_var, "")
+        m = _ENV_VAR_PATTERN.match(key)
+        if m:
+            return os.environ.get(m.group(1), "")
         return key
 
     @staticmethod
@@ -68,8 +87,11 @@ class LLMClient:
         Uses digit boundaries so an unrelated number (a year like "2024") is not
         mistaken for a score, and takes the FIRST standalone number ("8/10" →
         0.8) rather than a later one."""
+        # v1.2.21: accept out-of-range decimals like "10.5" (clamped to 10 →
+        # 1.0). The old `10(?:\.0+)?` alternative refused them, so the whole
+        # score parsed as 0.0 — the worst possible value for a top answer.
         tokens = re.findall(
-            r'(?<![\d.])(10(?:\.0+)?|[0-9](?:\.\d+)?)(?![\d.])', text)
+            r'(?<![\d.])(10(?:\.\d+)?|[0-9](?:\.\d+)?)(?![\d.])', text)
         if tokens:
             return min(max(float(tokens[0]), 0.0), 10.0) / 10.0
         return 0.0
@@ -87,6 +109,12 @@ class LLMClient:
         Retries with exponential backoff (0.5s, 1s) on transient failures.
         """
         if not self._available:
+            return ""
+        # v1.2.21: fail fast on a non-http(s) endpoint (e.g. an unexpanded
+        # ${VAR}) instead of retrying a guaranteed MissingSchema three times.
+        if not re.match(r'^https?://', self._endpoint or ""):
+            logger.warning("LLM endpoint is not an http(s) URL (%r); skipping call",
+                           self._endpoint)
             return ""
         import requests
         import time

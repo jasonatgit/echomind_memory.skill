@@ -100,8 +100,9 @@ def _reflect_records(
     - llm_fn=None → returns (prompt: str, record_ids: list) for two-phase HTTP API
     - llm_fn=callable → runs full reflection, returns ReflectionOutput dict or None
 
-    When llm_fn is provided and provider is not 'none', uses the LLM to generate
-    reflection. When provider is 'none', extracts top frequent keywords.
+    With ``llm_fn=None`` this returns ``(prompt, record_ids)`` for the
+    two-phase HTTP API. With a callable it runs LLM reflection and falls back
+    to keyword extraction when the call fails or returns nothing.
     """
     if llm_fn is None:
         # Two-phase HTTP API: return prompt for caller-side LLM processing
@@ -113,17 +114,16 @@ def _reflect_records(
     # gated this on the process-wide ConfigManager's llm.provider, which under a
     # multiplexed gateway could describe a DIFFERENT profile than this agent's;
     # the presence of llm_fn is the correct, instance-local signal.
-    if llm_fn is not None:
-        try:
-            prompt = _prepare_reflection_context(records)
-            raw_response = llm_fn(prompt)
-            if raw_response:
-                return _process_reflection(
-                    raw_response, records, user_id, platform, config, store, memory,
-                )
-        except Exception:
-            logger.debug("reflection: LLM call failed, using keyword extraction")
-            pass
+    try:
+        prompt = _prepare_reflection_context(records)
+        raw_response = llm_fn(prompt)
+        if raw_response:
+            return _process_reflection(
+                raw_response, records, user_id, platform, config, store, memory,
+            )
+    except Exception:
+        logger.debug("reflection: LLM call failed, using keyword extraction")
+        pass
 
     keywords = _extract_keywords(records)
     if not keywords:
@@ -225,6 +225,21 @@ def _process_reflection(
             output[field] = []
         elif isinstance(val, list):
             output[field] = [str(v) for v in val]
+        else:
+            # Scalars (int/bool/...) are not List[str]; previously left as-is
+            # and the downstream coercion raised, discarding the reflection.
+            output[field] = []
+
+    # v1.2.21: confidence must be numeric BEFORE the threshold compare. An
+    # LLM returning "confidence": "0.9" raised TypeError here; _reflect_records
+    # caught it and silently degraded the entire LLM reflection to keyword
+    # extraction. Mirrors ReflectiveAgent._sanitize_output_dict so the two
+    # engines behave identically.
+    try:
+        output["confidence"] = max(
+            0.0, min(1.0, float(output.get("confidence") or 0.0)))
+    except (TypeError, ValueError):
+        output["confidence"] = 0.0
 
     # Keep the durable record within the ReflectionOutput contract (key_insights
     # is capped at 8) so the caller's coercion cannot reject an already-persisted

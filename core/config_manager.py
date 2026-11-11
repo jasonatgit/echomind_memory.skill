@@ -135,14 +135,14 @@ FALLBACK_CONFIG = {
         "gate_n_boot": 3000,
     },
     "retrieval": {
-        "experience_top_k": 5,
+        # NOTE: experience_min_success_rate_initial is a SWITCH, not a rate —
+        # experience entries carry only success: bool. Values >0.5 drop failed
+        # experiences (find_similar_tasks), which also makes the
+        # _SCORE_FAILED_MULT branch unreachable; <=0.5 includes them.
         "experience_min_success_rate_initial": 0.7,
-        "experience_min_success_rate_final": 0.6,
         "experience_limit": 5,
         "research_top_k": 5,
         "context_limit": 2,
-        "preference_score_boost": 0.2,
-        "relevance_multiplier": 0.6,
         # Deprecated since v1.2.13: unused — experience scoring no longer has
         # a constant recency term (freshness is the single recency lever).
         # "recency_multiplier": 0.5,

@@ -64,10 +64,9 @@ reflection:
   gate_n_boot: 3000
 
 retrieval:
-  experience_top_k: 5
-  # Honoured by retrieve_for_task (v1.2.20): experience_limit caps the candidate
-  # count and experience_min_success_rate_initial drops failed experiences when
-  # set above 0.5.
+  # experience_limit caps the candidate count. experience_min_success_rate_initial
+  # is a SWITCH, not a rate: >0.5 drops failed experiences, <=0.5 includes them
+  # (and the failed-retry score boost applies). Entries carry only success: bool.
   experience_min_success_rate_initial: 0.7
   experience_limit: 5
   research_top_k: 5

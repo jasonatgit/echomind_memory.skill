@@ -57,15 +57,24 @@ def _write(agent, user_id):
               file=sys.stderr)
         sys.exit(1)
     if "preferences" in data:
+        if not isinstance(data["preferences"], dict):
+            print("error: 'preferences' must be an object", file=sys.stderr)
+            sys.exit(1)
+        # v1.2.21: pass the FLAT payload plus an explicit platform. Previously
+        # the already-nested in-memory shape was handed to save_user() WITHOUT
+        # a platform; that branch wrapped it again, writing
+        # {"_default": {"_default": {...}}} so every preference became
+        # invisible to _extract_platform_prefs afterwards.
         agent.user_agent.update(
-            user_id, "preferences", data["preferences"], source="code_cli"
+            user_id, "preferences", data["preferences"],
+            source="code_cli", platform="code_cli",
         )
         # Persist the updated user row: user_agent.update only mutates the
         # in-memory store, so without this the CLI write was lost on exit.
         _mem = agent.user_agent.store.get(agent.user_agent._key(user_id))
         agent.db.save_user(
             user_id,
-            preferences=getattr(_mem, "preferences", {}) if _mem else data["preferences"],
+            preferences=data["preferences"], platform="code_cli",
             habits=getattr(_mem, "habits", {}) if _mem else {},
             history=getattr(_mem, "history", []) if _mem else [],
         )

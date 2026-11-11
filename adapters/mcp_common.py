@@ -106,6 +106,27 @@ def _safe_int(value, default: int = 0) -> int:
         return default
 
 
+def _safe_bool(value, default: bool = False) -> bool:
+    """Coerce an MCP argument to bool without ``bool("false") == True``.
+
+    v1.2.21: ``bool(arguments.get("extract_knowledge", True))`` treated the
+    string "false" (and "0") as True — clients that serialize flags as
+    strings could never disable knowledge extraction.
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        v = value.strip().casefold()
+        if v in ("true", "1", "yes", "on"):
+            return True
+        if v in ("false", "0", "no", "off", ""):
+            return False
+        return default
+    if isinstance(value, (int, float)):
+        return bool(value)
+    return default
+
+
 def _resolve_api_key() -> str:
     """Resolve the API key using the SAME precedence as the HTTP server.
 
@@ -438,7 +459,8 @@ def handle_tool_call(name, arguments, session_id: str = "",
             # string from a client used to raise ValueError and leak
             # "-32603 ... path/to/store" back to the caller; safe-coerce to 0.
             "turn": _safe_int(arguments.get("turn", 0), default=0),
-            "extract_knowledge": bool(arguments.get("extract_knowledge", True)),
+            "extract_knowledge": _safe_bool(
+                arguments.get("extract_knowledge", True), default=True),
         })
         if "error" in result:
             return {"content": [{"type": "text", "text": f"Error storing: {result['error']}"}]}

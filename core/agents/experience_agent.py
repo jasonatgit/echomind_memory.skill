@@ -26,6 +26,14 @@ class ExperienceMemoryAgent:
                 # Remove from index
                 self._user_index.get(entry.user_id, set()).discard(k)
                 self._type_index.get(entry.task_type, set()).discard(k)
+                # v1.2.21: also drop the summary-index entry. It used to keep
+                # pointing at the evicted id (only the linear-scan fallback
+                # masked it), so a re-store of the same summary took the stale
+                # branch and returned an id no longer in the store.
+                self._summary_index.pop(
+                    int(hashlib.md5(
+                        f"{entry.user_id}:{entry.summary}".encode()
+                    ).hexdigest(), 16) % (2**63 - 1), None)
             del self.store[k]
 
     def __init__(self):

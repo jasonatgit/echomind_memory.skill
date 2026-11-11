@@ -45,12 +45,19 @@ logger = logging.getLogger("EchomindProvider")
 
 PLATFORM = "hermes"
 
-def _default_user_id() -> str:
+def _default_user_id(cfg=None) -> str:
     """Configured default identity for entrypoints without an explicit
-    user_id (v1.2.14 usage-path fix); falls back to "cli" when unset."""
+    user_id (v1.2.14 usage-path fix); falls back to "cli" when unset.
+
+    v1.2.21: accepts the provider's per-instance ConfigManager so a
+    multi-profile gateway resolves each profile's own default_user instead of
+    the process-wide singleton (which another profile may have overwritten).
+    """
     try:
-        from core.config_manager import get_config_manager
-        return get_config_manager().get_top_level("default_user", "cli") or "cli"
+        if cfg is None:
+            from core.config_manager import get_config_manager
+            cfg = get_config_manager()
+        return cfg.get_top_level("default_user", "cli") or "cli"
     except Exception:
         return "cli"
 
@@ -190,13 +197,35 @@ class EchomindMemoryProvider(_MemoryProviderBase):
 
         self._skip_writes = False
         self._session_id = session_id
+
+        # v1.2.21: initialize() may run again on the same provider instance
+        # (host restart / session re-init). Close the previous agent first or
+        # its SQLite connection and WAL handles leak for the process lifetime.
+        if getattr(self, "_agent", None) is not None:
+            try:
+                self._agent.shutdown()
+            except Exception:
+                logger.debug("Previous EchoMind agent shutdown failed",
+                             exc_info=True)
+            self._agent = None
+
+        # Per-instance ConfigManager, created BEFORE identity resolution so the
+        # default user comes from THIS profile's config rather than the
+        # process-wide singleton. Runtime overrides (LLM endpoint/api_key
+        # synced from Hermes) also stay profile-local here.
+        try:
+            from core.config_manager import ConfigManager
+            self._cfg = ConfigManager()
+        except Exception:
+            self._cfg = None
+
         # v1.2.14 usage-path fix: never fall back to session_id. Hermes may
         # omit user_id, and scoping to the per-session id created a new
         # memory identity for every session (10 fragmented identities were
         # found in the live DB). Fall back to the configured default user;
         # the source client is still recorded via provenance (origin_client).
         self._user_id = (str(kwargs.get("user_id") or "").strip()
-                         or _default_user_id())
+                         or _default_user_id(self._cfg))
         # R3 fix: Hermes passes the active profile (分身) name via
         # agent_identity (agent_init.py:1312 get_active_profile_name()).
         # Prefer it as the memory-scoping profile so each Hermes persona is
@@ -233,14 +262,6 @@ class EchomindMemoryProvider(_MemoryProviderBase):
         self._last_recall_count = 0
         self._turn_author = None
 
-        # Per-instance ConfigManager: runtime overrides (LLM endpoint/api_key
-        # synced from Hermes) are profile-local. The process-wide singleton made
-        # two profiles in one gateway overwrite each other's LLM credentials.
-        try:
-            from core.config_manager import ConfigManager
-            self._cfg = ConfigManager()
-        except Exception:
-            self._cfg = None
         self._agent = MainMemoryAgent(
             config_manager=self._cfg,
             thread_spawner=_spawn_context_thread,
@@ -319,23 +340,24 @@ class EchomindMemoryProvider(_MemoryProviderBase):
             with open(config_path, encoding="utf-8") as f:
                 hermes_conf = yaml.safe_load(f) or {}
 
-            model_cfg = hermes_conf.get("model", {})
-            if not isinstance(model_cfg, dict) or not model_cfg:
-                logger.debug("LLM auto-sync skipped: no model section in Hermes config")
+            # v1.2.21: translate the ACTUAL Hermes v0.23.1 schema
+            # (model.default / model.base_url / model.provider + providers.*)
+            # and expand ${ENV} references. The old code read only
+            # model.endpoint/base_url and model/default_model, so the canonical
+            # `model.default` was never picked up and a ${VAR} base_url was
+            # written verbatim — every LLM call then failed with MissingSchema
+            # (3 retries × backoff) and reflection silently degraded.
+            from core.hermes_llm_sync import parse_hermes_llm_config
+            parsed = parse_hermes_llm_config(hermes_conf)
+            if parsed is None:
+                raw_model = hermes_conf.get("model")
+                logger.warning(
+                    "LLM auto-sync skipped: Hermes model config missing or "
+                    "provider %r is not OpenAI-compatible",
+                    raw_model.get("provider")
+                    if isinstance(raw_model, dict) else None)
                 return
-
-            endpoint = model_cfg.get("endpoint") or model_cfg.get("base_url", "")
-            api_key = model_cfg.get("api_key", "")
-            model_name = model_cfg.get("model") or model_cfg.get("default_model", "")
-            provider = model_cfg.get("provider", "openai_compatible")
-
-            overrides = {"llm.provider": provider}
-            if endpoint:
-                overrides["llm.endpoint"] = endpoint
-            if api_key:
-                overrides["llm.api_key"] = api_key
-            if model_name:
-                overrides["llm.model"] = model_name
+            overrides, hermes_provider = parsed
 
             for k, v in overrides.items():
                 cfg.set_runtime(k, v)
@@ -345,7 +367,7 @@ class EchomindMemoryProvider(_MemoryProviderBase):
             if agent is not None:
                 agent._llm_client = None
                 agent._llm_client_built = False
-            logger.info("LLM config synced from Hermes: provider=%s", provider)
+            logger.info("LLM config synced from Hermes: provider=%s", hermes_provider)
         except Exception as e:
             # P3.3: LLM config is a key path — a failed sync means the Hermes
             # endpoint silently doesn't apply; make it observable.
@@ -920,11 +942,26 @@ class EchomindMemoryProvider(_MemoryProviderBase):
                 server["api_key"] = values["api_key"]
             existing["server"] = server
             # db_path lives under the db section, which is what
-            # Core MainMemoryAgent actually reads (`db.path`).
+            # Core MainMemoryAgent actually reads (`db.path`). v1.2.21: a
+            # legacy/scalar `db:` value made setdefault() return a str/None and
+            # the subsequent item assignment raised — the outer handler then
+            # dropped the WHOLE save, including the api_key just written above.
             if values.get("db_path"):
-                existing.setdefault("db", {})["path"] = values["db_path"]
-            with open(config_file, "w", encoding="utf-8") as f:
+                db_section = existing.get("db")
+                if not isinstance(db_section, dict):
+                    db_section = {}
+                db_section["path"] = values["db_path"]
+                existing["db"] = db_section
+            # The file carries server.api_key in clear text: create the
+            # directory owner-only and write the file with 0600.
+            config_file.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            fd = os.open(config_file, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
                 yaml.dump(existing, f, default_flow_style=False)
+            try:
+                os.chmod(config_file, 0o600)
+            except OSError:
+                pass
             logger.info("EchoMind config saved to %s", config_file)
         except ImportError:
             logger.warning("PyYAML not available, cannot save config")
@@ -934,9 +971,20 @@ class EchomindMemoryProvider(_MemoryProviderBase):
     def backup_paths(self) -> List[str]:
         """Return paths for 'hermes backup' to include EchoMind data."""
         import os
-        return [
-            os.path.expanduser("~/.echomind/memory.db"),
-        ]
+        db_path = "~/.echomind/memory.db"
+        try:
+            # v1.2.21: honour a customised db.path (hardcoding the legacy
+            # location silently omitted the real database from backups).
+            cfg = self._cfg
+            if cfg is None:
+                from core.config_manager import get_config_manager
+                cfg = get_config_manager()
+            configured = cfg.get("db", "path", default="")
+            if configured:
+                db_path = str(configured)
+        except Exception:
+            pass
+        return [os.path.expanduser(db_path)]
 
     # ═══════════════════════════════════════════════════
     # Internal method
@@ -944,6 +992,11 @@ class EchomindMemoryProvider(_MemoryProviderBase):
 
     def _search(self, query: str) -> str:
         """Execute memory search"""
+        # v1.2.21: under a non-primary context (subagent/cron/flush) the
+        # provider never initializes an agent or user id. Searching anyway
+        # queried user "" and returned a misleading "No relevant memories".
+        if self._skip_writes or not self._agent:
+            return "Memory is unavailable in this context"
         if not query:
             return "Please provide search keywords"
         # M-5 fix: propagate project/session/profile scope like prefetch does,
@@ -962,6 +1015,8 @@ class EchomindMemoryProvider(_MemoryProviderBase):
 
     def _retrieve(self, detail: str = "brief") -> str:
         """Get user memory profile"""
+        if self._skip_writes or not self._agent:
+            return "Memory is unavailable in this context"
         user_data = self._agent.user_agent.get(
             self._user_id, platform=PLATFORM, profile=self._profile)
         if detail == "brief":
@@ -991,20 +1046,44 @@ class EchomindMemoryProvider(_MemoryProviderBase):
     def identity_signature(self) -> Dict[str, Any]:
         """Identity values that must bust a cached gateway agent when changed.
 
-        Read-only and cheap; called even on an uninitialized instance.
+        Read-only and cheap; called even on an uninitialized instance (the
+        gateway memoizes one such instance). v1.2.21: every value used to come
+        from instance state that is empty before initialize(), so the signature
+        was a CONSTANT and the hook could never bust the cache. Read the
+        config-derived values directly when no agent exists yet.
         """
         db_path = ""
+        default_user = ""
+        config_stamp = ""
         try:
             if self._agent is not None:
                 db_path = str(self._agent.db.db_path)
+            else:
+                cfg = self._cfg
+                if cfg is None:
+                    from core.config_manager import ConfigManager
+                    cfg = ConfigManager()
+                    self._cfg = cfg
+                db_path = str(cfg.get("db", "path", default="") or "")
+                if db_path:
+                    db_path = os.path.expanduser(db_path)
+                default_user = str(cfg.get_top_level("default_user", "") or "")
+                try:
+                    # Editing the same config file must also invalidate the
+                    # cached gateway agent (path alone would not change).
+                    config_stamp = str(os.stat(cfg.config_path).st_mtime_ns)
+                except (OSError, TypeError):
+                    config_stamp = ""
         except Exception:
             db_path = ""
         sig = {
-            "echomind.user_id": self._user_id or "",
+            "echomind.user_id": self._user_id or default_user or "",
             "echomind.profile": self._profile or "default",
             "echomind.project": self._project_id or "default",
             "echomind.db_path": db_path,
         }
+        if config_stamp:
+            sig["echomind.config_mtime"] = config_stamp
         if self._identity_extra:
             sig["echomind.identity"] = dict(self._identity_extra)
         return sig
@@ -1067,40 +1146,8 @@ def register(ctx, **kwargs):
     ctx.register_memory_provider(provider)
     logger.info("EchoMind Memory Provider registered for Hermes")
 
+# v1.2.21: the module-level singleton helper (`_get_llm_client` /
+# `_hermes_llm_fn`) was dead code since reflection moved to the per-agent
+# client (MainMemoryAgent._get_llm_client). It was also the exact cross-profile
+# leak this release removed, so it must not come back.
 
-# v1.1.0: LLM function injection（passed UnifiedLLMClient Unified invocation, supports external API）
-_llm_client = None
-
-
-def _get_llm_client():
-    global _llm_client
-    if _llm_client is None:
-        from core.llm_client import get_llm_client
-
-        _llm_client = get_llm_client()
-    return _llm_client
-
-
-def _hermes_llm_fn(prompt: str) -> str:
-    """passed UnifiedLLMClient calls LLM for reflection.
-
-    Supports external API endpoints (OpenAI / vLLM / Ollama, etc.).
-
-    Always returns a string (never None).  Defensive guard: some LLMs
-    (e.g. Ollama, DeepSeek) return finish_reason=stop with content=null,
-    which would become Python None here.  None would be passed as
-    raw_response to _reflect_records, then propagated as the LLM result
-    back to the caller, where the caller's OpenAI SDK raises
-    EmptyModelOutputError("has no usable output").
-    """
-    client = _get_llm_client()
-    if client is None:
-        return ""
-    try:
-        result = client.chat(prompt)
-    except Exception as e:
-        logger.warning("Reflection LLM call failed: %s", e)
-        return ""
-    if result is None or not result.strip():
-        return ""
-    return result

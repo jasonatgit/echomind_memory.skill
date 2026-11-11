@@ -451,6 +451,14 @@ def api_set_config_param(req: ConfigUpdateRequest, auth=Depends(verify_api_key))
     cfg = get_config_manager()
     key_path = f"{req.section}.{req.key}"
     cfg.set_runtime(key_path, req.value)
+    # v1.2.21: the agent owns a per-agent LLM client now; without this a
+    # hot-update of llm.* (endpoint/api_key/model) never took effect until
+    # restart. refresh_config() also drops caches derived from config.
+    try:
+        memory_agent.refresh_config()
+    except Exception:
+        logger.debug("memory_agent.refresh_config failed after parameter set",
+                     exc_info=True)
     return {"status": "ok", "key": key_path, "value": req.value}
 
 
@@ -458,6 +466,15 @@ def api_set_config_param(req: ConfigUpdateRequest, auth=Depends(verify_api_key))
 def api_reload_config(auth=Depends(verify_api_key)):
     cfg = get_config_manager()
     cfg.reload()
+    # v1.2.21: `cfg.reload()` only resets the module LLM singleton, but the
+    # HTTP agent builds its own per-agent client (cached via _llm_client_built)
+    # and is not registered as a reload observer. Refresh it explicitly so the
+    # documented hot-reload of llm.endpoint/api_key/model actually applies.
+    try:
+        memory_agent.refresh_config()
+    except Exception:
+        logger.warning("memory_agent.refresh_config failed after reload",
+                       exc_info=True)
     return {"status": "reloaded", "config_path": cfg.config_path}
 
 
