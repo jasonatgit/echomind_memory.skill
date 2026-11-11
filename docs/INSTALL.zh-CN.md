@@ -78,6 +78,16 @@ python main.py
 
 > **提示：** 需要开机自启请使用上方方式一。
 
+### API Key / 鉴权（可选）
+
+在 `~/.echomind/echomind_config.yaml` 配置 `server.api_key`，或导出环境变量（推荐；`hermes memory setup` 也是写入这里）：
+
+```bash
+export ECHOMIND_API_KEY="your-secret"
+```
+
+设置任一后，`/api/*` 与 `/mcp` 都需要 `X-API-Key` 头。`server.api_key` 也支持环境变量引用，例如 `api_key: "${ECHOMIND_API_KEY}"`。
+
 ---
 
 ### Hermes-Agent 激活自动存取（推荐）

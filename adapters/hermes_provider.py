@@ -25,6 +25,22 @@ if _pkg_dir not in sys.path:
 
 from core.memory_agent import MainMemoryAgent
 
+# Hermes v0.23.1 memory-provider contract. Subclassing is optional for the
+# default in-process loader (it accepts a plain register(ctx)/class), but it is
+# required for `plugins.isolation: host` (the parent proxies the object as a
+# MemoryProvider subclass) and gives us the optional hooks' defaults. Guard the
+# import so EchoMind still loads when run outside Hermes (tests, standalone).
+try:  # pragma: no cover - depends on the host environment
+    from agent.memory_provider import (  # type: ignore
+        MemoryProvider as _MemoryProviderBase,
+        RecallStatus as _RecallStatus,
+        spawn_context_thread as _spawn_context_thread,
+    )
+except Exception:  # pragma: no cover
+    _MemoryProviderBase = object  # type: ignore
+    _RecallStatus = None  # type: ignore
+    _spawn_context_thread = None  # type: ignore
+
 logger = logging.getLogger("EchomindProvider")
 
 PLATFORM = "hermes"
@@ -39,14 +55,14 @@ def _default_user_id() -> str:
         return "cli"
 
 
-class EchomindMemoryProvider:
+class EchomindMemoryProvider(_MemoryProviderBase):
     """EchoMind Memory Provider — Hermes Agent loop deep integration
 
-    No ABC inheritance.  Hermes discovers available methods at runtime
-    via getattr() and adapts keyword arguments via inspect.signature(),
-    so a plain class without any framework base class works identically.
+    Subclasses ``agent.memory_provider.MemoryProvider`` when available (Hermes
+    v0.23.1); falls back to ``object`` so the module imports standalone.
+    Hermes discovers methods at runtime, so the class is duck-typed either way.
 
-    Hermes v0.17.0 MemoryProvider protocol:
+    Hermes v0.23.1 MemoryProvider protocol:
       name() -> str
       is_available() -> bool
       initialize(session_id, **kwargs)
@@ -81,6 +97,9 @@ class EchomindMemoryProvider:
     """
 
     name = "echomind"
+    # Best-effort (v1) pre-compress handoff; EchoMind stores the messages itself
+    # in on_pre_compress, so the v2 fail-closed checkpoint is not declared.
+    pre_compress_checkpoint_api_version = 1
 
     def __init__(self):
         self._agent: Optional[MainMemoryAgent] = None
@@ -95,6 +114,12 @@ class EchomindMemoryProvider:
         self._detected_lang: str = "en"  # auto-detected from user content
         self._agent_identity: str = ""   # Hermes v0.17.0: profile name
         self._agent_workspace: str = ""  # Hermes v0.17.0: workspace name
+        # v0.23.1 multiplexing: per-instance config (isolated runtime overrides)
+        # and identity/recall bookkeeping. None of this is module/class state.
+        self._cfg = None
+        self._last_recall_count = 0
+        self._turn_author: Optional[Dict[str, Any]] = None
+        self._identity_extra: Dict[str, Any] = {}
 
     # ═══════════════════════════════════════════════════
     # Lifecycle
@@ -195,11 +220,37 @@ class EchomindMemoryProvider:
             self._project_id = self._agent_workspace
         else:
             self._project_id = "default"
+        # v0.23.1 gateway identities: keep them as provenance only (never use
+        # them to rebind the profile/tenant). Absent keys are simply omitted.
+        self._identity_extra = {
+            k: kwargs.get(k) for k in (
+                "user_id_alt", "user_name", "chat_id", "chat_name",
+                "chat_type", "thread_id", "gateway_session_key",
+            ) if kwargs.get(k)
+        }
         self._turn_count = 0
         self._context_buffer = []
+        self._last_recall_count = 0
+        self._turn_author = None
 
-        self._agent = MainMemoryAgent()
+        # Per-instance ConfigManager: runtime overrides (LLM endpoint/api_key
+        # synced from Hermes) are profile-local. The process-wide singleton made
+        # two profiles in one gateway overwrite each other's LLM credentials.
+        try:
+            from core.config_manager import ConfigManager
+            self._cfg = ConfigManager()
+        except Exception:
+            self._cfg = None
+        self._agent = MainMemoryAgent(
+            config_manager=self._cfg,
+            thread_spawner=_spawn_context_thread,
+        )
         self._agent.enable_persistence()
+        if self._cfg is not None:
+            try:
+                self._cfg.on_reload(self._agent.refresh_config)
+            except Exception:
+                pass
 
         # Auto-sync LLM config from Hermes config.yaml
         # Inject as runtime overrides so user's explicit config takes priority
@@ -245,7 +296,9 @@ class EchomindMemoryProvider:
         """
         try:
             from core.config_manager import get_config_manager
-            cfg = get_config_manager()
+            # Prefer this provider instance's own ConfigManager so the synced
+            # endpoint/api_key never leaks to another profile in the same process.
+            cfg = self._cfg or get_config_manager()
 
             # Skip sync if user has explicitly configured an endpoint
             current_endpoint = cfg.get("llm", "endpoint", default="")
@@ -287,8 +340,11 @@ class EchomindMemoryProvider:
             for k, v in overrides.items():
                 cfg.set_runtime(k, v)
 
-            from core.llm_client import reload_llm_client
-            reload_llm_client()
+            # Rebuild THIS agent's client from the updated instance config.
+            agent = self._agent
+            if agent is not None:
+                agent._llm_client = None
+                agent._llm_client_built = False
             logger.info("LLM config synced from Hermes: provider=%s", provider)
         except Exception as e:
             # P3.3: LLM config is a key path — a failed sync means the Hermes
@@ -347,6 +403,7 @@ class EchomindMemoryProvider:
                 session_id=self._session_id,
                 profile=self._profile,
             )
+            self._last_recall_count = len(result.get("retrieved_memories", []))
             return self._format_prefetch_context(result)
         except Exception as e:
             logger.error(f"prefetch error: {e}")
@@ -405,7 +462,8 @@ class EchomindMemoryProvider:
         return False
 
     def sync_turn(self, user_content: str, assistant_content: str, *,
-                  session_id: str = "", messages: Optional[List[Dict]] = None):
+                  session_id: str = "", messages: Optional[List[Dict]] = None,
+                  turn_author: Optional[Dict[str, Any]] = None):
         """Automatically called after each conversation turn — store current turn to SQLite"""
         if self._skip_writes or not self._agent:
             return
@@ -448,6 +506,11 @@ class EchomindMemoryProvider:
                 session_id=session_id,
                 profile=self._profile,
                 correction=correction,
+                # Routine turns must not mint a knowledge entry from every
+                # assistant reply; task/context/experience are still stored.
+                extract_knowledge=False,
+                author=turn_author or self._turn_author,
+                identity_extra=self._identity_extra,
             )
             if ok:
                 logger.debug(f"sync_turn: turn {self._turn_count} stored")
@@ -535,6 +598,17 @@ class EchomindMemoryProvider:
     def on_turn_start(self, turn_number: int, message: str, **kwargs):
         """Hook at the start of each turn（Can be used for preloading）"""
         self._turn_count = turn_number
+        # v0.23.1: author trio names who wrote THIS turn (shared sessions carry
+        # several participants). Keep it for provenance; never rebind identity.
+        aid = kwargs.get("author_id")
+        aname = kwargs.get("author_name")
+        if aid or aname:
+            self._turn_author = {
+                "id": aid, "name": aname,
+                "is_bot": bool(kwargs.get("author_is_bot")),
+            }
+        else:
+            self._turn_author = None
 
     def on_session_end(self, messages: List[Dict]):
         """Hook at the end of a session.
@@ -576,6 +650,8 @@ class EchomindMemoryProvider:
                 session_id=self._session_id,
                 profile=self._profile,
                 correction=any(self._detect_correction(m.get("content", "")) for m in clean_messages if m.get("role") == "user"),
+                author=self._turn_author,
+                identity_extra=self._identity_extra,
             )
             if ok:
                 logger.info("on_session_end: session summary stored")
@@ -795,6 +871,7 @@ class EchomindMemoryProvider:
         return [
             {
                 "key": "db_path",
+                "type": "text",
                 "description": "SQLite database path for EchoMind memory storage",
                 "default": "~/.echomind/memory.db",
                 "required": False,
@@ -802,6 +879,7 @@ class EchomindMemoryProvider:
             },
             {
                 "key": "api_key",
+                "type": "text",
                 "description": "API key for EchoMind HTTP API authentication",
                 "required": False,
                 "secret": True,
@@ -841,9 +919,10 @@ class EchomindMemoryProvider:
             if "api_key" in values:
                 server["api_key"] = values["api_key"]
             existing["server"] = server
-            # db_path lives under the storage/db section, not flat
+            # db_path lives under the db section, which is what
+            # Core MainMemoryAgent actually reads (`db.path`).
             if values.get("db_path"):
-                existing.setdefault("storage", {})["db_path"] = values["db_path"]
+                existing.setdefault("db", {})["path"] = values["db_path"]
             with open(config_file, "w", encoding="utf-8") as f:
                 yaml.dump(existing, f, default_flow_style=False)
             logger.info("EchoMind config saved to %s", config_file)
@@ -883,7 +962,8 @@ class EchomindMemoryProvider:
 
     def _retrieve(self, detail: str = "brief") -> str:
         """Get user memory profile"""
-        user_data = self._agent.user_agent.get(self._user_id, platform=PLATFORM)
+        user_data = self._agent.user_agent.get(
+            self._user_id, platform=PLATFORM, profile=self._profile)
         if detail == "brief":
             prefs = user_data.get("preferences", {})
             if not prefs:
@@ -896,6 +976,42 @@ class EchomindMemoryProvider:
             )
         else:
             return json.dumps(user_data, indent=2, ensure_ascii=False, default=str)
+
+    # ── Hermes v0.23.1 optional hooks ──────────────────────────
+
+    def recall_status(self):
+        """What the last prefetch injected (deterministic recall indicator)."""
+        if _RecallStatus is None:
+            return None
+        n = int(self._last_recall_count or 0)
+        if n <= 0:
+            return None
+        return _RecallStatus(provider_label="EchoMind", count=n)
+
+    def identity_signature(self) -> Dict[str, Any]:
+        """Identity values that must bust a cached gateway agent when changed.
+
+        Read-only and cheap; called even on an uninitialized instance.
+        """
+        db_path = ""
+        try:
+            if self._agent is not None:
+                db_path = str(self._agent.db.db_path)
+        except Exception:
+            db_path = ""
+        sig = {
+            "echomind.user_id": self._user_id or "",
+            "echomind.profile": self._profile or "default",
+            "echomind.project": self._project_id or "default",
+            "echomind.db_path": db_path,
+        }
+        if self._identity_extra:
+            sig["echomind.identity"] = dict(self._identity_extra)
+        return sig
+
+    def unavailable_reason(self) -> str:
+        """Hint shown when the provider is present but unavailable."""
+        return ""
 
     def _format_prefetch_context(self, result: Dict) -> str:
         """Format retrieval results as compact markdown context injection.

@@ -1,11 +1,31 @@
 import copy
 import os
+import re
 import threading
 import yaml
 import logging
 from typing import Any, Dict, Optional
 
 logger = logging.getLogger("ConfigManager")
+
+_ENV_REF_RE = re.compile(r'^\$\{[A-Za-z_][A-Za-z0-9_]*\}$')
+
+
+def expand_env_value(value: Any, default: str = "") -> Any:
+    """Expand a whole-value ``${VAR}`` reference from the environment.
+
+    Used for secrets such as ``server.api_key`` / ``llm.api_key`` so a config
+    can reference an env var (``api_key: "${ECHOMIND_API_KEY}"``) instead of
+    embedding the secret. Non-string values and strings that are not a single
+    ``${VAR}`` reference are returned unchanged. An unset variable yields
+    ``default``.
+    """
+    if not isinstance(value, str):
+        return value
+    stripped = value.strip()
+    if not _ENV_REF_RE.match(stripped):
+        return value
+    return os.environ.get(stripped[2:-1], default)
 
 
 def _resolve_config_path(explicit_path: Optional[str] = None) -> str:

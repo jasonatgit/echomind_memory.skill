@@ -40,4 +40,8 @@ retrieval:
 
 # ── Database ──
 db:
-  path: "~/.echomind/memory.db"
+  path: "~/.echomind/memory.db"   # honoured by the agent (explicit db_path still wins)
+  # Optional SQLite PRAGMAs applied on connect (after built-in WAL defaults):
+  # pragmas:
+  #   - "cache_size=-64000"
+  #   - "busy_timeout=30000"

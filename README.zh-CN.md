@@ -54,7 +54,7 @@
 | **知识溯源追踪** | knowledge_evolution 中存储溯源链（origin_agent、origin_session_id、origin_turn），实现记忆供应链审计 |
 | **Markdown 记忆档案** | `export_memory_to_markdown()` 生成完整 9 节 .md 文档（健康/画像/知识按认知模式分区/经验/任务/上下文/研究/反思/自我反思评分）；零新依赖 |
 | **紧凑注入层** | `<memory-context>` 紧凑 Markdown 块为 LLM 上下文注入（Hermes v0.20+ 兼容） |
-| **Hermes v0.20+ 适配** | 根 `register(ctx)` 入口 + `plugin.yaml` `kind: exclusive` — 兼容 Hermes v0.13–v0.20 |
+| **Hermes v0.23.1 适配** | 根 `register(ctx)` 入口 + `plugin.yaml` `kind: exclusive`；`MemoryProvider` 子类、按 profile 隔离配置/LLM（multiplex #140058）、上下文感知的后台线程、`recall_status`/`identity_signature` 钩子——兼容 Hermes v0.13–v0.23.1 |
 
 ### 检索与优化（RL强化自学习）
 | 功能 | 说明 |
@@ -97,7 +97,7 @@ EchoMind 记忆系统专门针对*科研方向*的记忆进行了优化，对查
 
 | 框架 | 支持方式 | 可靠性 |
 |------|----------|--------|
-| **Hermes-Agent** | MemoryProvider 插件 (自动, v0.13.0–v0.20.0) | ★★★★★ 100% |
+| **Hermes-Agent** | MemoryProvider 插件 (自动, v0.13.0–v0.23.1) | ★★★★★ 100% |
 | **OpenClaw** | `skill.yaml` + HTTP API 工具调用 | ★★★★☆ LLM 决策 |
 | **OpenCode** | CLI + HTTP API 或 MCP stdio | ★★★★☆ LLM 决策 |
 | **Claude Code** | MCP stdio 或 HTTP API | ★★★★☆ LLM 决策 |
@@ -135,6 +135,7 @@ EchoMind 记忆系统专门针对*科研方向*的记忆进行了优化，对查
 | v1.2.19 | *结构化检索 trace（迁移 v12）、组件归因反思（primary_owner/failure_type，双引擎统一）、fingerprint 门（零观测≠信号）、配对 bootstrap 门控知识更新（灰度默认关）。* |
 | v1.2.18 | *内部重构：从两个最大模块中抽出纯评分/新颖度助手、生命周期/进化/实体子 Agent、存储 schema/keys/rows——行为不变，全部调用点经委派/重导保留，新增 39 项评分数值单测。* |
 | v1.2.17 | *对 v1.2.16 的复核轮 — 全部修复逐个对照真实引擎重验：修复 TTL 绑定数缺陷、优化延迟回收、配置回退一致性复核与反思 batch 钳制复核。* |
+| v1.2.20 | *适配 Hermes v0.23.1（按 profile 隔离配置/LLM、MemoryProvider 子类、上下文线程、recall/identity 钩子、环境变量 API key）+ 全量审计修复（全局知识召回、删除/清理同步内存、反思 >8 条、任务状态/id、access_count/trust 回填、C2、db.path/pragmas、extract_knowledge 开关）。* |
 | v1.2.16 | *全数据链路审计：退出契约统一、LIMIT 下稀疏标签检索、reflections profile 级删除、删除级联一致、时间戳统一、状态机跨用户隔离、反思 knowledge 持久化与租户化、反思幂等、RL 锁加固、MCP/HTTP/CORS 加固、缓存限界。* |
 | v1.2.15 | *深度审计修复：自动反思 / 生命周期状态机 / 知识进化检测死路径复活、知识主键租户隔离、MCP 客户端按会话隔离 + `/mcp` 鉴权、GSPO 改可选、检索路径 LLM 门控（最坏 181s → 5s）。* |
 | v1.2.14 | *来源追溯：origin 追踪（传输方式 + 客户端，MCP clientInfo 推断）、tags 过滤（调用方 tags + 自动主题 tags，OR/AND）、来源信封、来源行可见、结构化 `echomind_query`。* |
@@ -278,7 +279,10 @@ cp ~/.echomind/memory.db ~/.echomind/memory.db.backup-$(date +%Y%m%d)
 ### Q: EchoMind 是否兼容 Hermes v0.17.0？
 
 是。EchoMind v1.2.0+ 完整支持 Hermes v0.17.0 的 MemoryProvider 接口，包括 `get_config_schema()`、`backup_paths()`、`save_config()` 方法。
-兼容范围：Hermes v0.13.0 – v0.17.0。
+
+### Q: EchoMind 是否兼容 Hermes v0.23.1？
+
+是。EchoMind v1.2.20 适配 v0.23.1 的 `MemoryProvider` 契约：继承 ABC（同时支持 in-process 与 `plugins.isolation: host`），按 profile 隔离 LLM 配置，避免多 profile gateway 中一个 profile 的 endpoint/api_key 泄漏到另一个（#140058）；后台反思在所属 profile 的上下文中运行；提供 `recall_status`/`identity_signature`/`unavailable_reason`；把 `turn_author`/网关身份记为 provenance；并读取 `hermes memory setup` 写入的 `ECHOMIND_API_KEY` 环境变量。兼容范围：Hermes v0.13.0 – v0.23.1。
 
 </details>
 

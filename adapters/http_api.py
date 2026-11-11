@@ -38,7 +38,15 @@ def verify_api_key(api_key: str = Depends(api_key_header)):
     # instead of using the module-level `cfg` snapshot taken at import time.
     # Otherwise /api/config/parameter and /api/config/reload hot-updates would
     # never take effect on authentication.
-    expected = get_config_manager().get_section("server").get("api_key", "")
+    from core.config_manager import expand_env_value
+    raw = get_config_manager().get_section("server").get("api_key", "")
+    expected = expand_env_value(raw, "") if raw else ""
+    if not expected:
+        # Hermes v0.23 `memory setup` writes secrets to .env via env_var (the
+        # schema marks api_key secret), never to server.api_key. Read the env
+        # fallback so configuring the key only in .env still enables auth.
+        expected = (os.environ.get("ECHOMIND_API_KEY", "")
+                    or os.environ.get("ECHOMIND_API_TOKEN", ""))
     if not expected:
         logger.warning("API key not configured — authentication DISABLED")
         return ""  # no key configured — allow all (backward compat)
@@ -115,6 +123,11 @@ class StoreRequest(BaseModel):
     tags: List[str] = []
     origin_client: Optional[str] = None
     turn: int = 0
+    # When False, the turn is stored as task/context/experience only and the
+    # assistant reply is NOT extracted as a knowledge entry. High-frequency
+    # per-turn callers (e.g. the Hermes sync_turn hook) use this to avoid
+    # filling knowledge_memory with every assistant message.
+    extract_knowledge: bool = True
 
 class FeedbackRequest(BaseModel):
     user_id: str
@@ -255,6 +268,7 @@ def api_store(req: StoreRequest, auth=Depends(verify_api_key)):
             tags=req.tags,
             origin_client=req.origin_client,
             turn=req.turn,
+            extract_knowledge=req.extract_knowledge,
         )
         return {"status": "stored" if ok else "error", "user_id": req.user_id, "task_id": req.task_id}
     except Exception as e:
@@ -454,6 +468,7 @@ class DeleteRequest(BaseModel):
     memory_type: str
     memory_id: Optional[str] = None
     user_id: Optional[str] = None
+    profile: Optional[str] = None
 
 @app.delete("/api/memory/{memory_type}/{memory_id}")
 def api_delete_memory(memory_type: str, memory_id: str, auth=Depends(verify_api_key)):
@@ -497,7 +512,7 @@ def api_delete_user(req: DeleteRequest, auth=Depends(verify_api_key)):
     if not req.user_id:
         raise HTTPException(status_code=422, detail="user_id required")
     try:
-        counts = memory_agent.db.delete_user_memories(req.user_id)
+        counts = memory_agent.delete_user_memories(req.user_id, profile=req.profile)
         return {"status": "deleted", "user_id": req.user_id, "counts": counts}
     except Exception as e:
         logger.error(f"api_delete_user: {e}", exc_info=True)
@@ -519,7 +534,7 @@ def api_cleanup(auth=Depends(verify_api_key)):
             "experience": _ttl("experience", 180),
             "knowledge": _ttl("knowledge", 0),
         }
-        counts = memory_agent.db.delete_expired(ttl)
+        counts = memory_agent.cleanup_expired(ttl)
         return {"status": "cleaned", "counts": counts, "ttl": ttl}
     except Exception as e:
         logger.error(f"api_cleanup: {e}", exc_info=True)

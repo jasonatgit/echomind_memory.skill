@@ -83,6 +83,16 @@ python main.py
 
 > **Tip:** For auto-start, use Option 1 above.
 
+### API key / authentication (optional)
+
+Set `server.api_key` in `~/.echomind/echomind_config.yaml`, or export the environment variable (recommended; also what `hermes memory setup` writes):
+
+```bash
+export ECHOMIND_API_KEY="your-secret"
+```
+
+When either is set, `/api/*` and `/mcp` require the `X-API-Key` header. `server.api_key` also accepts an env reference, e.g. `api_key: "${ECHOMIND_API_KEY}"`.
+
 ---
 
 ### Hermes-Agent Auto Memory (Recommended)

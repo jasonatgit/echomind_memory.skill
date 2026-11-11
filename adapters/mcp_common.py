@@ -120,8 +120,9 @@ def _resolve_api_key() -> str:
     reloads behave the same way the server's verify_api_key does.
     """
     try:
-        from core.config_manager import get_config_manager
-        cfg_key = get_config_manager().get_section("server").get("api_key", "")
+        from core.config_manager import get_config_manager, expand_env_value
+        raw = get_config_manager().get_section("server").get("api_key", "")
+        cfg_key = expand_env_value(raw, "") if raw else ""
         if cfg_key:
             return cfg_key
     except Exception:
@@ -201,7 +202,7 @@ def handle_tools_list():
                 "type": "object",
                 "properties": {
                     "query": {"type": "string", "description": "Search query"},
-                    "user_id": {"type": "string", "default": "cli"},
+                    "user_id": {"type": "string", "default": ""},
                     "platform": {"type": "string", "default": "mcp"},
                     "max_results": {"type": "integer", "default": 5},
                     "project": {"type": "string", "default": "default"},
@@ -225,7 +226,7 @@ def handle_tools_list():
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "user_id": {"type": "string", "default": "cli"},
+                    "user_id": {"type": "string", "default": ""},
                     "task_id": {"type": "string", "default": ""},
                     "task_status": {"type": "string", "default": "completed"},
                     "success": {"type": "boolean", "default": True},
@@ -239,6 +240,8 @@ def handle_tools_list():
                                    "description": "True if this store is a fix/correction of a prior turn"},
                     "turn": {"type": "integer", "default": 0,
                              "description": "Optional. Turn index in the source session; recorded on evolution rows."},
+                    "extract_knowledge": {"type": "boolean", "default": True,
+                                          "description": "Optional. When false, do not extract the assistant reply as a knowledge entry (task/context/experience are still stored)."},
                     "tags": {"type": "array", "items": {"type": "string"},
                              "description": "Optional. Caller tags (priority); auto topic tags fill the rest."},
                     "origin_client": {"type": "string",
@@ -297,7 +300,7 @@ def handle_tools_list():
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "user_id": {"type": "string", "default": "cli"},
+                    "user_id": {"type": "string", "default": ""},
                     "profile": {"type": "string", "default": "default"},
                     "memory_type": {"type": "string", "default": "all",
                                     "description": "knowledge/experience/task/context/research/transcript/reflection, comma-separated, or 'all'."},
@@ -435,6 +438,7 @@ def handle_tool_call(name, arguments, session_id: str = "",
             # string from a client used to raise ValueError and leak
             # "-32603 ... path/to/store" back to the caller; safe-coerce to 0.
             "turn": _safe_int(arguments.get("turn", 0), default=0),
+            "extract_knowledge": bool(arguments.get("extract_knowledge", True)),
         })
         if "error" in result:
             return {"content": [{"type": "text", "text": f"Error storing: {result['error']}"}]}

@@ -7,7 +7,7 @@ class ReflectionOutput(BaseModel):
     """Reflection output — deserialized from LLM JSON response"""
 
     key_insights: List[str] = Field(
-        default_factory=list, max_length=8,
+        default_factory=list, max_length=64,
         description="Key insights distilled from episodic records",
     )
     user_preferences: List[str] = Field(

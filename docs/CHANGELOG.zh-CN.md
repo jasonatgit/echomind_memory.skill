@@ -1,5 +1,47 @@
 # EchoMind 更新日志
 
+## v1.2.20 — 适配 Hermes v0.23.1 + 审计缺陷修复 (2026-11-11)
+
+适配 **Hermes v0.23.1** 的 `MemoryProvider` 契约，并修完独立审计发现的全部缺陷。无 schema 迁移。测试 141 → 158，全绿。
+
+### Hermes v0.23.1 适配
+
+| 领域 | 改动 |
+|------|------|
+| **多路复用隔离（#140058）** | provider 持有**每实例 `ConfigManager`**，每个 `MainMemoryAgent` 持有**按自身配置构建的独立 `LLMClient`**。此前进程级 ConfigManager/LLM 单例 + `set_runtime()` 会让多 profile gateway 中一个 profile 的 LLM endpoint/api_key 覆盖另一个。新增 `new_llm_client()` 返回新实例，`get_llm_client(config=…)` 不再改动全局单例 |
+| **Provider 基类** | `EchomindMemoryProvider` 在可导入时继承 `agent.memory_provider.MemoryProvider`（不可导入则回退 `object`），同时兼容默认 `in_process` 加载与 `plugins.isolation: host`（父进程以 `MemoryProvider` 子类代理） |
+| **后台上下文** | 自动反思改走注入的 `thread_spawner`；Hermes provider 传入 `spawn_context_thread`，保留 profile 的 `HERMES_HOME`/secret contextvars（其它端退回普通线程） |
+| **可选钩子** | 新增 `recall_status()`（上次 prefetch 条数）、`identity_signature()`（user/profile/project/db_path）、`unavailable_reason()` |
+| **身份溯源** | `turn_author`、`user_id_alt`、`gateway_session_key`、`chat_*` 写入 provenance envelope（`author`/`identity` 增量键）——**不**重绑身份 |
+| **配置 schema** | `get_config_schema` 增加 `type`；`save_config` 写入真实 `db.path`（原为无效的 `storage.db_path`） |
+
+### 安全
+
+- **API key 走环境变量**：Hermes v0.23 `memory setup` 把 secret 写入 `.env`（`ECHOMIND_API_KEY`）而非 `server.api_key`。`verify_api_key` 与 MCP 网关现在回退读取 `ECHOMIND_API_KEY`/`ECHOMIND_API_TOKEN`，`server.api_key` 支持 `${ENV}` 展开（`config_manager.expand_env_value`）。此前密钥被静默忽略、HTTP 认证处于关闭状态。
+
+### 缺陷修复
+
+| ID | 修复 |
+|----|------|
+| P1-1 | 知识检索候选集并入共享 `"default"` 租户——用户一旦有自己的条目，全局知识就检索不到 |
+| P1-2 | `delete-user` / `cleanup` 现在同步清理内存 agent（reset + reload）；此前已删记忆重启前仍可检索 |
+| P1-3 | 反思 >8 条洞见不再被丢弃：放宽 `ReflectionOutput.key_insights` 上限、关键词路径截断到 8、coercion 前用 sanitizer 裁剪（不再出现"已落库却报失败并退回配额"） |
+| P1-4 | `echomind-cli write` 现在把偏好/经验落库（此前仅内存，退出即丢） |
+| P2-1 | `create_task` 使用 `task_status`，不再恒为 `pending` |
+| P2-2 | 原始 `task_id` 存入 task metadata 并在重载时还原（last-access 不再二次哈希） |
+| P2-3/P2-9 | 加载时把知识的 `access_count`、`trust_score` 列回填到内存 metadata |
+| P2-4 | 检索 trace 使用独立的会话级键，不再与轮次 context 冲突 |
+| P2-5 | 自反思 C2 不再因标量增长键崩溃（此前分数封顶 3/4） |
+| P2-6 | `db.path`、`db.pragmas` 生效；`retrieval.experience_limit` / `experience_min_success_rate_initial` 接入；移除无效的 `relevance_multiplier` / `preference_score_boost` / `experience_min_success_rate_final` |
+| P2-7 | 内存 store 迭代前取快照（并发 `store()` 不再触发 "dictionary changed size"） |
+| P2-8 | 新增 `extract_knowledge` 开关：Hermes `sync_turn` 不再把每条 assistant 回复落成知识（显式 store 默认仍为 `True`） |
+| P2-10 | `_TransactionContext.__enter__` 在 `BEGIN` 失败时释放锁 |
+| P3-* | habits 非法 JSON 默认 `{}`；`_parse_score` 数字边界；transcript summary 持久化 `user_id`；delete-user 传递 `profile`；`_retrieve` 遵循 profile；习惯推断改用本地小时；增长查询用 `julianday`；MCP schema 默认值对齐 |
+
+**行为说明：** `retrieval.experience_min_success_rate_initial`（默认 0.7）现在真正生效，失败经验默认被过滤（可配为 0.5）；Hermes 每轮路径传 `extract_knowledge=false`。**迁移：** 无。
+
+---
+
 ## v1.2.19 — Trace、归因、Fingerprint 与配对门 (2026-10-15)
 
 落地论文[arXiv:2608.24876](https://arxiv.org/abs/2608.24876)中价值最高的四项吸收，基于 v1.2.18 模块布局——把反思从"总结"升级为"归因"，让知识更新有配对证据门。

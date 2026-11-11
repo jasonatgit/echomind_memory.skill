@@ -64,10 +64,14 @@ class LLMClient:
     @staticmethod
     def _parse_score(text: str) -> float:
         """Extract a 0-10 score from LLM response. Returns 0.0 on parse failure.
-        Matches integer or float values; no word boundary (supports CJK text)."""
-        m = re.search(r'(10|\d+(?:\.\d+)?)', text)
-        if m:
-            return min(max(float(m.group(1)), 0.0), 10.0) / 10.0
+
+        Uses digit boundaries so an unrelated number (a year like "2024") is not
+        mistaken for a score, and takes the FIRST standalone number ("8/10" →
+        0.8) rather than a later one."""
+        tokens = re.findall(
+            r'(?<![\d.])(10(?:\.0+)?|[0-9](?:\.\d+)?)(?![\d.])', text)
+        if tokens:
+            return min(max(float(tokens[0]), 0.0), 10.0) / 10.0
         return 0.0
 
     @property
@@ -212,26 +216,37 @@ _client_singleton: Optional[LLMClient] = None
 
 _llm_client_lock = threading.Lock()
 
-def get_llm_client(config: Optional[dict] = None) -> Optional[LLMClient]:
-    """Module-level singleton factory.
+def new_llm_client(config: Optional[dict] = None) -> Optional[LLMClient]:
+    """Build a NEW, non-singleton LLM client.
 
-    Pass config explicitly, or omit to auto-load from ConfigManager.
-    Returns None when LLM is disabled (provider=none).
-    Use force_reload=True to reinitialize after config reload.
+    Never mutates the process-wide singleton. Use this when several agents /
+    profiles share one process (e.g. the Hermes gateway multiplexes profiles):
+    each agent must own its client so one profile's endpoint/api_key can never
+    leak into another's requests. Returns None when the LLM is disabled.
+    """
+    if config is None:
+        from .config_manager import get_config_manager
+        config = get_config_manager().get_section("llm")
+    client = LLMClient(config)
+    return client if client.available else None
+
+
+def get_llm_client(config: Optional[dict] = None) -> Optional[LLMClient]:
+    """Module-level singleton factory (legacy single-process path).
+
+    With no ``config`` the shared, process-wide client is returned (created on
+    first use). When ``config`` IS provided this returns a fresh, isolated
+    client and deliberately does NOT replace the singleton — passing a config
+    used to overwrite the shared client, which under a multi-profile gateway
+    let one profile's LLM endpoint/api_key bleed into another's traffic.
     """
     global _client_singleton
+    if config is not None:
+        return new_llm_client(config)
     with _llm_client_lock:
-        if config is not None:
-            client = LLMClient(config)
-            _client_singleton = client
-            return client if client.available else None
         if _client_singleton is None:
-            if config is None:
-                from .config_manager import get_config_manager
-                config = get_config_manager().get_section("llm")
-            client = LLMClient(config)
-            _client_singleton = client
-            return client if client.available else None
+            from .config_manager import get_config_manager
+            _client_singleton = LLMClient(get_config_manager().get_section("llm"))
         result = _client_singleton
         return result if result and result.available else None
 

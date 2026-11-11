@@ -29,14 +29,15 @@ class TaskMemoryAgent:
     def create_task(self, user_id: str, task_id: str, title: str,
                      steps: List[Dict], profile: str = "default",
                      project: str = "default", task_type: str = None,
-                     metadata: Dict = None) -> str:
+                     metadata: Dict = None, task_status: str = "pending") -> str:
         entry_metadata = {"task_type": task_type} if task_type else {}
         # v1.2.14 provenance: caller metadata (e.g. the source envelope) is
         # merged after the task_type so an explicit envelope key wins.
         if isinstance(metadata, dict):
             entry_metadata.update(metadata)
         task = TaskMemory(
-            user_id=user_id, task_id=task_id, title=title, status="pending",
+            user_id=user_id, task_id=task_id, title=title,
+            status=task_status or "pending",
             steps=steps, profile=profile, project=project,
             metadata=entry_metadata,
         )

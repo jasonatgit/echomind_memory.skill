@@ -103,21 +103,17 @@ def _reflect_records(
     When llm_fn is provided and provider is not 'none', uses the LLM to generate
     reflection. When provider is 'none', extracts top frequent keywords.
     """
-    provider = ""
-    try:
-        from .config_manager import get_config_manager
-        provider = get_config_manager().get("llm", "provider", default="")
-    except Exception:
-        pass
-
     if llm_fn is None:
         # Two-phase HTTP API: return prompt for caller-side LLM processing
         prompt = _prepare_reflection_context(records)
         record_ids = [r.get("id", f"rec_{i}") for i, r in enumerate(records)]
         return (prompt, record_ids)
 
-    # Hermes auto path: llm_fn provided → use LLM for reflection
-    if provider != "none":
+    # Hermes auto path: llm_fn provided → use LLM for reflection. The old code
+    # gated this on the process-wide ConfigManager's llm.provider, which under a
+    # multiplexed gateway could describe a DIFFERENT profile than this agent's;
+    # the presence of llm_fn is the correct, instance-local signal.
+    if llm_fn is not None:
         try:
             prompt = _prepare_reflection_context(records)
             raw_response = llm_fn(prompt)
@@ -135,7 +131,7 @@ def _reflect_records(
 
     # P1-4: typed output — separate insights, preferences, rules, knowledge
     output = {
-        "key_insights": keywords[:10],
+        "key_insights": keywords[:8],
         "user_preferences": [],
         "procedural_rules": [],
         "new_knowledge": [],
@@ -229,6 +225,11 @@ def _process_reflection(
             output[field] = []
         elif isinstance(val, list):
             output[field] = [str(v) for v in val]
+
+    # Keep the durable record within the ReflectionOutput contract (key_insights
+    # is capped at 8) so the caller's coercion cannot reject an already-persisted
+    # reflection.
+    output["key_insights"] = list(output.get("key_insights") or [])[:8]
 
     min_conf = 0.65
     try:

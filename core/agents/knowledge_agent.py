@@ -59,9 +59,14 @@ class KnowledgeMemoryAgent:
                tags: List[str] = None, top_k: int = 5,
                profile: str = None, tags_match_all: bool = False) -> List[Dict]:
         results = []
-        # Use inverted index to quickly locate candidates
-        if user_id and user_id in self._user_index:
-            candidate_ids = self._user_index[user_id]
+        # Use inverted index to quickly locate candidates. A real user's pool is
+        # the UNION of their own entries and globally-shared ("default") ones —
+        # the per-entry filter below explicitly admits `default`, so the index
+        # pre-selection must not silently drop it (it previously did whenever
+        # the user had any own entries).
+        if user_id and (user_id in self._user_index or "default" in self._user_index):
+            candidate_ids = (set(self._user_index.get(user_id, set()))
+                             | set(self._user_index.get("default", set())))
             candidates = [self.store[eid] for eid in candidate_ids if eid in self.store]
         else:
             candidates = list(self.store.values())
@@ -139,7 +144,9 @@ class KnowledgeMemoryAgent:
                    user_id: str = None, profile: str = None) -> List[Dict]:
         """Return all matching entries (no query matching), for use in compact_knowledge etc."""
         results = []
-        for entry in self.store.values():
+        # Materialize the values snapshot: a concurrent store()/add_document()
+        # must never raise "dictionary changed size during iteration".
+        for entry in list(self.store.values()):
             if user_id and entry.user_id not in (user_id, "default"):
                 continue
             if project and entry.metadata.get("project") not in (project, None, ""):

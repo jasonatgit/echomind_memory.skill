@@ -60,6 +60,15 @@ def _write(agent, user_id):
         agent.user_agent.update(
             user_id, "preferences", data["preferences"], source="code_cli"
         )
+        # Persist the updated user row: user_agent.update only mutates the
+        # in-memory store, so without this the CLI write was lost on exit.
+        _mem = agent.user_agent.store.get(agent.user_agent._key(user_id))
+        agent.db.save_user(
+            user_id,
+            preferences=getattr(_mem, "preferences", {}) if _mem else data["preferences"],
+            habits=getattr(_mem, "habits", {}) if _mem else {},
+            history=getattr(_mem, "history", []) if _mem else [],
+        )
     if "experience" in data:
         if not isinstance(data["experience"], list):
             print("error: 'experience' must be a list", file=sys.stderr)
@@ -71,13 +80,22 @@ def _write(agent, user_id):
                 print(f"error: experience entry missing keys {missing}: {exp!r}",
                       file=sys.stderr)
                 sys.exit(1)
-            agent.experience_agent.store_experience(
+            eid = agent.experience_agent.store_experience(
                 user_id=user_id,
                 task_id=f"code_{exp['location']}",
                 task_type="code_review",
                 success=exp["success"],
                 steps=[exp["summary"]],
                 summary=exp["summary"],
+            )
+            # Mirror to SQLite (the in-memory store alone is not persistence).
+            agent.db.save_experience(
+                user_id=user_id,
+                task_type="code_review",
+                success=exp["success"],
+                steps=[exp["summary"]],
+                summary=exp["summary"],
+                experience_id=eid,
             )
     print(json.dumps({"status": "written"}))
 

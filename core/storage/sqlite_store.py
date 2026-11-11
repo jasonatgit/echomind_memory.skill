@@ -5,6 +5,7 @@ import functools
 import json
 import logging
 import os
+import re
 import sqlite3
 import threading
 import time
@@ -104,12 +105,20 @@ def with_retry_on_busy(max_retries=MAX_RETRIES):
 class SqliteStore:
     """SQLite Persistent storage — manage 9 memory data tables"""
 
-    def __init__(self, db_path: str = None):
+    _PRAGMA_RE = re.compile(
+        r"^[A-Za-z_][A-Za-z0-9_]*(?:\s*=\s*-?[A-Za-z0-9_.\-]+)?$")
+
+    def __init__(self, db_path: str = None, pragmas: List[str] = None):
         self.db_path = db_path or str(DB_PATH)
         Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
         self._conn: Optional[sqlite3.Connection] = None
         self._lock: Optional[threading.RLock] = None
         self._batch_active = False
+        # Optional ``db.pragmas`` list from config (e.g. "cache_size=-64000").
+        # Applied after the built-in defaults in connect(); entries that do not
+        # look like a plain PRAGMA key[=value] are skipped (no SQL injection
+        # surface from a config file).
+        self._pragmas = [p for p in (pragmas or []) if isinstance(p, str)]
 
     def connect(self):
         self._conn = sqlite3.connect(self.db_path, check_same_thread=False)
@@ -123,6 +132,17 @@ class SqliteStore:
         self._conn.execute("PRAGMA busy_timeout=10000")
         self._conn.execute("PRAGMA synchronous=NORMAL")
         self._conn.execute("PRAGMA foreign_keys=ON")
+        for pragma in self._pragmas:
+            stmt = pragma.strip()
+            if stmt.lower().startswith("pragma "):
+                stmt = stmt[7:].strip()
+            if not self._PRAGMA_RE.match(stmt):
+                logger.warning("Ignoring malformed db.pragmas entry: %r", pragma)
+                continue
+            try:
+                self._conn.execute(f"PRAGMA {stmt}")
+            except sqlite3.Error as e:
+                logger.warning("db.pragmas entry %r failed: %s", pragma, e)
         self._lock = threading.RLock()
         logger.info(f"Connected to SQLite: {self.db_path} (WAL + busy_timeout=10000)")
 
@@ -374,7 +394,7 @@ class SqliteStore:
             (_LOAD_LIMIT,)).fetchall()
         if len(rows) >= _LOAD_LIMIT:
             logger.warning("load_users: truncated at LIMIT=%d (more rows in DB)", _LOAD_LIMIT)
-        return [{k: (_safe_json_loads(r[k], {} if k == 'preferences' else []) if k in ('preferences','habits','history') else r[k])
+        return [{k: (_safe_json_loads(r[k], {} if k in ('preferences', 'habits') else []) if k in ('preferences','habits','history') else r[k])
                  for k in r.keys()} for r in (_normalize_row(r) or r for r in rows)]
 
     @_require_conn
@@ -972,15 +992,17 @@ class SqliteStore:
     @with_retry_on_busy()
     @_require_conn
     def save_transcript_summary(self, session_id: str, summary: str,
-                                key_decisions: List = None):
+                                key_decisions: List = None, user_id: str = None):
         with self._lock:
             # INSERT OR IGNORE then UPDATE, so a summary for a missing
-            # transcript row is not silently lost (no bare UPDATE no-op)
+            # transcript row is not silently lost (no bare UPDATE no-op).
+            # user_id is persisted when supplied so a summary-only row is not
+            # invisible to user-scoped transcript searches.
             self._conn.execute("""
                 INSERT OR IGNORE INTO session_transcripts
-                (session_id, messages, updated_at)
-                VALUES (?, '[]', datetime('now'))
-            """, (session_id,))
+                (session_id, user_id, messages, updated_at)
+                VALUES (?, ?, '[]', datetime('now'))
+            """, (session_id, user_id))
             self._conn.execute("""
                 UPDATE session_transcripts
                 SET compressed_summary=?, key_decisions=?,
@@ -995,7 +1017,7 @@ class SqliteStore:
         try:
             cursor = self._conn.execute(
                 "SELECT COUNT(DISTINCT session_id) FROM session_transcripts "
-                "WHERE user_id=? AND created_at >= datetime('now', ?)",
+                "WHERE user_id=? AND julianday(created_at) >= julianday(datetime('now', ?))",
                 (user_id, f"-{days} days")
             )
             return cursor.fetchone()[0]
@@ -1901,9 +1923,9 @@ class SqliteStore:
             stats[mem_type].setdefault("archived", 0)
         # 7-day growth: count records created in the last 7 days (from original tables, not state changes)
         growth_queries = {
-            "knowledge": "SELECT COUNT(*) AS cnt FROM knowledge_memory WHERE created_at >= datetime('now', '-7 days')",
-            "experience": "SELECT COUNT(*) AS cnt FROM experience_memory WHERE created_at >= datetime('now', '-7 days')",
-            "task": "SELECT COUNT(*) AS cnt FROM task_memory WHERE created_at >= datetime('now', '-7 days')",
+            "knowledge": "SELECT COUNT(*) AS cnt FROM knowledge_memory WHERE julianday(created_at) >= julianday(datetime('now', '-7 days'))",
+            "experience": "SELECT COUNT(*) AS cnt FROM experience_memory WHERE julianday(created_at) >= julianday(datetime('now', '-7 days'))",
+            "task": "SELECT COUNT(*) AS cnt FROM task_memory WHERE julianday(created_at) >= julianday(datetime('now', '-7 days'))",
         }
         for mem_type, sql in growth_queries.items():
             row = self._conn.execute(sql).fetchone()
@@ -2012,7 +2034,14 @@ class _TransactionContext:
 
     def __enter__(self):
         self.lock.acquire()
-        self.conn.execute("BEGIN IMMEDIATE TRANSACTION")
+        try:
+            self.conn.execute("BEGIN IMMEDIATE TRANSACTION")
+        except Exception:
+            # If BEGIN fails (e.g. a transaction is already open) the caller's
+            # `with` body never runs and __exit__ is not invoked, so the lock
+            # acquired above must be released here or it leaks forever.
+            self.lock.release()
+            raise
         if self._set_batch:
             self._set_batch(True)
         return self

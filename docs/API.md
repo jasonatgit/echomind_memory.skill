@@ -20,7 +20,7 @@
 | `POST` | `/api/config/parameter` | Set runtime config parameter (section whitelist; `api_key` is protected) |
 | `POST` | `/api/config/reload` | Reload configuration from disk |
 | `POST` | `/api/reflect` | Self-reflection (two-phase: build prompt or process result, supports profile) |
-| `POST` | `/mcp` | MCP JSON-RPC endpoint (Streamable HTTP; notifications return an empty 202). Requires the same `X-API-Key` as `/api/*` when `server.api_key` is configured (open when empty) |
+| `POST` | `/mcp` | MCP JSON-RPC endpoint (Streamable HTTP; notifications return an empty 202). Requires the same `X-API-Key` as `/api/*` when `server.api_key` or `ECHOMIND_API_KEY` is configured (open when neither is set) |
 | `GET` | `/health` | Health check |
 
 > **Error semantics (v1.2.13+):** `DELETE /api/memory/{type}/{id}` returns **400** for an unknown memory type (previously 500). `/api/reflect` returns **429** when the per-user daily reflection limit is reached and **400** for a parse failure / low-confidence result — failed reflections refund their quota slot and never consume the daily limit.
@@ -63,6 +63,15 @@
 | `tags` | array | | [] | Caller tags (priority); auto topic tags fill the rest |
 | `origin_client` | string | | | Producing client (claude-code/opencode/...); stored with the record's provenance |
 | `turn` | integer | | 0 | Turn index in the source session; recorded on knowledge-evolution rows as `origin_turn` (v1.2.15) |
+| `extract_knowledge` | boolean | | true | When false, the assistant reply is not stored as a knowledge entry (task/context/experience are still stored). Used by the Hermes per-turn hook to avoid knowledge pollution (v1.2.20) |
+
+#### POST /api/memory/delete-user
+| Parameter | Type | Required | Default | Description |
+|-----------|------|:---:|---------|-------------|
+| `user_id` | string | ✅ | | User identifier |
+| `profile` | string | | | Delete only this profile; omit to delete all profiles for the user (v1.2.20) |
+
+The in-memory retrieval caches are purged and reloaded, so deleted memories are not returned before a restart.
 
 #### POST /api/memory/query
 Structured provenance query (v1.2.14) — exact source predicates, **no relevance scoring**. Results merge across the selected memory tables, newest first. One day's memories: `date_from` = `date_to` = `YYYY-MM-DD`.

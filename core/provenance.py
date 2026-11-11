@@ -162,13 +162,18 @@ def build_envelope(origin_platform: Optional[str] = None,
                    tags: Optional[Iterable[Any]] = None,
                    session_id: Optional[str] = None,
                    task_id: Optional[str] = None,
-                   captured_at: Optional[str] = None) -> Dict[str, Any]:
+                   captured_at: Optional[str] = None,
+                   author: Optional[Dict[str, Any]] = None,
+                   identity: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """Build the provenance envelope stored with a memory record.
 
     ``schema`` lets a future reader interpret the envelope without guessing.
     ``captured_at`` defaults to the current UTC time in ISO-8601.
+    ``author``/``identity`` are additive (Hermes v0.23 turn_author and gateway
+    identities: user_id_alt / gateway_session_key / chat_*). They are only
+    present when supplied, so older readers and existing rows are unaffected.
     """
-    return {
+    env = {
         "schema": "envelope-v1",
         "origin_platform": normalize_origin_platform(origin_platform),
         "origin_client": normalize_origin_client(origin_client),
@@ -178,6 +183,17 @@ def build_envelope(origin_platform: Optional[str] = None,
         "task_id": task_id or "",
         "captured_at": captured_at or datetime.now(timezone.utc).isoformat(),
     }
+    if isinstance(author, dict):
+        clean_author = {k: author.get(k) for k in ("id", "name", "is_bot")
+                        if author.get(k) is not None}
+        if clean_author:
+            env["author"] = clean_author
+    if isinstance(identity, dict):
+        clean_identity = {str(k): v for k, v in identity.items()
+                          if v not in (None, "")}
+        if clean_identity:
+            env["identity"] = clean_identity
+    return env
 
 
 def envelope_from_record(meta: Any) -> Optional[Dict[str, Any]]:

@@ -53,7 +53,7 @@
 | **Knowledge Provenance Tracking** | Provenance chain (origin_agent, origin_session_id, origin_turn) stored in knowledge_evolution for memory-supply-chain auditing |
 | **Markdown Memory Dossier** | `export_memory_to_markdown()` generates a complete 9-section .md document (health / profile / knowledge partitioned by epistemic mode / experience / task / context / research / reflection / self-reflection score); zero new dependencies |
 | **Compact Injection Layer** | `<memory-context>` compact Markdown block for LLM context injection (Hermes v0.20+ compatible) |
-| **Hermes v0.20+ Adaptation** | Root `register(ctx)` entry point + `plugin.yaml` `kind: exclusive` — compatible with Hermes v0.13–v0.20 |
+| **Hermes v0.23.1 Adaptation** | Root `register(ctx)` entry point + `plugin.yaml` `kind: exclusive`; `MemoryProvider` subclass, per-profile config/LLM isolation (multiplex #140058), context-propagating background threads, `recall_status`/`identity_signature` hooks — compatible with Hermes v0.13–v0.23.1 |
 
 ### Retrieval & Optimization (RL-Enhanced Self-Learning)
 | Capability | Description |
@@ -98,7 +98,7 @@ When a query involves the following *domain keywords* or related *semantics*, th
 
 | Framework | Integration Method | Reliability |
 |------|----------|--------|
-| **Hermes-Agent** | MemoryProvider Plugin (automatic, v0.13.0–v0.20.0) | ★★★★★ 100% |
+| **Hermes-Agent** | MemoryProvider Plugin (automatic, v0.13.0–v0.23.1) | ★★★★★ 100% |
 | **OpenClaw** | `skill.yaml` + HTTP API tool invocation | ★★★★☆ LLM-decision |
 | **OpenCode** | CLI + HTTP API or MCP stdio | ★★★★☆ LLM-decision |
 | **Claude Code** | MCP stdio or HTTP API | ★★★★☆ LLM-decision |
@@ -135,6 +135,7 @@ When a query involves the following *domain keywords* or related *semantics*, th
 | v1.2.18 | *Internal refactor: extracted pure scoring/novelty helpers, lifecycle/evolution/entity sub-agents, and storage schema/keys/rows out of the two largest modules — behavior unchanged, all call sites preserved via delegates/re-exports, +39 new scoring unit tests.* |
 | v1.2.17 | *Review round on v1.2.16 — re-verified every fix against the live engine (53 assertions green + full-chain smoke): fixed a `delete_expired` TTL binding-count bug (aged knowledge/experience/task rows raised `ProgrammingError`), double-write eviction (evicted in-use agents no longer closed mid-call), bounded atexit join budget (30s shared deadline instead of up to 8×185s serial joins), config fallback agreement & reflection batch clamp re-verified.* |
 | v1.2.16 | *Full-data-path audit (32 fixes): unified exit contract (`shutdown()` flushes pending reflections + LLM-budget join before disabling persistence — fixes silent atexit TypeError + HTTP restart drops), sparse-tag retrieval under LIMIT, profile-scoped reflections delete, delete-cascade parity (expired/memory_states/evolution/archive), julianday TTL across ISO/SQLite timestamps, cross-user state-scan isolation, reflection knowledge persistence & tenant scoping (default-bucket leak closed), reflection idempotency, config `get()`/`get_section()` agreement, RL lock hardening, MCP/HTTP/CORS hardening, bounded call-agent cache.* |
+| v1.2.20 | *Hermes v0.23.1 adaptation (per-profile config/LLM isolation, MemoryProvider subclass, context-propagating threads, recall/identity hooks, env API key) + full audit fixes (global knowledge recall, delete/cleanup memory purge, reflection >8 insights, task status/id, access_count/trust reload, C2, db.path/pragmas, extract_knowledge gate).* |
 | v1.2.15 | *Deep-audit fixes: reactivated auto-reflection / lifecycle state machine / knowledge evolution (dead paths), tenant-scoped knowledge ids, per-session MCP client isolation + `/mcp` auth, GSPO opt-in, retrieve-path LLM gate (181s → 5s worst case).* |
 | v1.2.14 | *Source provenance: origin tracking (transport + client, MCP clientInfo inference), tag filters (caller tags + auto topic tags, OR/AND), provenance envelope, visible source lines, structured `echomind_query`.* |
 | v1.2.13 | *Deep-review hardening: tenant isolation, RL read concurrency, atomic reflection quota, unified scoring (freshness single lever, trust drives experience), config validation & security guards.* |
@@ -278,7 +279,11 @@ When the user executes `/undo N` to truncate conversation history, EchoMind auto
 
 ### Q: Is EchoMind compatible with Hermes v0.17.0?
 
-Yes. EchoMind v1.2.0+ fully supports Hermes v0.17.0's MemoryProvider interface, including `get_config_schema()`, `backup_paths()`, and `save_config()` methods. Compatibility range: Hermes v0.13.0 – v0.17.0.
+Yes. EchoMind v1.2.0+ fully supports Hermes v0.17.0's MemoryProvider interface, including `get_config_schema()`, `backup_paths()`, and `save_config()` methods.
+
+### Q: Is EchoMind compatible with Hermes v0.23.1?
+
+Yes. EchoMind v1.2.20 adapts to the v0.23.1 `MemoryProvider` contract: it subclasses the ABC (works with both in-process and `plugins.isolation: host`), isolates per-profile LLM config so a multi-profile gateway cannot leak one profile's endpoint/api_key into another (#140058), runs background reflection under the profile's context, exposes `recall_status`/`identity_signature`/`unavailable_reason`, records `turn_author`/gateway identities as provenance, and reads the `ECHOMIND_API_KEY` env var written by `hermes memory setup`. Compatibility range: Hermes v0.13.0 – v0.23.1.
 
 </details>
 

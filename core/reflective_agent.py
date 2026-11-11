@@ -233,6 +233,40 @@ class ReflectiveAgent:
         result["failure_type"] = ftype if ftype in cls._VALID_FAILURES else ""
         return result
 
+    @staticmethod
+    def _sanitize_output_dict(result: dict) -> dict:
+        """Coerce a raw engine result into the ReflectionOutput shape.
+
+        The engine may return list fields as dicts/scalars and more insights
+        than the model accepts. Trimming/normalizing here (rather than letting
+        ``ReflectionOutput(**result)`` raise) keeps a valid-but-misshaped
+        reflection consumable instead of discarding it after it was persisted.
+        """
+        if not isinstance(result, dict):
+            return result
+        for field in ("key_insights", "user_preferences", "procedural_rules",
+                      "new_knowledge", "forget_suggestions"):
+            val = result.get(field)
+            if isinstance(val, dict):
+                val = [f"{k}={v}" if not isinstance(v, str) else f"{k}:{v}"
+                       for k, v in val.items()]
+            elif isinstance(val, str):
+                val = [val] if val else []
+            elif val is None:
+                val = []
+            elif isinstance(val, list):
+                val = [str(x) for x in val]
+            else:
+                val = []
+            result[field] = val[:8] if field == "key_insights" else val[:64]
+        try:
+            result["confidence"] = max(0.0, min(1.0, float(result.get("confidence") or 0.0)))
+        except (TypeError, ValueError):
+            result["confidence"] = 0.0
+        if not isinstance(result.get("importance_scores"), dict):
+            result["importance_scores"] = {}
+        return result
+
     def reflect_with_llm(
         self,
         records: List[Dict],
@@ -264,7 +298,7 @@ class ReflectiveAgent:
             if isinstance(result, dict):
                 from .models.reflection import ReflectionOutput
                 try:
-                    output = ReflectionOutput(**self._normalize_attribution(result))
+                    output = ReflectionOutput(**self._normalize_attribution(self._sanitize_output_dict(result)))
                 except Exception:
                     logger.warning("reflect_with_llm: failed to coerce dict to ReflectionOutput")
                     output = None
@@ -315,7 +349,7 @@ class ReflectiveAgent:
             if isinstance(result, dict):
                 from .models.reflection import ReflectionOutput
                 try:
-                    output = ReflectionOutput(**self._normalize_attribution(result))
+                    output = ReflectionOutput(**self._normalize_attribution(self._sanitize_output_dict(result)))
                 except Exception:
                     logger.warning("process_result: failed to coerce dict to ReflectionOutput")
                     output = None

@@ -1,5 +1,47 @@
 # EchoMind Changelog
 
+## v1.2.20 — Hermes v0.23.1 Adaptation + Audit Fixes (2026-11-11)
+
+Compatibility update for the **Hermes v0.23.1** `MemoryProvider` contract plus a full fix pass over the independently audited defects. No schema migration. 141 → 158 tests, all green.
+
+### Hermes v0.23.1 adaptation
+
+| Area | Change |
+|------|--------|
+| **Multiplex isolation (#140058)** | The provider now owns a **per-instance `ConfigManager`** and each `MainMemoryAgent` owns a **per-agent `LLMClient`** built from its own config. Previously the process-wide ConfigManager/LLM singleton plus `set_runtime()` meant one profile's LLM endpoint/api_key overwrote another's in a multi-profile gateway. `new_llm_client()` returns a fresh client and `get_llm_client(config=…)` no longer mutates the global singleton |
+| **Provider ABC** | `EchomindMemoryProvider` subclasses `agent.memory_provider.MemoryProvider` when importable (guarded fallback to `object`), so both the default `in_process` loader and `plugins.isolation: host` (which proxies the object as a `MemoryProvider` subclass) work |
+| **Background context** | Auto-reflection now runs through an injected `thread_spawner`; the Hermes provider passes `spawn_context_thread`, preserving the profile's `HERMES_HOME`/secret contextvars (plain `threading.Thread` elsewhere) |
+| **Optional hooks** | Added `recall_status()` (last-prefetch count), `identity_signature()` (user/profile/project/db_path) and `unavailable_reason()` |
+| **Identity provenance** | `turn_author`, `user_id_alt`, `gateway_session_key`, `chat_*` are recorded in the provenance envelope (`author`/`identity` keys, additive) — identity is **not** rebound |
+| **Setup schema** | `get_config_schema` emits `type`; `save_config` writes the real `db.path` key (was a dead `storage.db_path`) |
+
+### Security
+
+- **API key via env**: with Hermes v0.23 `memory setup`, secrets are written to `.env` (`ECHOMIND_API_KEY`), not `server.api_key`. `verify_api_key` and the MCP gateway now fall back to `ECHOMIND_API_KEY`/`ECHOMIND_API_TOKEN`, and `server.api_key` supports `${ENV}` expansion via `config_manager.expand_env_value`. Previously the key was silently ignored and HTTP auth stayed disabled.
+
+### Bug fixes
+
+| ID | Fix |
+|----|-----|
+| P1-1 | Knowledge retrieval now unions the caller's index with the shared `"default"` tenant — global knowledge was invisible once a user had own entries |
+| P1-2 | `delete-user` / `cleanup` now purge the in-memory agents (reset + reload); erased memories were still retrievable until restart |
+| P1-3 | Reflection with >8 insights is no longer discarded: `ReflectionOutput.key_insights` cap raised, the keyword path caps at 8, and a sanitizer trims before coercion (a persisted reflection can no longer be reported as a failure with the quota refunded) |
+| P1-4 | `echomind-cli write` now persists preferences/experience to SQLite (was in-memory only, lost on exit) |
+| P2-1 | `create_task` honours `task_status` instead of hardcoding `pending` |
+| P2-2 | The original `task_id` is persisted in task metadata and restored on reload (last-access no longer double-hashes it) |
+| P2-3/P2-9 | Knowledge `access_count` and `trust_score` columns are restored into in-memory metadata on load |
+| P2-4 | Retrieval traces use a dedicated session-scoped key so they never collide with turn context rows |
+| P2-5 | Autoreflection C2 no longer crashes on scalar growth keys (score was capped at 3/4) |
+| P2-6 | `db.path` and `db.pragmas` are honoured; `retrieval.experience_limit` / `experience_min_success_rate_initial` are wired; removed dead `relevance_multiplier` / `preference_score_boost` / `experience_min_success_rate_final` |
+| P2-7 | In-memory store iteration takes a snapshot (concurrent `store()` can no longer raise "dictionary changed size") |
+| P2-8 | New `extract_knowledge` flag: the Hermes `sync_turn` hook no longer persists every assistant reply as a knowledge entry (explicit stores keep the default `True`) |
+| P2-10 | `_TransactionContext.__enter__` releases its lock if `BEGIN` fails |
+| P3-* | habits malformed-JSON default `{}`; `_parse_score` digit-boundary fix; transcript summary persists `user_id`; delete-user `profile` passthrough; `_retrieve` respects profile; local-hour habit inference; `julianday` growth queries; MCP schema default alignment |
+
+**Behavior notes:** `retrieval.experience_min_success_rate_initial` (default 0.7) is now actually applied, so failed experiences are filtered unless configured to 0.5; the Hermes per-turn path passes `extract_knowledge=false`. **Migration:** none.
+
+---
+
 ## v1.2.19 — Recuris Absorption Top-4: Trace, Attribution, Fingerprint & Paired Gate (2026-10-15)
 
 Implements the four highest-value absorptions from the Recuris analysis ([arXiv:2608.24876](https://arxiv.org/abs/2608.24876), `doc/竞品对比/recuris-analysis-report.md` 附录 F) on the v1.2.18 module layout — turning reflection from "summarize" into "attribute", and gating knowledge updates on paired evidence.

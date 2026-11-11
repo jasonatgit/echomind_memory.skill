@@ -13,7 +13,9 @@ default_project: "default"
 # user_id scope memories to this user (instead of per-session id or "cli").
 default_user: "default"
 
-# Database path
+# Database path. Honoured by MainMemoryAgent since v1.2.20 (an explicit
+# constructor db_path still wins). pragmas are applied on connect() after the
+# built-in defaults; malformed entries are ignored.
 db:
   path: "~/.echomind/memory.db"
   pragmas:
@@ -22,10 +24,11 @@ db:
     - "cache_size=-64000"
     - "busy_timeout=30000"
 
-# RL self-optimization toggle
+# Reserved (not currently applied) — kept for forward compatibility.
 enable_rl_optimizer: true
 
-# Context window size (number of conversation turns to retain)
+# Reserved (not currently applied) — context window is enforced per-session by
+# ContextMemoryAgent.window_size.
 max_context_tokens: 4096
 
 rl:
@@ -62,20 +65,19 @@ reflection:
 
 retrieval:
   experience_top_k: 5
+  # Honoured by retrieve_for_task (v1.2.20): experience_limit caps the candidate
+  # count and experience_min_success_rate_initial drops failed experiences when
+  # set above 0.5.
   experience_min_success_rate_initial: 0.7
-  experience_min_success_rate_final: 0.6
   experience_limit: 5
   research_top_k: 5
   context_limit: 2
-  preference_score_boost: 0.2
-  relevance_multiplier: 0.6
   # v1.2.14 cross-origin soft penalty: a record whose origin_platform differs
   # from the querying transport is down-weighted by this factor (1.0 disables).
   origin_cross_soft_enabled: true
   origin_cross_soft_penalty: 0.5
-  # Deprecated since v1.2.13: the constant recency_multiplier term was removed
-  # from experience scoring — freshness (Ebbinghaus) is now the single recency
-  # lever. Kept (commented) for reference; uncommenting has no effect.
+  # Deprecated since v1.2.13: removed from experience scoring (freshness is the
+  # single recency lever). Kept commented for reference; uncommenting has no effect.
   # recency_multiplier: 0.5
   state_scan_limit: 1000
   # LLM semantic domain fallback on the retrieve path (v1.2.15): default OFF.

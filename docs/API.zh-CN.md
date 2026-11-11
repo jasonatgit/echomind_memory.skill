@@ -20,7 +20,7 @@
 | `POST` | `/api/config/parameter` | 设置运行时配置参数（section 白名单；`api_key` 受保护） |
 | `POST` | `/api/config/reload` | 从磁盘重载配置 |
 | `POST` | `/api/reflect` | 自我反思 |
-| `POST` | `/mcp` | MCP JSON-RPC 端点（远程；通知返回空 202）。配置 `server.api_key` 时与 `/api/*` 一样要求 `X-API-Key`（为空时开放） |
+| `POST` | `/mcp` | MCP JSON-RPC 端点（远程；通知返回空 202）。配置 `server.api_key` 或 `ECHOMIND_API_KEY` 时与 `/api/*` 一样要求 `X-API-Key`（两者皆空时开放） |
 | `GET` | `/health` | 健康检查 |
 
 > **错误语义（v1.2.13+）：** `DELETE /api/memory/{type}/{id}` 对未知记忆类型返回 **400**（此前 500）。`/api/reflect` 在达到用户每日反思限额时返回 **429**，解析失败/低置信度返回 **400**——失败反思会退还配额槽位，不消耗每日限额。
@@ -65,6 +65,15 @@
 | `tags` | array | | [] | 调用方 tags（优先）；自动主题 tags 补足 |
 | `origin_client` | string | | | 来源客户端（claude-code/opencode/...）；随记录来源信封落库 |
 | `turn` | integer | | 0 | 来源会话中的轮次索引；记录到知识进化行的 `origin_turn`（v1.2.15） |
+| `extract_knowledge` | boolean | | true | 为 false 时不把 assistant 回复落成知识（task/context/experience 仍会存储）。Hermes 每轮钩子用它避免知识污染（v1.2.20） |
+
+### POST /api/memory/delete-user
+| 参数 | 类型 | 必填 | 默认 | 说明 |
+|------|------|:---:|------|------|
+| `user_id` | string | ✅ | | 用户标识 |
+| `profile` | string | | | 仅删除该分身；省略则删除该用户全部分身（v1.2.20） |
+
+删除后会同步清空并重载内存检索缓存，已删记忆在重启前也不会再被返回。
 
 ### POST /api/memory/query
 结构化来源查询（v1.2.14）——精确来源谓词，**无相关性评分**。结果跨所选记忆表合并、按时间倒序。一天的记忆：`date_from` = `date_to` = `YYYY-MM-DD`。

@@ -2,6 +2,7 @@
 
 import json
 import math
+import os
 import threading
 import random
 import re
@@ -78,17 +79,44 @@ class MainMemoryAgent:
     _MIN_TERM_STORE_SIZE = 20      # in-memory knowledge entries below this → DB fallback
     _TERM_LIMIT = 500              # known-term corpus cap (memory & DB)
 
-    def __init__(self, db_path: str = None, config_manager=None):
+    def __init__(self, db_path: str = None, config_manager=None,
+                 thread_spawner=None):
         self.context_agent = ContextMemoryAgent(max_sessions=5)
         self.task_agent = TaskMemoryAgent()
         self.user_agent = UserMemoryAgent()
         self.knowledge_agent = KnowledgeMemoryAgent()
         self.experience_agent = ExperienceMemoryAgent()
         self.research_agent = ResearchMemoryAgent()
-        self.db = SqliteStore(db_path)
 
         from .config_manager import get_config_manager
         self.cfg = config_manager or get_config_manager()
+
+        # DB path: explicit argument > config db.path > ~/.echomind/memory.db.
+        # db.pragmas from the same config section is applied on connect().
+        if db_path is None:
+            try:
+                cfg_db = self.cfg.get("db", "path", default=None)
+            except Exception:
+                cfg_db = None
+            if cfg_db:
+                db_path = os.path.expanduser(str(cfg_db))
+        try:
+            cfg_pragmas = self.cfg.get_section("db").get("pragmas")
+        except Exception:
+            cfg_pragmas = None
+        self.db = SqliteStore(
+            db_path,
+            pragmas=cfg_pragmas if isinstance(cfg_pragmas, list) else None)
+
+        # Optional context-propagating thread spawner (Hermes v0.23 passes
+        # spawn_context_thread). Core stays framework-agnostic; without one we
+        # fall back to a plain daemon thread.
+        self._thread_spawner = thread_spawner
+        # Per-agent LLM client: isolated from the process-wide singleton so a
+        # multiplexed gateway cannot leak one profile's endpoint/api_key into
+        # another's reflection/domain-detect calls.
+        self._llm_client = None
+        self._llm_client_built = False
 
         rl_config = self.cfg.get_section("rl")
         self.rl_optimizer = RLWeightOptimizer(
@@ -186,6 +214,13 @@ class MainMemoryAgent:
 
         # 2. Task memory
         for t in all_data.get("tasks", []):
+            _t_meta = t.get("metadata") if isinstance(t.get("metadata"), dict) else {}
+            # The DB primary key is the hashed stable_memory_key, so the ORIGINAL
+            # task_id is restored from metadata (falling back to the hashed id for
+            # legacy rows). Without this, get_recent_tasks() returned the hashed
+            # key after a restart and last_access reconstruction double-hashed it.
+            _raw_task_id = (_t_meta.get("task_id") or t.get("task_id")
+                            or t.get("id", ""))
             task = TaskMemory(
                 user_id=t["user_id"], project=t.get("project","default"),
                 # A1/P7 fix: restore the task's profile on reload. Without it,
@@ -195,7 +230,7 @@ class MainMemoryAgent:
                 profile=t.get("profile","default"),
                 session_id=t.get("session_id",""),
                 session_title=t.get("session_title",""),
-                task_id=t.get("id", ""),
+                task_id=_raw_task_id,
                 title=t.get("title",""), status=t.get("status","pending"),
                 steps=t.get("steps",[]), tags=t.get("tags",[]),
                 created_at=self._parse_db_ts(t.get("created_at")),
@@ -276,6 +311,12 @@ class MainMemoryAgent:
             # retrieval covers reloaded entries too.
             metadata.setdefault("origin_platform", k.get("origin_platform", ""))
             metadata.setdefault("origin_client", k.get("origin_client", ""))
+            # Column-backed counters/trust live outside the metadata JSON; mirror
+            # them in so scoring, export and the RL fingerprint gate agree with
+            # the DB after a reload (previously only the JSON blob was restored,
+            # so access_count reset to 0 and trust_score was always the 0.5 default).
+            metadata.setdefault("access_count", k.get("access_count", 0))
+            metadata.setdefault("trust_score", k.get("trust_score", 0.5))
             if "category" not in metadata and "domain" in k:
                 metadata["category"] = k["domain"]
             entry = KnowledgeEntry(
@@ -409,6 +450,9 @@ class MainMemoryAgent:
     def refresh_config(self):
         """Re-read captured config sections after cfg.on_reload event."""
         self._research_kw_cache = None
+        # Rebuild this agent's LLM client from the (possibly changed) config.
+        self._llm_client = None
+        self._llm_client_built = False
         # P2.6: clear every cache derived from config, so a reload actually
         # takes effect everywhere (previously the LLM domain map and the
         # core-term novelty cache kept stale pre-reload data).
@@ -562,8 +606,7 @@ class MainMemoryAgent:
                                                     profile=profile)
                 if len(records) < min_records:
                     return
-                from .llm_client import get_llm_client
-                llm = get_llm_client()
+                llm = agent._get_llm_client()
                 if llm and llm.available:
                     result = agent.reflective.reflect_with_llm(
                         records, user_id, platform, llm.chat)
@@ -586,7 +629,16 @@ class MainMemoryAgent:
                 # it must be observable, not debug-silent.
                 logger.warning("Auto-reflection failed: %s", e)
 
-        t = threading.Thread(target=_run, daemon=True)
+        t = None
+        spawner = getattr(self, "_thread_spawner", None)
+        if callable(spawner):
+            try:
+                t = spawner(target=_run, name="echomind-reflection", daemon=True)
+            except Exception:
+                logger.debug("thread_spawner failed; using plain thread", exc_info=True)
+                t = None
+        if t is None:
+            t = threading.Thread(target=_run, daemon=True)
         self._reflection_thread = t
         t.start()
 
@@ -724,9 +776,21 @@ class MainMemoryAgent:
         return self.cfg.get("domain", "default", default="general")
 
     def _get_llm_client(self):
-        """Lazy-init via thread-safe module-level singleton."""
-        from .llm_client import get_llm_client
-        return get_llm_client()
+        """Per-agent LLM client built from this agent's own config.
+
+        Deliberately NOT the module-level singleton: under a multi-profile
+        gateway each agent must use its own endpoint/api_key. ``None`` means the
+        LLM is disabled (provider=none) or construction failed.
+        """
+        if not getattr(self, "_llm_client_built", False):
+            try:
+                from .llm_client import new_llm_client
+                self._llm_client = new_llm_client(self.cfg.get_section("llm"))
+            except Exception:
+                logger.debug("Per-agent LLM client init failed", exc_info=True)
+                self._llm_client = None
+            self._llm_client_built = True
+        return self._llm_client
 
     @staticmethod
     def _record_origin(record: Any) -> tuple:
@@ -835,7 +899,7 @@ class MainMemoryAgent:
         retrieved["experience"] = self.experience_agent.find_similar_tasks(
             task_context=task_context, task_type=features["task_type"],
             user_id=user_id, project=project, session_id=session_id,
-            min_success_rate=0.5, limit=5,
+            min_success_rate=exp_min_rate, limit=exp_top_k,
             profile=profile, tags=tags, tags_match_all=tags_match_all)
         if features["has_history"]:
             if task_id:
@@ -980,7 +1044,12 @@ class MainMemoryAgent:
         if not self._persistence_enabled:
             return
         trace = self._build_retrieval_trace(task_context, retrieved, top_memories)
-        ctx_key = stable_memory_key(user_id, task_id or session_id or "session")
+        # Dedicated trace row: keyed separately from the conversation/task context
+        # key so a prefetch trace can never collide with (or overwrite) the
+        # per-turn context row written later by store(). One row per session,
+        # updated on each retrieval.
+        trace_scope = f"{task_id or session_id or 'session'}:trace"
+        ctx_key = stable_memory_key(user_id, trace_scope)
         row = self.db._conn.execute(
             "SELECT 1 FROM context_memory WHERE session_id=?", (ctx_key,)).fetchone()
         if row:
@@ -1434,7 +1503,9 @@ class MainMemoryAgent:
               project: str = "default", session_id: str = "",
               profile: str = "default", correction: bool = False,
               tags: List[str] = None, origin_client: str = None,
-              turn: int = 0) -> bool:
+              turn: int = 0, extract_knowledge: bool = True,
+              author: Dict[str, Any] = None,
+              identity_extra: Dict[str, Any] = None) -> bool:
         """
         Store a task interaction and update all memory layers.
 
@@ -1487,7 +1558,9 @@ class MainMemoryAgent:
                                         title=title or session_title or "auto-task",
                                         steps=[{"step": "Initialize", "status": task_status}],
                                         profile=profile, project=project,
-                                        task_type=features.get("task_type"))
+                                        task_type=features.get("task_type"),
+                                        task_status=task_status,
+                                        metadata={"task_id": task_id})
             # v1.2.14: caller-supplied tags take priority, auto-extracted topic
             # tags fill the remainder (merge_tags preserves the first spelling
             # seen, casefold-dedups, caps at 12).
@@ -1507,6 +1580,8 @@ class MainMemoryAgent:
                 tags=task_tags,
                 session_id=session_id,
                 task_id=task_id,
+                author=author,
+                identity=identity_extra,
             )
             # Mirror the envelope into the in-memory task (create_task ran
             # before the envelope existed), so the markdown export shows the
@@ -1561,7 +1636,7 @@ class MainMemoryAgent:
                 kb_id = None
                 kb_metadata = None
                 existing_kb = None
-                if knowledge_content and knowledge_content != "Auto-extracted knowledge":
+                if extract_knowledge and knowledge_content and knowledge_content != "Auto-extracted knowledge":
                     existing_kb = self.db.search_knowledge_by_content(
                         knowledge_content, user_id=user_id, profile=profile)
                     # P3-2: Extract entities from content before persisting
@@ -1614,7 +1689,7 @@ class MainMemoryAgent:
                 # the same reality: if the DB transaction then fails and rolls
                 # back, the in-memory row simply reflects that the task
                 # happened (and reload from DB pulls them together).
-                if kb_id and kb_metadata and not existing_kb:
+                if extract_knowledge and kb_id and kb_metadata and not existing_kb:
                     self.knowledge_agent.add_document(knowledge_content, {
                         "source": "task", "task_id": task_id,
                         "user_id": user_id, "domain": research_domain,
@@ -1656,7 +1731,7 @@ class MainMemoryAgent:
                         profile=profile)
                     self.db.save_task(user_id, task_id, title or "auto-task", task_status,
                                       steps=[{"step": "Initialize", "status": task_status}],
-                                      metadata={"envelope": envelope},
+                                      metadata={"envelope": envelope, "task_id": task_id},
                                       project=project, session_id=session_id or "",
                                       session_title=session_title, tags=task_tags,
 profile=profile, language=lang,
@@ -1670,7 +1745,7 @@ profile=profile, language=lang,
                         project=project,
                         profile=profile,
                         origin_client=origin_client_norm)
-                    if kb_id and kb_metadata and not existing_kb:
+                    if extract_knowledge and kb_id and kb_metadata and not existing_kb:
                         self.db.save_knowledge(
                             knowledge_id=kb_id,
                             domain=research_domain,
@@ -1708,15 +1783,15 @@ profile=profile, language=lang, experience_id=exp_id,
                     self.db.save_memory_state("context", task_pk, "active", reason=weight_reason, source="store")
                     if exp_data:
                         self.db.save_memory_state("experience", exp_id, "active", reason=weight_reason, source="store")
-                    if knowledge_content and knowledge_content != "Auto-extracted knowledge":
-                        self.db.save_memory_state("knowledge", kb_id or task_pk, "active", reason=weight_reason, source="store")
+                    if extract_knowledge and kb_id and knowledge_content and knowledge_content != "Auto-extracted knowledge":
+                        self.db.save_memory_state("knowledge", kb_id, "active", reason=weight_reason, source="store")
 
                 # P2-1: Evolution detection — scan existing knowledge via Jaccard, classify relations
                 # F3b (v1.2.15 audit): the turn index rides through so the
                 # evolution row can be traced to the producing turn.
-                if knowledge_content and knowledge_content != "Auto-extracted knowledge":
+                if extract_knowledge and kb_id and knowledge_content and knowledge_content != "Auto-extracted knowledge":
                     self._detect_knowledge_evolution(knowledge_content, user_id, research_domain,
-                                                     knowledge_id=kb_id or task_pk,
+                                                     knowledge_id=kb_id,
                                                      origin_agent=platform or "default",
                                                      origin_session_id=session_id or "",
                                                      origin_turn=turn)
@@ -1843,6 +1918,50 @@ profile=profile, language=lang, experience_id=exp_id,
         if not self._persistence_enabled:
             return False
         return self.db.delete_memory(memory_type, memory_id)
+
+    def _reset_memory_agents(self):
+        """Drop every in-memory record/index so a DB reload is authoritative.
+
+        Used after a bulk DB deletion (delete-user / TTL cleanup): the fast
+        retrieval path is the in-memory stores, so deleting only the DB rows
+        left erased memories retrievable until the next restart.
+        """
+        self.user_agent.store.clear()
+        self.user_agent.cache.clear()
+        self.task_agent.store.clear()
+        self.experience_agent.store.clear()
+        self.experience_agent._summary_index.clear()
+        self.experience_agent._user_index.clear()
+        self.experience_agent._type_index.clear()
+        self.knowledge_agent.store.clear()
+        self.knowledge_agent._content_index.clear()
+        self.knowledge_agent._user_index.clear()
+        self.research_agent.papers.clear()
+        self.research_agent.notes.clear()
+        self.context_agent.clear_all()
+        self.evolution_agent.invalidate_cache()
+
+    def delete_user_memories(self, user_id: str,
+                             profile: str = None) -> Dict[str, int]:
+        """Delete a user's memory rows AND purge them from the in-memory agents."""
+        if not self._persistence_enabled:
+            return {}
+        counts = self.db.delete_user_memories(user_id, profile=profile)
+        self._reset_memory_agents()
+        self._load_from_db()
+        logger.info("delete_user_memories: %s (profile=%s) -> %s",
+                    user_id, profile, counts)
+        return counts
+
+    def cleanup_expired(self, ttl_config: Dict[str, int]) -> Dict[str, int]:
+        """TTL-clean the DB AND sync the in-memory agents to the surviving rows."""
+        if not self._persistence_enabled:
+            return {}
+        counts = self.db.delete_expired(ttl_config)
+        self._reset_memory_agents()
+        self._load_from_db()
+        logger.info("cleanup_expired -> %s", counts)
+        return counts
 
     def get_recent_episodic(self, user_id: str, count: int = 8,
                             profile: str = None) -> List[Dict]:
@@ -2035,8 +2154,9 @@ profile=profile, language=lang, experience_id=exp_id,
         """Analyze conversation to build user habits."""
         all_content = " ".join(m.get("content", "") for m in context)
         habits = {}
-        # Detect session time patterns
-        hour = datetime.now(timezone.utc).hour
+        # Detect session time patterns (local wall clock, not UTC: "early_morning"
+        # must match the user's actual time of day).
+        hour = datetime.now(timezone.utc).astimezone().hour
         if hour < 6:
             habits["active_time"] = "early_morning"
         elif hour < 12:
@@ -2365,7 +2485,7 @@ profile=profile, language=lang, experience_id=exp_id,
         if not self._persistence_enabled or not self.knowledge_agent:
             return []
         counts: Dict[str, int] = {}
-        for entry in self.knowledge_agent.store.values():
+        for entry in list(self.knowledge_agent.store.values()):
             domain = entry.metadata.get("domain", "") or entry.metadata.get("category", "")
             if domain and domain != "general":
                 counts[domain] = counts.get(domain, 0) + 1
@@ -2476,7 +2596,11 @@ profile=profile, language=lang, experience_id=exp_id,
         # 2. Architectural congruence: does it have enough data to describe its own state?
         try:
             stats = self.db.get_memory_stats()
-            total_active = sum(s.get("active", 0) for s in stats.values())
+            # get_memory_stats() mixes per-type dicts with scalar growth keys
+            # (knowledge_7d_growth, ...); iterating all values and calling .get
+            # on an int raised AttributeError, silently disabling C2 forever.
+            total_active = sum(s.get("active", 0) for s in stats.values()
+                               if isinstance(s, dict))
             if total_active > 0:
                 score += 1
                 lines.append(f"  ✅ C2: architectural congruence — {total_active} active memory records")
@@ -2597,7 +2721,7 @@ profile=profile, language=lang, experience_id=exp_id,
             TaskRow(title=t.title, status=t.status,
                     origin_line=format_origin_line(
                         envelope_from_record(t.metadata)))
-            for t in self.task_agent.store.values()
+            for t in list(self.task_agent.store.values())
             if t.user_id == user_id and t.profile == profile
         ]
 
@@ -2606,7 +2730,7 @@ profile=profile, language=lang, experience_id=exp_id,
         # line so the Origin column in the archive is populated.
         from types import SimpleNamespace
         papers: list = []
-        for p in self.research_agent.papers.values():
+        for p in list(self.research_agent.papers.values()):
             if p.user_id == user_id and p.profile == profile:
                 origin = format_origin_line(
                     envelope_from_record(p.metadata),
