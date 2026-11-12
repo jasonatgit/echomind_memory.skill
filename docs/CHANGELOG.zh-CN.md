@@ -24,7 +24,7 @@
 
 ### 文档 / 测试
 
-- 新增 `docs/INTEGRATIONS.md` / `INTEGRATIONS.zh-CN.md` 与 `docs/PRIVACY.md`，并作为博客文章发布（`blog/echomind-client-integrations-article[-en].md`）。
+- 新增 `docs/INTEGRATIONS.md` / `INTEGRATIONS.zh-CN.md` 与 `docs/PRIVACY.md`，并作为博客文章发布（`blog/echomind-client-integrations-article[-en].md`）；文档与文章同时收录 Hermes v0.23.1 原生集成作为对照。
 - `docs/API*.md` 记录两个 Hook 端点；README/INSTALL 列出插件与博客入口。
 - `echomind_config.yaml` / `config.example.yaml` 增加 `hooks:` 段。
 - 新增 11 项 Hook 测试（上下文限长、简报、Claude/OpenCode 处理、幂等落库、项目映射、fail-open、`context_exists`）。

@@ -1,6 +1,6 @@
 # EchoMind × Claude Code / OpenCode: Automatic Long-Term Memory for Your Coding Agents
 
-> EchoMind v1.2.21 turns its MCP memory tools into **automatic** memory for two widely used coding agents: a Claude Code plugin with lifecycle hooks, and a dual V1/V2 OpenCode plugin. Recall arrives at session start and on every prompt; completed turns are stored idempotently; and a memory outage can never block the conversation.
+> EchoMind v1.2.21 turns its MCP memory tools into **automatic** memory for two widely used coding agents: a Claude Code plugin with lifecycle hooks, and a dual V1/V2 OpenCode plugin. Recall arrives at session start and on every prompt; completed turns are stored idempotently; and a memory outage can never block the conversation. Hermes Agent's native MemoryProvider has been adapted to v0.23.1 since v1.2.20 — all three clients share the same long-term memory.
 >
 > Author: EchoMind Team
 > Date: November 2026
@@ -18,8 +18,9 @@ EchoMind exposes its memory in two layers:
    at session start and on each prompt, and stores completed turns — without
    the model deciding to call a tool.
 
-Both clients talk to the local EchoMind HTTP service (default
-`http://127.0.0.1:8005`). No memory leaves the machine by default; see
+Claude Code and OpenCode talk to the local EchoMind HTTP service (default
+`http://127.0.0.1:8005`); Hermes integrates in-process through its native
+MemoryProvider. No memory leaves the machine by default; see
 [PRIVACY.md](../docs/PRIVACY.md).
 
 ```
@@ -33,6 +34,62 @@ malformed, the client continues without memory and the user's turn is never
 blocked.
 
 ---
+
+## Three client integrations
+
+| Client | Integration | Auto recall | Auto store | Pre-compaction | Version |
+|---|---|---|---|---|---|
+| **Hermes Agent** | Native MemoryProvider | ✅ `prefetch` | ✅ `sync_turn` | ✅ `on_pre_compress` | v0.23.1 |
+| **Claude Code** | Plugin + hooks | ✅ SessionStart / UserPromptSubmit | ✅ Stop / SessionEnd | ✅ PreCompact | 2.1.x |
+| **OpenCode** | V1/V2 plugin | ✅ context hook | ✅ session.idle | ✅ compaction | 1.19.x |
+
+## Hermes Agent (v0.23.1, native)
+
+Hermes is EchoMind's deepest and longest-standing integration: instead of hook
+scripts, it runs as a **MemoryProvider plugin** inside Hermes' agent loop.
+
+### Lifecycle
+
+| Lifecycle | EchoMind behavior |
+|---|---|
+| `initialize` | Opens/loads SQLite; resolves `hermes_home` / `agent_identity` (profile) / `default_user` / `project` |
+| `prefetch` (before each turn) | Recalls and injects relevant memory |
+| `sync_turn` (after each turn) | Stores the turn (`extract_knowledge=false` to avoid per-turn knowledge pollution) |
+| `on_session_end` | Stores the session tail |
+| `on_pre_compress` | Preserves memory before compaction |
+| Tools | All 8 `echomind_*` MCP tools remain available |
+
+### v0.23.1 adaptation (EchoMind v1.2.20)
+
+- **MemoryProvider subclass** — works with the default in-process loader and `plugins.isolation: host` (the parent proxies it as a subclass).
+- **Per-profile isolation (#140058)** — each provider instance owns its `ConfigManager` and `LLMClient`, so multiple profiles in one gateway cannot overwrite each other's endpoint/API key.
+- **Context-aware background threads** — auto-reflection runs through `spawn_context_thread`, preserving the profile's `HERMES_HOME` and secret scope.
+- **Optional hooks** — `recall_status()`, `identity_signature()` (gateway cache busting), `unavailable_reason()`.
+- **Identity provenance** — `turn_author`, `user_id_alt`, `gateway_session_key`, `chat_*` are recorded in provenance (never rebind identity).
+- **LLM auto-sync** — reads `model.default` / `model.base_url` / `model.provider` and `providers.<name>.*`, expands `${ENV}`, and only accepts OpenAI-compatible providers.
+- **Auth** — HTTP/MCP support `ECHOMIND_API_KEY`; the secret written by `hermes memory setup` is read correctly.
+
+### Install / activate
+
+```bash
+# 1. install the plugin (or use your plugin directory)
+cp -r . ~/.hermes/plugins/echomind/
+
+# 2. enable it as Hermes' memory provider
+hermes config set memory.provider echomind
+
+# 3. restart the local HTTP service if you use it
+systemctl --user restart echomind.service
+```
+
+Hermes v0.20+ can also discover it via `register(ctx)`; `initialize` receives
+`hermes_home`, `agent_identity`, `user_id` and related scope kwargs.
+
+### Version status
+
+- **v0.23.1** — adapted in EchoMind v1.2.20.
+- Older Hermes — still works; the v0.23.x multiplex isolation and new hooks require EchoMind v1.2.20+.
+- Hermes does not use `/api/hooks/*`; those endpoints serve Claude Code / OpenCode only.
 
 ## Claude Code (v2.1.x)
 
@@ -176,6 +233,8 @@ npm install && npm run typecheck
 ---
 
 ## Server hook endpoints
+
+> These endpoints serve Claude Code / OpenCode only. Hermes uses the native MemoryProvider in-process and does not go through HTTP hooks.
 
 ### `POST /api/hooks/claude`
 

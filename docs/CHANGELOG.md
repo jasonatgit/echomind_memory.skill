@@ -27,6 +27,7 @@ the existing MCP tool surface. No schema migration. 171 → 182 tests.
 
 - New `docs/INTEGRATIONS.md` / `INTEGRATIONS.zh-CN.md` and `docs/PRIVACY.md`;
   also published as a blog article (`blog/echomind-client-integrations-article[-en].md`).
+  The guide and article also cover the native Hermes v0.23.1 integration for comparison.
 - `docs/API*.md` documents both hook endpoints; README/INSTALL list the plugins.
 - `echomind_config.yaml` / `config.example.yaml` gain a `hooks:` section.
 - 11 new hook tests (context cap, briefing, Claude/OpenCode handlers, idempotent store, project mapping, fail-open, `context_exists`).

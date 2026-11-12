@@ -10,8 +10,9 @@ EchoMind 提供两层记忆能力：
 2. **自动记忆 Hook**（本文）：客户端轻量插件在会话开始/每轮提示时自动召回，
    在轮次结束时自动落库，无需模型主动调用工具。
 
-两个客户端都只访问本机 EchoMind HTTP 服务（默认 `http://127.0.0.1:8005`）。
-默认情况下记忆数据不离开本机，详见 [PRIVACY.md](PRIVACY.md)（英文）。
+Claude Code 与 OpenCode 通过本机 EchoMind HTTP 服务通信（默认 `http://127.0.0.1:8005`）；
+Hermes 则以原生 MemoryProvider 在进程内集成。默认情况下记忆数据不离开本机，
+详见 [PRIVACY.md](PRIVACY.md)（英文）。
 
 ```
 客户端插件/Hook ──HTTP──> /api/hooks/{claude|opencode} ──> retrieve_for_task / store
@@ -22,6 +23,60 @@ EchoMind 提供两层记忆能力：
 Hook 端点为 **fail-open**：EchoMind 未启动或负载异常时，客户端继续对话，不阻塞用户。
 
 ---
+
+## 三种客户端对比
+
+| 客户端 | 接入方式 | 自动召回 | 自动落库 | 压缩前保留 | 版本 |
+|---|---|---|---|---|---|
+| **Hermes Agent** | 原生 MemoryProvider | ✅ `prefetch` | ✅ `sync_turn` | ✅ `on_pre_compress` | v0.23.1 |
+| **Claude Code** | 插件 + Hooks | ✅ SessionStart / UserPromptSubmit | ✅ Stop / SessionEnd | ✅ PreCompact | 2.1.x |
+| **OpenCode** | V1/V2 插件 | ✅ context hook | ✅ session.idle | ✅ compaction | 1.19.x |
+
+## Hermes Agent（v0.23.1，原生支持）
+
+Hermes 是 EchoMind 集成最深、也是最早支持的客户端：它不是通过 Hook 脚本，而是以 **MemoryProvider 插件**在 Hermes 的 agent 循环内直接工作。
+
+### 工作方式
+
+| 生命周期 | EchoMind 行为 |
+|---|---|
+| `initialize` | 建立/加载 SQLite，解析 `hermes_home` / `agent_identity`（profile）/ `default_user` / `project` |
+| `prefetch`（每轮前） | 自动召回并注入相关记忆 |
+| `sync_turn`（每轮后） | 自动落库本轮（`extract_knowledge=false`，避免逐轮知识污染） |
+| `on_session_end` | 会话收尾落库 |
+| `on_pre_compress` | 压缩前保留记忆 |
+| 工具 | 8 个 `echomind_*` MCP 工具始终可用 |
+
+### v0.23.1 适配要点（EchoMind v1.2.20）
+
+- **MemoryProvider 子类**：兼容默认 in-process 与 `plugins.isolation: host`（父进程以子类代理）。
+- **多 profile 隔离（#140058）**：每个 provider 实例持有独立 `ConfigManager` 与 `LLMClient`，同一 gateway 进程内多个 profile 的 endpoint / API key 不再互相覆盖。
+- **上下文感知后台线程**：自动反思经 `spawn_context_thread`，保留 profile 的 `HERMES_HOME` 与 secret 作用域。
+- **可选钩子**：`recall_status()`（召回指示）、`identity_signature()`（gateway 缓存失效）、`unavailable_reason()`。
+- **身份溯源**：`turn_author`、`user_id_alt`、`gateway_session_key`、`chat_*` 写入 provenance（不重绑身份）。
+- **LLM 自动同步**：读取 `model.default` / `model.base_url` / `model.provider` 与 `providers.<name>.*`，展开 `${ENV}`，仅接受 OpenAI 兼容 provider。
+- **鉴权**：HTTP/MCP 支持 `ECHOMIND_API_KEY`；`hermes memory setup` 写入的 secret 会被正确读取。
+
+### 安装 / 激活
+
+```bash
+# 1. 安装插件（或使用你的插件目录）
+cp -r . ~/.hermes/plugins/echomind/
+
+# 2. 启用为 Hermes 的记忆提供者
+hermes config set memory.provider echomind
+
+# 3. 若使用本机 HTTP 服务，重启
+systemctl --user restart echomind.service
+```
+
+Hermes v0.20+ 也可通过 `register(ctx)` 自动发现；`initialize` 会收到 `hermes_home`、`agent_identity`、`user_id` 等作用域参数。
+
+### 版本状态
+
+- **v0.23.1**：已适配（EchoMind v1.2.20 完成）。
+- 旧版本 Hermes：仍可运行；v0.23.x 的多 profile 隔离与新钩子需要 EchoMind v1.2.20+。
+- Hermes 不经过 `/api/hooks/*`；这些端点仅服务 Claude Code / OpenCode。
 
 ## Claude Code（v2.1.x）
 
@@ -155,6 +210,8 @@ npm install && npm run typecheck
 ---
 
 ## 服务端 Hook 端点
+
+> 这些端点仅供 Claude Code / OpenCode 使用。Hermes Agent 以原生 MemoryProvider 在进程内调用引擎 API，不经过 HTTP Hook。
 
 ### `POST /api/hooks/claude`
 
