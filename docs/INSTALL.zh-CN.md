@@ -90,6 +90,18 @@ export ECHOMIND_API_KEY="your-secret"
 
 ---
 
+### Claude Code / OpenCode 自动记忆（v1.2.21）
+
+安装客户端插件即可自动召回与落库：
+
+- **Claude Code：** `claude --plugin-dir integrations/claude-code`
+  （SessionStart 简报、逐提示召回、轮次/会话幂等落库）。
+- **OpenCode：** 将 `integrations/opencode/echomind-memory` 加入 `plugins`
+  （V2）或 `plugin`（V1）。
+
+配置与验证见 [INTEGRATIONS.zh-CN.md](INTEGRATIONS.zh-CN.md)，或阅读
+[博客文章](../blog/echomind-client-integrations-article.md)。
+
 ### Hermes-Agent 激活自动存取（推荐）
 
 完成上述安装后，还需额外激活 Hermes 的 MemoryProvider 插件——这一步让 Hermes 每轮对话自动存取记忆，无需 LLM 决策：

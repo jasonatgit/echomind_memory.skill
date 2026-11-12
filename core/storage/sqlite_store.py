@@ -949,6 +949,22 @@ class SqliteStore:
         return [{k: (_safe_json_loads(r[k], []) if k == "messages" else r[k])
                  for k in r.keys()} for r in rows]
 
+    @_require_conn
+    def context_exists(self, session_id: str) -> bool:
+        """True when a context row already exists for this (stable) session key.
+
+        Used by the client hook handlers for idempotent per-turn storage: the
+        hook computes a deterministic session key from the turn fingerprint and
+        skips the write when the row is already present (Stop + SessionEnd must
+        not duplicate the same turn). Reaches only the public connection under
+        the store lock.
+        """
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT 1 FROM context_memory WHERE session_id=? LIMIT 1",
+                (session_id,)).fetchone()
+            return bool(row)
+
     @with_retry_on_busy()
     @_require_conn
     def save_rl_weights(self, user_id: str, weights: Dict[str, float],

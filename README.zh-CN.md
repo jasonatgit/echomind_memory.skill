@@ -99,9 +99,15 @@ EchoMind 记忆系统专门针对*科研方向*的记忆进行了优化，对查
 |------|----------|--------|
 | **Hermes-Agent** | MemoryProvider 插件 (自动, v0.13.0–v0.23.1) | ★★★★★ 100% |
 | **OpenClaw** | `skill.yaml` + HTTP API 工具调用 | ★★★★☆ LLM 决策 |
-| **OpenCode** | CLI + HTTP API 或 MCP stdio | ★★★★☆ LLM 决策 |
-| **Claude Code** | MCP stdio 或 HTTP API | ★★★★☆ LLM 决策 |
+| **OpenCode** | MCP + V1/V2 双插件（自动召回/落库）+ HTTP API | ★★★★★ 100% |
+| **Claude Code** | MCP + 插件 Hook（自动召回/落库）+ HTTP API | ★★★★★ 100% |
 | **DeepSeek Haeness(DSH)** | MCP stdio 或 HTTP API | ★★★★☆ LLM 决策 |
+
+> **Claude Code / OpenCode 自动记忆（v1.2.21）：** 安装
+> [`integrations/`](integrations/) 中的插件后，EchoMind 会在会话开始与每轮提示时
+> 自动召回，并在轮次结束时自动落库，无需模型主动调用工具。详见
+> [docs/INTEGRATIONS.zh-CN.md](docs/INTEGRATIONS.zh-CN.md) 或
+> [博客文章](blog/echomind-client-integrations-article.md)。
 
 
 ---
@@ -112,6 +118,7 @@ EchoMind 记忆系统专门针对*科研方向*的记忆进行了优化，对查
 
 | 日期 | 标题 |
 |:-----|:------|
+| 2026-11 | 🔌[EchoMind × Claude Code / OpenCode：让长期记忆自动流动](blog/echomind-client-integrations-article.md) |
 | 2026-10 | 🔁[EchoMind × Recuris：让记忆学会"归因"，而不只是"总结"](blog/echomind-recuris-absorption-article.md) |
 | 2026-08 | 🎯[ EchoMind： 集成 DSH 为长期记忆服务（MCP）— 实施报告](blog/echomind-dsh-mcp-integration-report.md) |
 | 2026-08 | 🧠[EchoMind: Markdown 呈现：让 AI 记忆从"黑盒"变为"可读文档"](blog/echomind-markdown-rendering-article.md) |
@@ -132,6 +139,7 @@ EchoMind 记忆系统专门针对*科研方向*的记忆进行了优化，对查
 
 | 版本 | 核心要点 |
 |:--------|:-----------|
+| v1.2.21 | *Claude Code 与 OpenCode 自动记忆：fail-open Hook 端点（`/api/hooks/claude|opencode`）、Claude Code 插件（SessionStart 简报、逐提示召回、Stop/PreCompact/SessionEnd 幂等落库）、OpenCode V1/V2 双插件（注入召回 + session.idle 落库）、项目/用户来源映射、上下文块限长、集成文档。* |
 | v1.2.20 | *适配 Hermes v0.23.1（按 profile 隔离配置/LLM、MemoryProvider 子类、上下文线程、recall/identity 钩子、环境变量 API key、model.default/providers.* LLM 同步）+ 全量审计修复（全局知识召回、删除/清理同步内存、反思上限、任务状态/id、access_count/trust 回填、C2、db.path/pragmas、extract_knowledge 开关）+ 后续修复（CLI 偏好嵌套、trace 行不占上下文配额、配置热更新重建 LLM client、save_config 标量 db/0600、identity_signature 配置派生、RL 游标保留、_safe_bool、分数截断）。* |
 | v1.2.19 | *结构化检索 trace（迁移 v12）、组件归因反思（primary_owner/failure_type，双引擎统一）、fingerprint 门（零观测≠信号）、配对 bootstrap 门控知识更新（灰度默认关）。* |
 | v1.2.18 | *内部重构：从两个最大模块中抽出纯评分/新颖度助手、生命周期/进化/实体子 Agent、存储 schema/keys/rows——行为不变，全部调用点经委派/重导保留，新增 39 项评分数值单测。* |

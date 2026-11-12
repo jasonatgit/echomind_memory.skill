@@ -1,0 +1,82 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|clear|compact|fork",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3",
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/scripts/echomind_hook.py",
+              "SessionStart"
+            ],
+            "timeout": 20
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "http",
+            "url": "http://127.0.0.1:8005/api/hooks/claude",
+            "timeout": 10,
+            "headers": {
+              "X-API-Key": "${ECHOMIND_API_KEY}"
+            },
+            "allowedEnvVars": ["ECHOMIND_API_KEY"]
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "http",
+            "url": "http://127.0.0.1:8005/api/hooks/claude",
+            "timeout": 15,
+            "headers": {
+              "X-API-Key": "${ECHOMIND_API_KEY}"
+            },
+            "allowedEnvVars": ["ECHOMIND_API_KEY"]
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "matcher": "manual|auto",
+        "hooks": [
+          {
+            "type": "http",
+            "url": "http://127.0.0.1:8005/api/hooks/claude",
+            "timeout": 15,
+            "headers": {
+              "X-API-Key": "${ECHOMIND_API_KEY}"
+            },
+            "allowedEnvVars": ["ECHOMIND_API_KEY"]
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "matcher": "clear|resume|logout|prompt_input_exit|other",
+        "hooks": [
+          {
+            "type": "http",
+            "url": "http://127.0.0.1:8005/api/hooks/claude",
+            "timeout": 15,
+            "headers": {
+              "X-API-Key": "${ECHOMIND_API_KEY}"
+            },
+            "allowedEnvVars": ["ECHOMIND_API_KEY"]
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "name": "echomind-memory-opencode",
+  "version": "1.2.21",
+  "type": "module",
+  "description": "EchoMind long-term memory for OpenCode — dual V1/V2 plugin (automatic recall + idempotent store).",
+  "license": "MIT",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "files": [
+    "src"
+  ],
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "typescript": "^5.8.0"
+  }
+}

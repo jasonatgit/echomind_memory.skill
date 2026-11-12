@@ -1021,6 +1021,82 @@ class MainMemoryAgent:
         }
 
 
+    def memory_briefing(self, user_id: str, profile: str = "default",
+                        project: str = None,
+                        max_items: int = 8) -> List[Dict[str, str]]:
+        """Compact "what I know about this user/project" list for session start.
+
+        Used by client hooks (Claude Code SessionStart / OpenCode briefing) to
+        seed a new session with durable context without a user query. Returns
+        plain ``{"source", "content"}`` items; formatting lives in
+        ``core.context_block``.
+        """
+        items: List[Dict[str, str]] = []
+        try:
+            u = self.user_agent.get(user_id, profile=profile)
+            prefs = u.get("preferences", {}) if isinstance(u, dict) else {}
+            if isinstance(prefs, dict):
+                flat = {k: v for k, v in prefs.items()
+                        if isinstance(v, (str, int, float, bool))}
+                if flat:
+                    items.append({
+                        "source": "user",
+                        "content": "Preferences: " + "; ".join(
+                            f"{k}={v}" for k, v in list(flat.items())[:8]),
+                    })
+            habits = u.get("habits", {}) if isinstance(u, dict) else {}
+            if isinstance(habits, dict) and habits:
+                items.append({
+                    "source": "user",
+                    "content": "Habits: " + "; ".join(
+                        f"{k}={v}" for k, v in list(habits.items())[:6]),
+                })
+        except Exception:
+            logger.debug("memory_briefing: user lookup failed", exc_info=True)
+
+        try:
+            kwargs = {"user_id": user_id, "profile": profile}
+            if project:
+                kwargs["project"] = project
+            entries = self.knowledge_agent.search_all(**kwargs)
+
+            def _rank(entry: Dict[str, Any]):
+                meta = entry.get("metadata") or {}
+                cog = str(meta.get("cognitive_pos") or "")
+                try:
+                    trust = float(meta.get("trust_score") or 0.5)
+                except (TypeError, ValueError):
+                    trust = 0.5
+                return (0 if cog == "nok" else 1, -trust)
+
+            for entry in sorted(entries, key=_rank)[:5]:
+                content = (entry.get("content") or "").strip()
+                if content:
+                    items.append({"source": "knowledge", "content": content})
+        except Exception:
+            logger.debug("memory_briefing: knowledge lookup failed", exc_info=True)
+
+        try:
+            exps = self.experience_agent.find_similar_tasks(
+                task_context="", task_type="", user_id=user_id,
+                profile=profile, min_success_rate=0.0, limit=30)
+            exps = sorted(
+                exps,
+                key=lambda e: (-(e.get("frequency") or 1),
+                               str(e.get("created_at") or "")),
+            )
+            for exp in exps[:3]:
+                summary = (exp.get("summary") or "").strip()
+                if summary:
+                    items.append({"source": "experience", "content": summary})
+        except Exception:
+            logger.debug("memory_briefing: experience lookup failed", exc_info=True)
+
+        try:
+            return items[:max(1, int(max_items))]
+        except (TypeError, ValueError):
+            return items[:8]
+
     def _build_retrieval_trace(self, task_context: str, retrieved: Dict[str, Any],
                                top_memories: List) -> Dict[str, Any]:
         """Build the structured trace record (Recuris absorption #2, trace-v1).

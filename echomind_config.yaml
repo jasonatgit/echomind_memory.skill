@@ -86,6 +86,15 @@ retrieval:
   # hard-bounded to 5s. Set true only if keyword domains are insufficient.
   llm_domain_detect: false
 
+# Client integration hooks (v1.2.21). Used by the Claude Code plugin and the
+# OpenCode plugin through POST /api/hooks/{claude,opencode}.
+hooks:
+  # Hard cap for the context block injected by the client (Claude Code's own
+  # additionalContext limit is 10,000 chars; keep a safety margin).
+  max_context_chars: 8000
+  # Fixed project scope for hook writes. Empty = derive from cwd basename.
+  project: ""
+
 llm:
   # Provider mode: openai_compatible | ollama | none
   # openai_compatible: any OpenAI-compatible API (vLLM, Hermes, OpenAI, DeepSeek, etc.)

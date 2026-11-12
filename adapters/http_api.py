@@ -628,6 +628,31 @@ def api_knowledge_evolution(knowledge_id: str, auth=Depends(verify_api_key)):
         return JSONResponse(status_code=500, content={"status": "error", "detail": "Evolution lookup failed"})
 
 
+# ── Client memory hooks (v1.2.21) ──
+# Thin, fail-open endpoints used by the Claude Code plugin hooks and the
+# OpenCode plugin. They reuse the same agent and never raise to the client:
+# long-term memory is an enhancement, not a dependency of the conversation.
+
+@app.post("/api/hooks/claude")
+def api_hooks_claude(payload: dict, auth=Depends(verify_api_key)):
+    try:
+        from adapters.hooks_api import handle_claude_hook
+        return handle_claude_hook(memory_agent, payload)
+    except Exception as e:
+        logger.warning("api_hooks_claude failed: %s", e, exc_info=True)
+        return {}
+
+
+@app.post("/api/hooks/opencode")
+def api_hooks_opencode(payload: dict, auth=Depends(verify_api_key)):
+    try:
+        from adapters.hooks_api import handle_opencode_hook
+        return handle_opencode_hook(memory_agent, payload)
+    except Exception as e:
+        logger.warning("api_hooks_opencode failed: %s", e, exc_info=True)
+        return {"context": "", "count": 0}
+
+
 # ── MCP over HTTP (P3-1: Streamable HTTP MCP — JSON-RPC minimal viable) ──
 
 try:

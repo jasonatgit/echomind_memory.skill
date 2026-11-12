@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "echomind": {
+      "type": "http",
+      "url": "http://127.0.0.1:8005/mcp",
+      "headers": {
+        "X-API-Key": "${ECHOMIND_API_KEY:-}"
+      }
+    }
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "name": "echomind-memory",
+  "version": "1.2.21",
+  "description": "EchoMind persistent long-term memory for Claude Code: automatic recall on session start and each prompt, automatic storage at turn/session end, and the EchoMind MCP tools.",
+  "author": {
+    "name": "jasonatgit"
+  },
+  "homepage": "https://github.com/jasonatgit/echomind_memory.skill",
+  "privacyPolicyUrl": "https://github.com/jasonatgit/echomind_memory.skill/blob/main/docs/PRIVACY.md",
+  "license": "MIT"
+}

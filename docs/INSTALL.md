@@ -95,6 +95,18 @@ When either is set, `/api/*` and `/mcp` require the `X-API-Key` header. `server.
 
 ---
 
+### Automatic memory for Claude Code / OpenCode (v1.2.21)
+
+Install the client plugin to get automatic recall and storage:
+
+- **Claude Code:** `claude --plugin-dir integrations/claude-code`
+  (SessionStart briefing, per-prompt recall, idempotent turn/session storage).
+- **OpenCode:** add `integrations/opencode/echomind-memory` to `plugins`
+  (V2) or `plugin` (V1).
+
+See [INTEGRATIONS.md](INTEGRATIONS.md) for configuration and verification, or
+read the [blog article](../blog/echomind-client-integrations-article-en.md).
+
 ### Hermes-Agent Auto Memory (Recommended)
 
 After completing the installation above, activate the MemoryProvider plugin — this enables Hermes to auto-save and auto-retrieve memories on every turn, no LLM decisions required:

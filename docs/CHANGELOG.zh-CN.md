@@ -1,5 +1,39 @@
 # EchoMind 更新日志
 
+## v1.2.21 — Claude Code 与 OpenCode 自动记忆 (2026-11-12)
+
+在现有 MCP 工具面之上，为 Claude Code 与 OpenCode 增加自动召回/落库集成。无 schema 迁移。测试 171 → 182。
+
+### 服务端
+
+| 领域 | 改动 |
+|------|------|
+| **Hook 端点** | 新增 fail-open 的 `POST /api/hooks/claude` 与 `POST /api/hooks/opencode`，复用 `retrieve_for_task` / `store`；任何异常都不向客户端抛出（记忆故障不阻塞对话）；配置鉴权时要求 `X-API-Key` |
+| **上下文限长** | 新增 `core/context_block.py`，输出事实化的 `<echomind-memory>` 块，硬上限由 `hooks.max_context_chars` 控制（默认 8000；Claude 自身上限 10000） |
+| **会话简报** | `MainMemoryAgent.memory_briefing()` 组合用户偏好、高价值知识与近期经验 |
+| **幂等落库** | 按轮次指纹 + `SqliteStore.context_exists()` 去重 Stop/SessionEnd/压缩；只存 user/assistant 文本（丢弃 tool 输出与 system 行） |
+| **身份映射** | `project` = 显式字段 → `hooks.project` → `ECHOMIND_HOOK_PROJECT` → `basename(cwd)`；user/profile 默认取配置 |
+
+### 客户端插件
+
+| 客户端 | 改动 |
+|--------|------|
+| **Claude Code（2.1.x）** | 新增 `integrations/claude-code/`：`.claude-plugin/plugin.json`、`.mcp.json`、`hooks/hooks.json`、标准库 SessionStart 脚本与 skill。SessionStart 用 command（该事件仅支持 command/mcp_tool，且启动时 MCP 不可用）；UserPromptSubmit / Stop / PreCompact / SessionEnd 用 HTTP hook |
+| **OpenCode（1.19.x）** | 新增 V1/V2 双插件 `integrations/opencode/echomind-memory/`：默认导出同时含 V1 `server()` 与 V2 `setup(ctx)`，不运行时依赖任一插件包。V1 路径已在 1.19.5 运行时验证；V2 路径按 `@opencode/plugin` 文档实现并通过类型检查 |
+| **保留 MCP** | 两个集成均保留全部 8 个 `echomind_*` 工具；MCP 可选 header 传 `ECHOMIND_API_KEY` |
+
+### 文档 / 测试
+
+- 新增 `docs/INTEGRATIONS.md` / `INTEGRATIONS.zh-CN.md` 与 `docs/PRIVACY.md`，并作为博客文章发布（`blog/echomind-client-integrations-article[-en].md`）。
+- `docs/API*.md` 记录两个 Hook 端点；README/INSTALL 列出插件与博客入口。
+- `echomind_config.yaml` / `config.example.yaml` 增加 `hooks:` 段。
+- 新增 11 项 Hook 测试（上下文限长、简报、Claude/OpenCode 处理、幂等落库、项目映射、fail-open、`context_exists`）。
+
+**兼容性：** Claude Code 2.1.x；OpenCode 1.19.x（V1 已运行时验证）。V2 插件路径需要提供 V2 插件 API 的 OpenCode build。
+**迁移：** 无。
+
+---
+
 ## v1.2.20 — 适配 Hermes v0.23.1 + 审计缺陷修复 (2026-11-11)
 
 适配 **Hermes v0.23.1** 的 `MemoryProvider` 契约，并修完独立审计发现的全部缺陷。无 schema 迁移。测试 141 → 171，全绿（含后续审计回归）。

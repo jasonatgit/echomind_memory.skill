@@ -37,6 +37,11 @@ retrieval:
   experience_limit: 5
   state_scan_limit: 1000
 
+# ── Client integration hooks (Claude Code / OpenCode) ──
+hooks:
+  max_context_chars: 8000   # cap for the injected <echomind-memory> block
+  project: ""               # fixed project scope; empty = basename(cwd)
+
 
 # ── Database ──
 db:

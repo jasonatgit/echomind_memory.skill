@@ -20,6 +20,8 @@
 | `POST` | `/api/config/parameter` | Set runtime config parameter (section whitelist; `api_key` is protected) |
 | `POST` | `/api/config/reload` | Reload configuration from disk |
 | `POST` | `/api/reflect` | Self-reflection (two-phase: build prompt or process result, supports profile) |
+| `POST` | `/api/hooks/claude` | Claude Code hook endpoint (automatic recall/store; fail-open) |
+| `POST` | `/api/hooks/opencode` | OpenCode plugin endpoint (recall / briefing / store) |
 | `POST` | `/mcp` | MCP JSON-RPC endpoint (Streamable HTTP; notifications return an empty 202). Requires the same `X-API-Key` as `/api/*` when `server.api_key` or `ECHOMIND_API_KEY` is configured (open when neither is set) |
 | `GET` | `/health` | Health check |
 
@@ -100,6 +102,47 @@ Unknown `memory_type` values return **400**. Each result carries `memory_type`, 
 | `record_ids` | array | | | Specific record IDs to reflect on |
 | `llm_response` | string | | | LLM response for Phase 2 (omit for Phase 1 prompt) |
 | `profile` | string | | "default" | User profile |
+
+> Client setup: see [INTEGRATIONS.md](INTEGRATIONS.md) or the
+> [blog article](../blog/echomind-client-integrations-article-en.md).
+
+#### POST /api/hooks/claude
+Endpoint used by the Claude Code plugin. It accepts a Claude Code hook payload
+and returns the hook JSON Claude reads. All failures return `{}` (HTTP 200) so
+a memory outage never blocks the conversation.
+
+| Field | Meaning |
+|---|---|
+| `hook_event_name` | `SessionStart`, `UserPromptSubmit`, `Stop`, `PreCompact`, `SessionEnd` |
+| `session_id` | Claude session id (used for idempotent per-turn storage) |
+| `cwd` | Project mapping source (basename by default) |
+| `prompt` | Present on `UserPromptSubmit` |
+| `transcript_path` | JSONL transcript for store events |
+
+```json
+// SessionStart / UserPromptSubmit response
+{
+  "hookSpecificOutput": {
+    "hookEventName": "UserPromptSubmit",
+    "additionalContext": "<echomind-memory>…</echomind-memory>"
+  }
+}
+```
+
+Store-only events return `{}`. Injected context is capped by
+`hooks.max_context_chars` (default 8000; Claude's own limit is 10000).
+
+#### POST /api/hooks/opencode
+Endpoint used by the OpenCode plugin.
+
+| Action | Request | Response |
+|---|---|---|
+| `recall` | `{"action":"recall","query":"…","session_id":"…","project":"…","profile":"default"}` | `{"context":"…","count":3}` |
+| `briefing` | `{"action":"briefing","session_id":"…","project":"…","profile":"default"}` | `{"context":"…","count":5}` |
+| `store` | `{"action":"store","session_id":"…","turn":"<message id>","messages":[…],"extract_knowledge":false}` | `{"status":"stored\|duplicate\|empty\|error"}` |
+
+Both hook endpoints require `X-API-Key` when `server.api_key` or
+`ECHOMIND_API_KEY` is configured.
 
 ### MCP Tools
 

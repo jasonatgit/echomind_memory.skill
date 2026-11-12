@@ -100,9 +100,15 @@ When a query involves the following *domain keywords* or related *semantics*, th
 |------|----------|--------|
 | **Hermes-Agent** | MemoryProvider Plugin (automatic, v0.13.0–v0.23.1) | ★★★★★ 100% |
 | **OpenClaw** | `skill.yaml` + HTTP API tool invocation | ★★★★☆ LLM-decision |
-| **OpenCode** | CLI + HTTP API or MCP stdio | ★★★★☆ LLM-decision |
-| **Claude Code** | MCP stdio or HTTP API | ★★★★☆ LLM-decision |
+| **OpenCode** | MCP + dual V1/V2 plugin (automatic recall/store) + HTTP API | ★★★★★ 100% |
+| **Claude Code** | MCP + plugin hooks (automatic recall/store) + HTTP API | ★★★★★ 100% |
 | **DeepSeek Haeness(DSH)** | MCP stdio or HTTP API | ★★★★☆ LLM-decision |
+
+> **Automatic memory for Claude Code / OpenCode (v1.2.21):** install the plugin
+> in [`integrations/`](integrations/) and EchoMind recalls memory at session
+> start and on each prompt, then stores completed turns — no model tool call
+> required. See [docs/INTEGRATIONS.md](docs/INTEGRATIONS.md) or the
+> [blog article](blog/echomind-client-integrations-article-en.md).
 
 
 ---
@@ -113,6 +119,7 @@ When a query involves the following *domain keywords* or related *semantics*, th
 
 | Date | Title |
 |:-----|:------|
+| 2026-11 | 🔌[EchoMind × Claude Code / OpenCode: Automatic Long-Term Memory for Your Coding Agents](blog/echomind-client-integrations-article-en.md) |
 | 2026-10 | 🔁[EchoMind × Recuris: Teaching Memory to Attribute, Not Just Summarize](blog/echomind-recuris-absorption-article-en.md) |
 | 2026-08 | 🎯[ EchoMind： 集成 DSH 为长期记忆服务（MCP）— 实施报告](blog/echomind-dsh-mcp-integration-report.md) |
 | 2026-08 | 🧠[EchoMind: Markdown Rendering: Turning AI Memory from a "Black Box" into a Readable Document](blog/echomind-markdown-rendering-article-en.md) |
@@ -131,6 +138,7 @@ When a query involves the following *domain keywords* or related *semantics*, th
 
 | Version | Highlights |
 |:--------|:-----------|
+| v1.2.21 | *Automatic memory for Claude Code and OpenCode: fail-open hook endpoints (`/api/hooks/claude|opencode`), Claude Code plugin (SessionStart briefing, per-prompt recall, idempotent Stop/PreCompact/SessionEnd store), OpenCode dual V1/V2 plugin (recall injection + session.idle store), provenance-aware project/user mapping, bounded context blocks, and integration docs.* |
 | v1.2.20 | *Hermes v0.23.1 adaptation (per-profile config/LLM isolation, MemoryProvider subclass, context-propagating threads, recall/identity hooks, env API key, model.default/providers.* LLM sync) + full audit fixes (global knowledge recall, delete/cleanup memory purge, reflection cap, task status/id, access_count/trust reload, C2, db.path/pragmas, extract_knowledge gate) + follow-up fixes (CLI preferences nesting, trace rows excluded from context recall, config hot-reload rebuilds the LLM client, save_config scalar-db/0600, config-derived identity_signature, RL cursor preserved, _safe_bool, score clamp).* |
 | v1.2.19 | *structured retrieval trace (migration v12), component-attributed reflection (primary_owner/failure_type, both engines), fingerprint gate (unobserved ≠ signal), paired bootstrap gate for knowledge updates (grayscale OFF).* |
 | v1.2.18 | *Internal refactor: extracted pure scoring/novelty helpers, lifecycle/evolution/entity sub-agents, and storage schema/keys/rows out of the two largest modules — behavior unchanged, all call sites preserved via delegates/re-exports, +39 new scoring unit tests.* |

@@ -1,5 +1,42 @@
 # EchoMind Changelog
 
+## v1.2.21 — Automatic Memory for Claude Code & OpenCode (2026-11-12)
+
+Adds automatic recall/store integrations for Claude Code and OpenCode on top of
+the existing MCP tool surface. No schema migration. 171 → 182 tests.
+
+### Server
+
+| Area | Change |
+|------|--------|
+| **Hook endpoints** | New fail-open `POST /api/hooks/claude` and `POST /api/hooks/opencode`. They reuse `retrieve_for_task` / `store`, never raise to the client (a memory outage cannot block a turn), and require `X-API-Key` when auth is configured |
+| **Bounded context** | New `core/context_block.py` renders a factual `<echomind-memory>` block, hard-capped by `hooks.max_context_chars` (default 8000; Claude's own limit is 10000) |
+| **Session briefing** | `MainMemoryAgent.memory_briefing()` composes preferences, high-value knowledge and recent experience for session start |
+| **Idempotent storage** | Per-turn fingerprints + `SqliteStore.context_exists()` dedupe Stop/SessionEnd/compaction; only user/assistant text is stored (tool output/system rows dropped) |
+| **Identity mapping** | `project` = explicit payload → `hooks.project` → `ECHOMIND_HOOK_PROJECT` → `basename(cwd)`; user/profile default to config |
+
+### Client plugins
+
+| Client | Change |
+|--------|--------|
+| **Claude Code (2.1.x)** | New plugin under `integrations/claude-code/`: `.claude-plugin/plugin.json`, `.mcp.json`, `hooks/hooks.json`, a stdlib `SessionStart` command script, and a skill. SessionStart uses a command hook (the event supports only command/mcp_tool and MCP is not connected at launch); UserPromptSubmit / Stop / PreCompact / SessionEnd use HTTP hooks |
+| **OpenCode (1.19.x)** | New dual V1/V2 plugin under `integrations/opencode/echomind-memory/`: one default export with a V1 `server()` and a V2 `setup(ctx)`, no runtime dependency on either plugin package. V1 path is runtime-tested on 1.19.5; the V2 path is implemented per the documented `@opencode/plugin` API and type-checked |
+| **MCP preserved** | Both integrations keep all 8 `echomind_*` tools; optional MCP headers pass `ECHOMIND_API_KEY` |
+
+### Docs / tests
+
+- New `docs/INTEGRATIONS.md` / `INTEGRATIONS.zh-CN.md` and `docs/PRIVACY.md`;
+  also published as a blog article (`blog/echomind-client-integrations-article[-en].md`).
+- `docs/API*.md` documents both hook endpoints; README/INSTALL list the plugins.
+- `echomind_config.yaml` / `config.example.yaml` gain a `hooks:` section.
+- 11 new hook tests (context cap, briefing, Claude/OpenCode handlers, idempotent store, project mapping, fail-open, `context_exists`).
+
+**Compatibility:** Claude Code 2.1.x; OpenCode 1.19.x (V1 runtime-tested). The
+V2 plugin path requires an OpenCode build that ships the V2 plugin API.
+**Migration:** none.
+
+---
+
 ## v1.2.20 — Hermes v0.23.1 Adaptation + Audit Fixes (2026-11-11)
 
 Compatibility update for the **Hermes v0.23.1** `MemoryProvider` contract plus a full fix pass over the independently audited defects. No schema migration. 141 → 171 tests, all green (including the follow-up audit regressions).

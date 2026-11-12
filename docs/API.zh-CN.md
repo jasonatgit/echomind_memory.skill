@@ -20,6 +20,8 @@
 | `POST` | `/api/config/parameter` | 设置运行时配置参数（section 白名单；`api_key` 受保护） |
 | `POST` | `/api/config/reload` | 从磁盘重载配置 |
 | `POST` | `/api/reflect` | 自我反思 |
+| `POST` | `/api/hooks/claude` | Claude Code Hook 端点（自动召回/落库；fail-open） |
+| `POST` | `/api/hooks/opencode` | OpenCode 插件端点（recall / briefing / store） |
 | `POST` | `/mcp` | MCP JSON-RPC 端点（远程；通知返回空 202）。配置 `server.api_key` 或 `ECHOMIND_API_KEY` 时与 `/api/*` 一样要求 `X-API-Key`（两者皆空时开放） |
 | `GET` | `/health` | 健康检查 |
 
@@ -104,6 +106,43 @@
 | `profile` | string | | "default" | 用户分身 |
 
 ---
+
+> 客户端安装：见 [INTEGRATIONS.zh-CN.md](INTEGRATIONS.zh-CN.md) 或
+> [博客文章](../blog/echomind-client-integrations-article.md)。
+
+### POST /api/hooks/claude
+供 Claude Code 插件使用：接收 Claude Code hook payload，返回 Claude 读取的 hook JSON。
+任何异常都返回 `{}`（HTTP 200），保证记忆故障不阻塞对话。
+
+| 字段 | 说明 |
+|---|---|
+| `hook_event_name` | `SessionStart`、`UserPromptSubmit`、`Stop`、`PreCompact`、`SessionEnd` |
+| `session_id` | Claude 会话 id（用于按轮次幂等落库） |
+| `cwd` | 项目映射来源（默认取 basename） |
+| `prompt` | `UserPromptSubmit` 时存在 |
+| `transcript_path` | 落库事件使用的 JSONL transcript |
+
+```json
+{
+  "hookSpecificOutput": {
+    "hookEventName": "UserPromptSubmit",
+    "additionalContext": "<echomind-memory>…</echomind-memory>"
+  }
+}
+```
+
+落库类事件返回 `{}`。注入上限由 `hooks.max_context_chars` 控制（默认 8000；Claude 自身上限 10000）。
+
+### POST /api/hooks/opencode
+供 OpenCode 插件使用。
+
+| action | 请求 | 响应 |
+|---|---|---|
+| `recall` | `{"action":"recall","query":"…","session_id":"…","project":"…","profile":"default"}` | `{"context":"…","count":3}` |
+| `briefing` | `{"action":"briefing","session_id":"…","project":"…","profile":"default"}` | `{"context":"…","count":5}` |
+| `store` | `{"action":"store","session_id":"…","turn":"<message id>","messages":[…],"extract_knowledge":false}` | `{"status":"stored\|duplicate\|empty\|error"}` |
+
+配置 `server.api_key` 或 `ECHOMIND_API_KEY` 时，两个 Hook 端点都要求 `X-API-Key`。
 
 ## MCP 工具
 
