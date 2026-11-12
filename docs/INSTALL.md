@@ -101,7 +101,8 @@ Install the client plugin to get automatic recall and storage:
 
 - **Claude Code:** `claude --plugin-dir integrations/claude-code`
   (SessionStart briefing, per-prompt recall, idempotent turn/session storage).
-- **OpenCode:** add `integrations/opencode/echomind-memory` to `plugins`
+- **OpenCode:** add `integrations/opencode/echomind-memory` to the `plugin`
+  array (singular key; OpenCode 1.19.x)
   (V2) or `plugin` (V1).
 
 See [INTEGRATIONS.md](INTEGRATIONS.md) for configuration and verification, or

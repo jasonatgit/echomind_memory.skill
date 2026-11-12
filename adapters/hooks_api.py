@@ -6,11 +6,14 @@ storage, caps, fail-open) lives in ONE place and is unit-testable without the
 clients installed.
 
 Design rules:
-  * **Fail-open** — a memory hook must never block the user's turn. The HTTP
-    routes catch every exception and return ``{}``.
+  * **Fail-open and bounded** — a memory hook never raises to the client. The
+    HTTP routes answer with an empty hook response on any exception, and the
+    client scripts cap their own waits (recall 2–3 s, store 10 s), so a broken
+    or slow service costs at most that bound, never a failed turn.
   * **Idempotent** — Stop, SessionEnd and compaction may all report the same
-    completed turn; a deterministic per-turn key plus ``context_exists()``
-    prevents duplicate rows without a schema change.
+    completed turn; a recent-window fingerprint (or the client's last-message-id
+    turn key) plus ``context_exists()`` prevents duplicate rows without a schema
+    change. A store that fails releases its dedupe marker so the turn can retry.
   * **Bounded** — injected context is capped (Claude Code's hard cap is 10k).
   * **Factual** — the block is written as stored facts, never as commands, to
     avoid tripping the client's prompt-injection defenses.
@@ -120,19 +123,43 @@ def _seen_new(key: str) -> bool:
         return True
 
 
+def _seen_discard(key: str) -> None:
+    """Release a reservation when the store did not actually happen."""
+    with _seen_lock:
+        _seen.pop(key, None)
+
+
 def _fingerprint(messages: List[Dict[str, str]]) -> str:
-    """Stable fingerprint of the completed turn (last assistant reply)."""
-    for msg in reversed(messages):
-        if msg.get("role") == "assistant" and msg.get("content"):
-            return hashlib.sha256(
-                msg["content"].encode("utf-8", "replace")).hexdigest()[:16]
-    if messages:
-        return hashlib.sha256(
-            messages[-1]["content"].encode("utf-8", "replace")).hexdigest()[:16]
-    return ""
+    """Fingerprint of the completed turn.
+
+    Hash a window of recent messages, not just the last assistant reply: two
+    different turns can legitimately end with the same text ("Done.") and the
+    old single-message fingerprint silently dropped the second one.
+    """
+    window = [m for m in messages[-8:] if isinstance(m, dict)]
+    if not window:
+        return ""
+    h = hashlib.sha256()
+    for msg in window:
+        h.update((msg.get("role") or "").encode("utf-8", "replace"))
+        h.update(b"\x00")
+        h.update((msg.get("content") or "").encode("utf-8", "replace"))
+        h.update(b"\x01")
+    return h.hexdigest()[:16]
 
 
 # ── transcript / message normalization ─────────────────────────────────────
+
+def _safe_bool(value: Any, default: bool = False) -> bool:
+    """Parse booleans without the ``bool("false") is True`` trap."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        return value.strip().lower() in ("1", "true", "yes", "on")
+    return default
+
 
 def _content_to_text(content: Any) -> str:
     if isinstance(content, str):
@@ -177,6 +204,10 @@ def read_claude_transcript(path: Optional[str],
             except (json.JSONDecodeError, ValueError):
                 continue
             if not isinstance(obj, dict):
+                continue
+            # Subagent rows live in the same transcript file; they must not be
+            # promoted into the main session's memory.
+            if obj.get("isSidechain") is True:
                 continue
             msg = obj.get("message") if isinstance(obj.get("message"), dict) else {}
             role = (msg.get("role") or obj.get("role")
@@ -276,7 +307,8 @@ def _store_messages(agent, *, client: str, user_id: str, profile: str,
     except Exception:
         logger.debug("context_exists check failed", exc_info=True)
 
-    if not _seen_new(f"{client}:{user_id}:{ctx_key}"):
+    seen_key = f"{client}:{user_id}:{ctx_key}"
+    if not _seen_new(seen_key):
         return {"status": "duplicate"}
 
     try:
@@ -284,17 +316,28 @@ def _store_messages(agent, *, client: str, user_id: str, profile: str,
             user_id=user_id,
             task_id=task_id,
             context=messages,
-            task_status="completed",
-            success=True,
-            platform=client,
+            task_status="in_progress",
+            success=False,
+            # A hook-captured turn is not a curated experience, and the
+            # assistant's prose must not be mined as user preferences.
+            generate_experience=False,
+            infer_preferences=False,
+            # Transport, not client: origin_client carries claude-code/opencode.
+            platform="http",
             origin_client=client,
             project=project,
             session_id=session_id,
             profile=profile,
             extract_knowledge=extract_knowledge,
         )
-        return {"status": "stored" if ok else "error"}
+        if not ok:
+            _seen_discard(seen_key)
+            return {"status": "error"}
+        return {"status": "stored"}
     except Exception as exc:
+        # Release the reservation so SessionEnd/PreCompact (or an in-process
+        # retry) can store the turn after a transient DB failure.
+        _seen_discard(seen_key)
         logger.warning("hook store failed (%s): %s", client, exc)
         return {"status": "error"}
 
@@ -331,7 +374,12 @@ def handle_claude_hook(agent, payload: Dict[str, Any]) -> Dict[str, Any]:
         return _claude_context(event, text)
 
     if event in ("Stop", "SessionEnd", "PreCompact", "SubagentStop"):
-        messages = read_claude_transcript(payload.get("transcript_path"))
+        # SubagentStop provides the subagent's own transcript; falling back to
+        # the main one would just re-store the parent conversation.
+        transcript = payload.get("transcript_path")
+        if event == "SubagentStop":
+            transcript = payload.get("agent_transcript_path") or transcript
+        messages = read_claude_transcript(transcript)
         _store_messages(
             agent, client="claude-code", user_id=user_id, profile=profile,
             project=project, session_id=session_id, messages=messages,
@@ -371,6 +419,6 @@ def handle_opencode_hook(agent, payload: Dict[str, Any]) -> Dict[str, Any]:
             project=project, session_id=session_id,
             messages=payload.get("messages") or [],
             turn_key=turn_key,
-            extract_knowledge=bool(payload.get("extract_knowledge", False)))
+            extract_knowledge=_safe_bool(payload.get("extract_knowledge", False)))
 
-    return {"error": f"unknown action: {action}"}
+    return {"context": "", "count": 0, "error": f"unknown action: {action}"}

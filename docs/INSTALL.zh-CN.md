@@ -96,8 +96,8 @@ export ECHOMIND_API_KEY="your-secret"
 
 - **Claude Code：** `claude --plugin-dir integrations/claude-code`
   （SessionStart 简报、逐提示召回、轮次/会话幂等落库）。
-- **OpenCode：** 将 `integrations/opencode/echomind-memory` 加入 `plugins`
-  （V2）或 `plugin`（V1）。
+- **OpenCode：** 将 `integrations/opencode/echomind-memory` 加入 `plugin`
+  数组（OpenCode 1.19.x 使用单数键；V2 API 尚未在 1.19.x 提供）。
 
 配置与验证见 [INTEGRATIONS.zh-CN.md](INTEGRATIONS.zh-CN.md)，或阅读
 [博客文章](../blog/echomind-client-integrations-article.md)。

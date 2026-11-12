@@ -32,14 +32,19 @@ const HOOK_PROJECT = String(ENV.ECHOMIND_HOOK_PROJECT || "");
 /** Session-scoped recalled block, consumed once by the next model request. */
 const recallCache = new Map<string, string>();
 
-function basename(path: string): string {
-  const cleaned = String(path || "").replace(/[\\/]+$/, "");
-  const parts = cleaned.split(/[\\/]/);
-  return parts[parts.length - 1] || "";
-}
+/** Last message id already persisted, per session (delta storage). */
+const lastStored = new Map<string, string>();
 
-function projectFor(directory: string): string {
-  return (HOOK_PROJECT || basename(directory) || "default").slice(0, 64);
+let lastWarnAt = 0;
+function warnThrottled(message: string): void {
+  const now = Date.now();
+  if (now - lastWarnAt < 60_000) return;
+  lastWarnAt = now;
+  try {
+    console.warn(`[echomind] ${message}`);
+  } catch {
+    // no console available
+  }
 }
 
 async function postJSON(path: string, body: AnyRec, timeoutMs = 8000): Promise<AnyRec> {
@@ -55,10 +60,14 @@ async function postJSON(path: string, body: AnyRec, timeoutMs = 8000): Promise<A
       body: JSON.stringify(body),
       signal: controller.signal,
     });
-    if (!res.ok) return {};
+    if (!res.ok) {
+      warnThrottled(`hook ${path} returned HTTP ${res.status}`);
+      return {};
+    }
     const data = await res.json();
     return data && typeof data === "object" ? (data as AnyRec) : {};
-  } catch {
+  } catch (err) {
+    warnThrottled(`hook ${path} unreachable: ${(err as any)?.name || err}`);
     return {};
   } finally {
     clearTimeout(timer);
@@ -70,7 +79,9 @@ function basePayload(sessionID: string, directory: string): AnyRec {
     session_id: sessionID || "",
     user_id: HOOK_USER || undefined,
     profile: HOOK_PROFILE,
-    project: projectFor(directory),
+    // Only send an explicit project when the user configured one; otherwise
+    // leave it empty so the server's hooks.project / default_project applies.
+    project: HOOK_PROJECT || undefined,
     cwd: directory || undefined,
   };
 }
@@ -81,7 +92,7 @@ async function recall(query: string, sessionID: string, directory: string): Prom
     action: "recall",
     query,
     ...basePayload(sessionID, directory),
-  });
+  }, 2000);
   return typeof data.context === "string" ? data.context : "";
 }
 
@@ -89,7 +100,7 @@ async function briefing(sessionID: string, directory: string): Promise<string> {
   const data = await postJSON("/api/hooks/opencode", {
     action: "briefing",
     ...basePayload(sessionID, directory),
-  });
+  }, 3000);
   return typeof data.context === "string" ? data.context : "";
 }
 
@@ -98,15 +109,30 @@ async function storeMessages(
   sessionID: string,
   directory: string,
   turn?: string,
-): Promise<void> {
-  if (!messages || !messages.length) return;
-  await postJSON("/api/hooks/opencode", {
+): Promise<AnyRec> {
+  if (!messages || !messages.length) return {};
+  const res = await postJSON("/api/hooks/opencode", {
     action: "store",
     turn: turn || undefined,
     messages,
     extract_knowledge: false,
     ...basePayload(sessionID, directory),
   });
+  const status = typeof res.status === "string" ? res.status : "";
+  if (status === "stored" || status === "duplicate") {
+    const lastId = turn || messages[messages.length - 1]?.id;
+    if (lastId) lastStored.set(sessionID, String(lastId));
+  }
+  return res;
+}
+
+/** Messages added since the last successfully stored turn. */
+function unseenMessages(messages: AnyRec[], sessionID: string): AnyRec[] {
+  const lastId = lastStored.get(sessionID);
+  if (!lastId) return messages;
+  const idx = messages.findIndex((m) => String(m.id || "") === lastId);
+  if (idx < 0) return messages;
+  return messages.slice(idx + 1);
 }
 
 function textFromParts(parts: any[]): string {
@@ -161,6 +187,13 @@ async function readSessionMessages(client: any, sessionID: string): Promise<AnyR
 // ── V2 API (documented @opencode/plugin) ──────────────────────────────────
 
 async function setup(ctx: any): Promise<() => void> {
+  // The V2 API is not present in the 1.19.x loader. Stay inert rather than
+  // throwing when a V1 host happens to call setup().
+  if (typeof ctx?.session?.hook !== "function"
+      || typeof ctx?.event?.subscribe !== "function") {
+    warnThrottled("V2 plugin API not available; V1 hook path is used");
+    return () => {};
+  }
   const directory = String(ctx?.location?.directory || ctx?.location?.project?.directory || "");
   const controller = new AbortController();
 
@@ -175,16 +208,26 @@ async function setup(ctx: any): Promise<() => void> {
     const sessionID = String(event?.sessionID || event?.session?.id || "default");
     const block = recallCache.get(sessionID);
     if (!block) return;
-    if (Array.isArray(event.system)) event.system.push({ type: "text", text: block });
+    if (Array.isArray(event.system)) {
+      // Match the array's own element type instead of guessing.
+      const first = event.system.find((entry: any) => entry !== undefined);
+      if (first === undefined || typeof first === "string") {
+        event.system.push(block);
+      } else {
+        event.system.push({ type: "text", text: block });
+      }
+    }
     recallCache.delete(sessionID);
   });
 
   await ctx.session.hook("compaction", async (event: any) => {
     const sessionID = String(event?.sessionID || "default");
     const messages = normalizeClientMessages(event?.messages || []);
-    // No turn key: the server fingerprints the tail, so a compaction snapshot
-    // that matches the last idle turn is deduplicated.
-    await storeMessages(messages, sessionID, directory);
+    if (!messages.length) return;
+    const lastId = messages[messages.length - 1]?.id || "";
+    // Same turn key as session.idle, so the server dedupes the snapshot.
+    await storeMessages(unseenMessages(messages, sessionID), sessionID, directory,
+                        lastId || undefined);
   });
 
   void (async () => {
@@ -198,7 +241,8 @@ async function setup(ctx: any): Promise<() => void> {
         const messages = await readSessionMessages(ctx, sessionID);
         if (!messages.length) continue;
         const lastId = messages[messages.length - 1]?.id || "";
-        await storeMessages(messages, sessionID, directory, lastId || undefined);
+        await storeMessages(unseenMessages(messages, sessionID), sessionID, directory,
+                            lastId || undefined);
       }
     } catch {
       // subscription aborted or transport closed — plugin stays inert
@@ -237,14 +281,18 @@ async function server(input: any = {}): Promise<AnyRec> {
       const messages = await readSessionMessages(client, sessionID);
       if (!messages.length) return;
       const lastId = messages[messages.length - 1]?.id || "";
-      await storeMessages(messages, sessionID, directory, lastId || undefined);
+      await storeMessages(unseenMessages(messages, sessionID), sessionID, directory,
+                          lastId || undefined);
     },
 
     "experimental.session.compacting": async (event: any) => {
       const sessionID = String(event?.sessionID || "");
       if (!sessionID) return;
       const messages = await readSessionMessages(client, sessionID);
-      await storeMessages(messages, sessionID, directory);
+      if (!messages.length) return;
+      const lastId = messages[messages.length - 1]?.id || "";
+      await storeMessages(unseenMessages(messages, sessionID), sessionID, directory,
+                          lastId || undefined);
     },
   };
 }

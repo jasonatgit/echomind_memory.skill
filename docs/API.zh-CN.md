@@ -112,15 +112,19 @@
 
 ### POST /api/hooks/claude
 供 Claude Code 插件使用：接收 Claude Code hook payload，返回 Claude 读取的 hook JSON。
-任何异常都返回 `{}`（HTTP 200），保证记忆故障不阻塞对话。
+任何异常都返回 `{}`（HTTP 200），保证记忆故障不会使对话失败。
 
 | 字段 | 说明 |
 |---|---|
-| `hook_event_name` | `SessionStart`、`UserPromptSubmit`、`Stop`、`PreCompact`、`SessionEnd` |
+| `hook_event_name` | `SessionStart`、`UserPromptSubmit`、`Stop`、`PreCompact`、`SessionEnd`、`SubagentStop` |
 | `session_id` | Claude 会话 id（用于按轮次幂等落库） |
 | `cwd` | 项目映射来源（默认取 basename） |
 | `prompt` | `UserPromptSubmit` 时存在 |
-| `transcript_path` | 落库事件使用的 JSONL transcript |
+| `transcript_path` | 落库事件使用的 JSONL transcript；`SubagentStop` 优先使用 `agent_transcript_path` |
+
+可选身份 header（payload 未提供该字段时生效）：`X-Echomind-User`、
+`X-Echomind-Profile`、`X-Echomind-Project`。客户端插件借此转发
+`ECHOMIND_HOOK_*`，无需写入 payload。
 
 ```json
 {
@@ -142,7 +146,12 @@
 | `briefing` | `{"action":"briefing","session_id":"…","project":"…","profile":"default"}` | `{"context":"…","count":5}` |
 | `store` | `{"action":"store","session_id":"…","turn":"<message id>","messages":[…],"extract_knowledge":false}` | `{"status":"stored\|duplicate\|empty\|error"}` |
 
+未知 action 返回 `{"context":"","count":0,"error":"…"}`。Hook 落库统一记录为传输层
+`platform="http"`、`origin_client` = `claude-code` / `opencode`，不生成经验条目，
+也不从助手文本推断用户偏好；同一 `session_id` + `turn` 重复上报返回 `duplicate`。
+
 配置 `server.api_key` 或 `ECHOMIND_API_KEY` 时，两个 Hook 端点都要求 `X-API-Key`。
+非对象 JSON 请求体同样被接受，并返回相同的空 fail-open 响应。
 
 ## MCP 工具
 

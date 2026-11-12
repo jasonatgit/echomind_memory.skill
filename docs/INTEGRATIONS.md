@@ -24,8 +24,8 @@ Client plugin/hook ──HTTP──> /api/hooks/{claude|opencode} ──> retrie
 ```
 
 The hook endpoints are **fail-open**: if EchoMind is down or a payload is
-malformed, the client continues without memory and the user's turn is never
-blocked.
+malformed, the client continues without memory and the turn is never failed.
+Client-side waits are capped (2–3 s recall, 10 s store).
 
 ---
 
@@ -112,15 +112,19 @@ copy it into your plugins location and enable it with `/plugin`. On Claude Code
 
 | Event | Transport | Endpoint/behavior |
 |---|---|---|
-| `SessionStart` (`startup`/`resume`/`clear`/`compact`/`fork`) | **command** (`scripts/echomind_hook.py`) | `POST /api/hooks/claude` → memory briefing in `additionalContext` |
-| `UserPromptSubmit` | **http** | recall the submitted prompt → `additionalContext` |
-| `Stop` | **http** | store the completed turn (idempotent) |
-| `PreCompact` (`manual`/`auto`) | **http** | store the transcript tail |
-| `SessionEnd` | **http** | store the last turn (fallback) |
+| `SessionStart` (`startup`/`resume`/`clear`/`compact`/`fork`) | command (`scripts/echomind_hook.py`) | `POST /api/hooks/claude` → memory briefing in `additionalContext` |
+| `UserPromptSubmit` | command | recall the submitted prompt → `additionalContext` |
+| `Stop` | command | store the completed turn (idempotent) |
+| `PreCompact` (`manual`/`auto`) | command | store the transcript tail |
+| `SessionEnd` | command | store the last turn (fallback) |
 
-`SessionStart` uses a command hook because Claude Code only supports
-`command`/`mcp_tool` on that event, and MCP tools are not connected at launch.
-The script is stdlib-only and prints the hook JSON Claude reads.
+All five events run through the same stdlib script, which reads the event JSON
+from stdin, honours `ECHOMIND_URL` and the identity overrides below, and posts
+the payload. A single transport keeps the URL, credentials and identity
+configuration identical for every event (`url` fields in hook JSON cannot read
+the client environment). Recall calls are capped at 3 s; store calls at 10 s.
+The script always prints a JSON object and exits 0, so a memory outage cannot fail
+the turn.
 
 ### Configuration
 
@@ -141,7 +145,7 @@ claude mcp list          # echomind should connect
 /hooks                   # SessionStart / UserPromptSubmit / Stop registered
 ```
 
-Windows: the SessionStart hook runs `python3`; edit `hooks/hooks.json` to
+Windows: the hooks run `python3`; edit `hooks/hooks.json` to
 `python`/`py` if that is your interpreter.
 
 ---
@@ -157,24 +161,21 @@ plugin package.
 ### Install
 
 ```jsonc
-// ~/.config/opencode/opencode.jsonc  (V2 / newest)
-{
-  "plugins": [
-    { "package": "/absolute/path/to/integrations/opencode/echomind-memory" }
-  ]
-}
-```
-
-Older V1 loaders use the singular key (1.19.x normalizes it automatically):
-
-```jsonc
+// ~/.config/opencode/opencode.jsonc  (OpenCode 1.19.x)
 {
   "plugin": ["/absolute/path/to/integrations/opencode/echomind-memory"]
 }
 ```
 
-Local plugin paths must be **directories**. OpenCode also discovers plugins
-under `~/.config/opencode/plugins/` and `.opencode/plugins/`.
+OpenCode 1.19.x accepts the singular `plugin` key with string paths (or
+`[path, options]` tuples). Local plugin paths must be **directories**. OpenCode
+also discovers plugins under `~/.config/opencode/plugins/` and
+`.opencode/plugins/`.
+
+> The `setup(ctx)` V2 path is experimental: the V2 plugin API
+> (`ctx.session.hook`, `ctx.event.subscribe({types})`) is **not shipped in
+> 1.19.x**. The plugin detects this and stays inert. A `plugins` +
+> `{package: ...}` configuration is not supported by 1.19.x.
 
 Keep the MCP tools as well:
 
@@ -200,29 +201,29 @@ Keep the MCP tools as well:
 | Store on idle | `event` → `session.idle` | `ctx.event.subscribe({types:["session.idle"]})` |
 | Compaction | `experimental.session.compacting` | `session.hook("compaction")` |
 
-Recall is fetched once per prompt and injected into the next model request as a
-`<echomind-memory>` block (not persisted into history). Stores are idempotent by
-message id; the server also fingerprints the turn so compaction cannot duplicate
-it.
+Recall is fetched once per prompt (2 s cap) and injected into the next model
+request as a `<echomind-memory>` block (not persisted into history). Stores are
+idempotent by turn (the last message id); each idle sends only messages added
+since the previous store, and compaction reuses the same turn key, so it cannot
+write a second row.
 
 ### Configuration
 
 `ECHOMIND_URL`, `ECHOMIND_API_KEY`, `ECHOMIND_HOOK_PROJECT`,
 `ECHOMIND_HOOK_USER`, `ECHOMIND_HOOK_PROFILE` (same meanings as Claude Code).
+The plugin sends `project` only when `ECHOMIND_HOOK_PROJECT` is set; otherwise
+the server's `hooks.project` / `default_project` applies. Failures are logged at
+most once per minute.
 
 ### Version status
 
 | OpenCode | Plugin API | Status |
 |---|---|---|
 | 1.19.x (V1 loader) | `@opencode-ai/plugin` | runtime-tested (1.19.5) |
-| V2 (`@opencode/plugin` 2.x) | `Plugin.define` / `setup(ctx)` | implemented + `tsc --noEmit`; runtime needs a V2-capable build |
+| V2 (`@opencode/plugin` 2.x) | `setup(ctx)` | defensive no-op on 1.19.x; no verified V2 build |
 
-Type check the plugin:
-
-```bash
-cd integrations/opencode/echomind-memory
-npm install && npm run typecheck
-```
+The `tsconfig.json` is loose and does not depend on `@opencode-ai/plugin`, so
+`npm run typecheck` is a syntax check, not a check against the real V2 API.
 
 ---
 
@@ -267,4 +268,4 @@ Both endpoints require `X-API-Key` when `server.api_key` or
 | No memory injected | Is `curl http://127.0.0.1:8005/health` OK? `claude --debug=hooks` / OpenCode logs |
 | 403 on hooks/MCP | `ECHOMIND_API_KEY` set but not exported in the client's environment |
 | Duplicate turns | Confirm the client sends stable `session_id`/message ids; the server dedups by turn fingerprint |
-| SessionStart empty on Windows | `python3` not on PATH — change the hook command to `python` |
+| Hooks silent on Windows | `python3` not on PATH — change the hook command to `python` |

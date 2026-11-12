@@ -634,9 +634,10 @@ def api_knowledge_evolution(knowledge_id: str, auth=Depends(verify_api_key)):
 # long-term memory is an enhancement, not a dependency of the conversation.
 
 @app.post("/api/hooks/claude")
-def api_hooks_claude(payload: dict, auth=Depends(verify_api_key)):
+def api_hooks_claude(payload: Any, request: Request, auth=Depends(verify_api_key)):
     try:
         from adapters.hooks_api import handle_claude_hook
+        payload = _with_identity_headers(payload, request)
         return handle_claude_hook(memory_agent, payload)
     except Exception as e:
         logger.warning("api_hooks_claude failed: %s", e, exc_info=True)
@@ -644,13 +645,34 @@ def api_hooks_claude(payload: dict, auth=Depends(verify_api_key)):
 
 
 @app.post("/api/hooks/opencode")
-def api_hooks_opencode(payload: dict, auth=Depends(verify_api_key)):
+def api_hooks_opencode(payload: Any, request: Request, auth=Depends(verify_api_key)):
     try:
         from adapters.hooks_api import handle_opencode_hook
+        payload = _with_identity_headers(payload, request)
         return handle_opencode_hook(memory_agent, payload)
     except Exception as e:
         logger.warning("api_hooks_opencode failed: %s", e, exc_info=True)
         return {"context": "", "count": 0}
+
+
+def _with_identity_headers(payload: Any, request: Request) -> Any:
+    """Merge optional identity headers into a hook payload.
+
+    HTTP hooks cannot use shell environment variables, so the plugin forwards
+    ECHOMIND_HOOK_USER/PROFILE/PROJECT as headers. Explicit payload fields win.
+    """
+    if not isinstance(payload, dict):
+        return payload
+    merged = dict(payload)
+    for field, header in (("user_id", "x-echomind-user"),
+                          ("profile", "x-echomind-profile"),
+                          ("project", "x-echomind-project")):
+        if merged.get(field):
+            continue
+        value = request.headers.get(header)
+        if value:
+            merged[field] = value
+    return merged
 
 
 # ── MCP over HTTP (P3-1: Streamable HTTP MCP — JSON-RPC minimal viable) ──

@@ -3,24 +3,25 @@
 ## v1.2.21 — Automatic Memory for Claude Code & OpenCode (2026-11-12)
 
 Adds automatic recall/store integrations for Claude Code and OpenCode on top of
-the existing MCP tool surface. No schema migration. 171 → 182 tests.
+the existing MCP tool surface. No schema migration. 171 → 190 tests.
 
 ### Server
 
 | Area | Change |
 |------|--------|
-| **Hook endpoints** | New fail-open `POST /api/hooks/claude` and `POST /api/hooks/opencode`. They reuse `retrieve_for_task` / `store`, never raise to the client (a memory outage cannot block a turn), and require `X-API-Key` when auth is configured |
-| **Bounded context** | New `core/context_block.py` renders a factual `<echomind-memory>` block, hard-capped by `hooks.max_context_chars` (default 8000; Claude's own limit is 10000) |
-| **Session briefing** | `MainMemoryAgent.memory_briefing()` composes preferences, high-value knowledge and recent experience for session start |
-| **Idempotent storage** | Per-turn fingerprints + `SqliteStore.context_exists()` dedupe Stop/SessionEnd/compaction; only user/assistant text is stored (tool output/system rows dropped) |
-| **Identity mapping** | `project` = explicit payload → `hooks.project` → `ECHOMIND_HOOK_PROJECT` → `basename(cwd)`; user/profile default to config |
+| **Hook endpoints** | New fail-open `POST /api/hooks/claude` and `POST /api/hooks/opencode`. They reuse `retrieve_for_task` / `store`, never raise to the client, accept non-object JSON bodies, and require `X-API-Key` when auth is configured |
+| **Bounded context** | New `core/context_block.py` renders a factual `<echomind-memory>` block, hard-capped by `hooks.max_context_chars` (default 8000). Memory text is escaped (own tags, ANSI, bidi controls) and deduplicated before injection |
+| **Session briefing** | `MainMemoryAgent.memory_briefing()` composes preferences, high-value knowledge and recent experience for session start; knowledge and experience are project-scoped, failed experience is marked |
+| **Idempotent storage** | Per-turn fingerprints over the recent message window + `SqliteStore.context_exists()` dedupe Stop/SessionEnd; OpenCode idle and compaction share the last-message-id turn key. Only user/assistant text is stored (tool output/system rows dropped, sidechain rows excluded) |
+| **No memory pollution** | Hook stores use transport `platform="http"` with `origin_client` = `claude-code`/`opencode`; they do not generate experience entries, do not mark turns completed, and do not infer user preferences from assistant text |
+| **Identity mapping** | `project` = explicit payload → `hooks.project` → `ECHOMIND_HOOK_PROJECT` → `basename(cwd)`; user/profile default to config. HTTP identity headers are supported |
 
 ### Client plugins
 
 | Client | Change |
 |--------|--------|
-| **Claude Code (2.1.x)** | New plugin under `integrations/claude-code/`: `.claude-plugin/plugin.json`, `.mcp.json`, `hooks/hooks.json`, a stdlib `SessionStart` command script, and a skill. SessionStart uses a command hook (the event supports only command/mcp_tool and MCP is not connected at launch); UserPromptSubmit / Stop / PreCompact / SessionEnd use HTTP hooks |
-| **OpenCode (1.19.x)** | New dual V1/V2 plugin under `integrations/opencode/echomind-memory/`: one default export with a V1 `server()` and a V2 `setup(ctx)`, no runtime dependency on either plugin package. V1 path is runtime-tested on 1.19.5; the V2 path is implemented per the documented `@opencode/plugin` API and type-checked |
+| **Claude Code (2.1.x)** | New plugin under `integrations/claude-code/`: `.claude-plugin/plugin.json`, `.mcp.json`, `hooks/hooks.json`, a stdlib hook script, and a skill. All five events run through the same script, so `ECHOMIND_URL` and `ECHOMIND_HOOK_USER/PROFILE/PROJECT` apply everywhere; recall is capped at 3 s |
+| **OpenCode (1.19.x)** | New V1 plugin under `integrations/opencode/echomind-memory/`. The install key is the singular `plugin` array; a defensive `setup(ctx)` V2 path stays inert on 1.19.x (the V2 API is not shipped there). Recall is capped at 2 s, idle stores only new messages, and failures are logged once per minute |
 | **MCP preserved** | Both integrations keep all 8 `echomind_*` tools; optional MCP headers pass `ECHOMIND_API_KEY` |
 
 ### Docs / tests
@@ -30,7 +31,27 @@ the existing MCP tool surface. No schema migration. 171 → 182 tests.
   The guide and article also cover the native Hermes v0.23.1 integration for comparison.
 - `docs/API*.md` documents both hook endpoints; README/INSTALL list the plugins.
 - `echomind_config.yaml` / `config.example.yaml` gain a `hooks:` section.
-- 11 new hook tests (context cap, briefing, Claude/OpenCode handlers, idempotent store, project mapping, fail-open, `context_exists`).
+- 19 new hook tests (context cap, injection escaping, dedup, briefing with project
+  scope, Claude/OpenCode handlers, recent-window fingerprints, idempotent store and
+  retry after failure, OpenCode idle/compaction dedupe, hook store side effects,
+  project mapping, fail-open, `context_exists`).
+
+### Audit fixes (folded into v1.2.21)
+
+- **Injection**: recalled memory can no longer close the `<echomind-memory>` block
+  (tags, ANSI escapes and bidi controls are neutralized; duplicate items dropped).
+- **Retry safety**: a failed hook store releases its in-process dedupe marker, so
+  SessionEnd/PreCompact can retry the turn.
+- **Turn identity**: fingerprints hash the recent message window instead of only
+  the last assistant reply; identical endings no longer drop a turn.
+- **OpenCode compaction**: compaction sends the same last-message-id turn key as
+  `session.idle`, so it dedupes instead of writing a second context row.
+- **Project scope**: `memory_briefing` filters experience by project; OpenCode no
+  longer overrides the server's `hooks.project` with a derived basename.
+- **Provenance**: hook rows use `platform="http"` and `origin_client` = client.
+- **Verification**: added tests for injection escaping, dedup, fingerprinting,
+  retry-after-failure, compaction/idle dedupe, hook side effects and project
+  filtering.
 
 **Compatibility:** Claude Code 2.1.x; OpenCode 1.19.x (V1 runtime-tested). The
 V2 plugin path requires an OpenCode build that ships the V2 plugin API.

@@ -108,16 +108,20 @@ Unknown `memory_type` values return **400**. Each result carries `memory_type`, 
 
 #### POST /api/hooks/claude
 Endpoint used by the Claude Code plugin. It accepts a Claude Code hook payload
-and returns the hook JSON Claude reads. All failures return `{}` (HTTP 200) so
-a memory outage never blocks the conversation.
+and returns the hook JSON Claude reads. All failures return `{}` (HTTP 200), so
+a memory outage cannot fail the conversation.
 
 | Field | Meaning |
 |---|---|
-| `hook_event_name` | `SessionStart`, `UserPromptSubmit`, `Stop`, `PreCompact`, `SessionEnd` |
+| `hook_event_name` | `SessionStart`, `UserPromptSubmit`, `Stop`, `PreCompact`, `SessionEnd`, `SubagentStop` |
 | `session_id` | Claude session id (used for idempotent per-turn storage) |
 | `cwd` | Project mapping source (basename by default) |
 | `prompt` | Present on `UserPromptSubmit` |
-| `transcript_path` | JSONL transcript for store events |
+| `transcript_path` | JSONL transcript for store events; `SubagentStop` prefers `agent_transcript_path` |
+
+Optional identity headers (used when the payload omits the field):
+`X-Echomind-User`, `X-Echomind-Profile`, `X-Echomind-Project`. This lets client
+plugins forward `ECHOMIND_HOOK_*` without putting them in the payload.
 
 ```json
 // SessionStart / UserPromptSubmit response
@@ -141,8 +145,13 @@ Endpoint used by the OpenCode plugin.
 | `briefing` | `{"action":"briefing","session_id":"…","project":"…","profile":"default"}` | `{"context":"…","count":5}` |
 | `store` | `{"action":"store","session_id":"…","turn":"<message id>","messages":[…],"extract_knowledge":false}` | `{"status":"stored\|duplicate\|empty\|error"}` |
 
+Unknown actions return `{"context":"","count":0,"error":"…"}`. Hook stores are
+recorded with transport `platform="http"` and `origin_client` = `claude-code` /
+`opencode`; they do not generate experience entries or infer user preferences.
+
 Both hook endpoints require `X-API-Key` when `server.api_key` or
-`ECHOMIND_API_KEY` is configured.
+`ECHOMIND_API_KEY` is configured. Non-object JSON bodies are accepted and
+answered with the same empty fail-open responses.
 
 ### MCP Tools
 

@@ -24,11 +24,26 @@ DEFAULT_HEADER = (
 )
 
 
+# Tags are neutralized before injection: memory content is untrusted (it can
+# come from pasted files, web pages or a previous turn), and an unescaped
+# "</echomind-memory>" would let it close the factual block and smuggle text
+# into the model as instructions.
+_TAG_RE = re.compile(r"<\s*(/?)\s*echomind-memory\b[^>\n]*>", re.IGNORECASE)
+_ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b[@-_]")
+_BIDI_RE = re.compile(r"[‪-‮⁦-⁩]")
+_C0_RE = re.compile(r"[\x01-\x08\x0b\x0c\x0e-\x1f\x7f]")
+
+
 def _clean(text: Any) -> str:
-    """Collapse whitespace and drop control characters that bloat the block."""
+    """Collapse whitespace, drop control characters, neutralize our own tags."""
     if not isinstance(text, str):
         text = str(text or "")
     text = text.replace("\x00", " ")
+    text = _ANSI_RE.sub("", text)
+    text = _BIDI_RE.sub("", text)
+    text = _C0_RE.sub("", text)
+    text = _TAG_RE.sub(lambda m: "[/echomind-memory]" if m.group(1) else
+                       "[echomind-memory]", text)
     text = re.sub(r"[ \t\r\f\v]+", " ", text)
     text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip()
@@ -56,13 +71,21 @@ def format_memory_block(items: Iterable[Dict[str, Any]],
 
     lines: List[str] = []
     used = 0
+    seen = set()
     for item in items or []:
         if not isinstance(item, dict):
             continue
         content = _clean(item.get("content"))
         if not content:
             continue
-        source = _clean(item.get("source") or item.get("type") or "memory")[:32]
+        # Duplicate memories (same text recalled from several sources) only
+        # waste the budget.
+        dedup_key = content.casefold()
+        if dedup_key in seen:
+            continue
+        seen.add(dedup_key)
+        source = _clean(item.get("source") or item.get("type") or "memory")
+        source = source.replace("\n", " ").replace("[", "").replace("]", "")[:32] or "memory"
         # Keep each entry readable; the overall cap is enforced below.
         content = content[:1200]
         line = f"- [{source}] {content}"

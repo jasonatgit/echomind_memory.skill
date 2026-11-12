@@ -1,6 +1,6 @@
 # EchoMind × Hermes / Claude Code / OpenCode：让长期记忆自动流动
 
-> EchoMind v1.2.21 把 MCP 记忆工具升级为**自动记忆**：Claude Code 插件通过生命周期 Hook 自动召回/落库，OpenCode 插件以 V1/V2 双实现接入。会话开始与每轮提示时自动召回，轮次结束幂等落库，且记忆服务故障绝不阻塞对话。与此同时，Hermes Agent 的原生 MemoryProvider 集成已在 v1.2.20 完成 v0.23.1 适配——三种客户端共享同一份长期记忆。
+> EchoMind v1.2.21 把 MCP 记忆工具升级为**自动记忆**：Claude Code 插件通过生命周期 Hook 自动召回/落库，OpenCode 插件以 V1/V2 双实现接入。会话开始与每轮提示时自动召回，轮次结束幂等落库，且记忆服务故障不会使轮次失败（客户端等待有上限）。与此同时，Hermes Agent 的原生 MemoryProvider 集成已在 v1.2.20 完成 v0.23.1 适配——三种客户端共享同一份长期记忆。
 >
 > 作者：EchoMind 团队
 > 日期：2026 年 11 月
@@ -27,7 +27,8 @@ Hermes 则以原生 MemoryProvider 在进程内集成。默认情况下记忆数
         └── MCP 工具（显式调用）──────────────────────────────────┘
 ```
 
-Hook 端点为 **fail-open**：EchoMind 未启动或负载异常时，客户端继续对话，不阻塞用户。
+Hook 端点为 **fail-open**：EchoMind 未启动或负载异常时，客户端继续对话，轮次不会失败；
+客户端侧等待有上限（召回 2–3 秒，落库 10 秒）。
 
 ---
 
@@ -111,14 +112,15 @@ Claude Code 2.1.275+ 可通过 marketplace 安装：
 
 | 事件 | 传输 | 行为 |
 |---|---|---|
-| `SessionStart`（`startup`/`resume`/`clear`/`compact`/`fork`） | **command**（`scripts/echomind_hook.py`） | `POST /api/hooks/claude` → 记忆简报写入 `additionalContext` |
-| `UserPromptSubmit` | **http** | 按提交的 prompt 召回 → `additionalContext` |
-| `Stop` | **http** | 落库本轮（幂等） |
-| `PreCompact`（`manual`/`auto`） | **http** | 压缩前落库 transcript 尾部 |
-| `SessionEnd` | **http** | 兜底落库最后一轮 |
+| `SessionStart`（`startup`/`resume`/`clear`/`compact`/`fork`） | command（`scripts/echomind_hook.py`） | `POST /api/hooks/claude` → 记忆简报写入 `additionalContext` |
+| `UserPromptSubmit` | command | 按提交的 prompt 召回 → `additionalContext` |
+| `Stop` | command | 落库本轮（幂等） |
+| `PreCompact`（`manual`/`auto`） | command | 压缩前落库 transcript 尾部 |
+| `SessionEnd` | command | 兜底落库最后一轮 |
 
-`SessionStart` 必须用 command：Claude Code 该事件只支持 `command`/`mcp_tool`，
-且启动时 MCP 工具尚不可用。脚本仅用标准库，输出 Claude 读取的 hook JSON。
+五个事件统一走同一个标准库脚本：从 stdin 读取事件 JSON，读取 `ECHOMIND_URL`
+与身份变量后转发（hook JSON 的 `url` 无法读取客户端环境变量）。召回上限 3 秒、
+落库上限 10 秒；脚本始终输出 JSON 且以 0 退出，记忆服务故障不会使对话失败。
 
 ### 配置
 
@@ -139,7 +141,7 @@ claude mcp list          # echomind 应可连接
 /hooks                   # 确认 SessionStart / UserPromptSubmit / Stop 已注册
 ```
 
-Windows：SessionStart 默认用 `python3`；若解释器是 `python`/`py`，请修改
+Windows：所有 Hook 默认用 `python3`；若解释器是 `python`/`py`，请修改
 `hooks/hooks.json` 的 `command`。
 
 ---
@@ -154,24 +156,18 @@ Windows：SessionStart 默认用 `python3`；若解释器是 `python`/`py`，请
 ### 安装
 
 ```jsonc
-// ~/.config/opencode/opencode.jsonc（V2 / 最新）
-{
-  "plugins": [
-    { "package": "/absolute/path/to/integrations/opencode/echomind-memory" }
-  ]
-}
-```
-
-旧 V1 加载器使用单数键（1.19.x 会自动归一化）：
-
-```jsonc
+// ~/.config/opencode/opencode.jsonc（OpenCode 1.19.x）
 {
   "plugin": ["/absolute/path/to/integrations/opencode/echomind-memory"]
 }
 ```
 
-本地插件路径必须是**目录**。OpenCode 也会自动发现
+OpenCode 1.19.x 使用单数 `plugin` 键，元素为字符串路径（或
+`[path, options]` 二元组）。本地插件路径必须是**目录**。OpenCode 也会自动发现
 `~/.config/opencode/plugins/` 与 `.opencode/plugins/` 下的插件。
+
+> `setup(ctx)` 的 V2 路径为实验性：V2 插件 API 未随 1.19.x 发布，插件会检测并
+> 保持惰性。1.19.x 不支持 `plugins` + `{package: ...}` 配置。
 
 同时保留 MCP 工具：
 
@@ -197,22 +193,19 @@ Windows：SessionStart 默认用 `python3`；若解释器是 `python`/`py`，请
 | idle 落库 | `event` → `session.idle` | `ctx.event.subscribe({types:["session.idle"]})` |
 | 压缩前保留 | `experimental.session.compacting` | `session.hook("compaction")` |
 
-召回每条 prompt 只取一次，注入到下一次模型请求的 `<echomind-memory>` system 块
-（不写入历史）。落库按 message id 幂等；服务端再按轮次指纹去重，压缩不会重复。
+召回每条 prompt 只取一次（上限 2 秒），注入到下一次模型请求的
+`<echomind-memory>` 块（不写入历史）。落库按轮次幂等（轮次键为最后一条消息
+id）；每次 idle 只发送新消息，压缩复用同一轮次键，因此不会写出第二行。
 
 ### 版本状态
 
 | OpenCode | 插件 API | 状态 |
 |---|---|---|
 | 1.19.x（V1 加载器） | `@opencode-ai/plugin` | 已运行时验证（1.19.5） |
-| V2（`@opencode/plugin` 2.x） | `Plugin.define` / `setup(ctx)` | 已实现 + `tsc --noEmit`；运行时需 V2 build |
+| V2（`@opencode/plugin` 2.x） | `setup(ctx)` | 防御性惰性实现；1.19.x 无 V2 API |
 
-类型检查：
-
-```bash
-cd integrations/opencode/echomind-memory
-npm install && npm run typecheck
-```
+`tsconfig.json` 较宽松且未依赖 `@opencode-ai/plugin`，因此
+`npm run typecheck` 只是语法检查，不代表与真实 V2 API 的契约一致。
 
 ---
 
@@ -253,4 +246,4 @@ npm install && npm run typecheck
 | 无记忆注入 | `curl http://127.0.0.1:8005/health`；`claude --debug=hooks` / OpenCode 日志 |
 | Hook/MCP 403 | 客户端环境是否导出了 `ECHOMIND_API_KEY` |
 | 轮次重复 | 客户端是否稳定传 `session_id`/消息 id；服务端按轮次指纹去重 |
-| Windows SessionStart 为空 | PATH 上无 `python3`，把 hook command 改为 `python` |
+| Windows 上 Hook 无输出 | PATH 上无 `python3`，把 hook command 改为 `python` |

@@ -1045,7 +1045,12 @@ class MainMemoryAgent:
                             f"{k}={v}" for k, v in list(flat.items())[:8]),
                     })
             habits = u.get("habits", {}) if isinstance(u, dict) else {}
-            if isinstance(habits, dict) and habits:
+            if isinstance(habits, dict):
+                # Only scalars: a nested dict would otherwise leak as Python
+                # repr into the prompt.
+                habits = {k: v for k, v in habits.items()
+                          if isinstance(v, (str, int, float, bool))}
+            if habits:
                 items.append({
                     "source": "user",
                     "content": "Habits: " + "; ".join(
@@ -1063,8 +1068,10 @@ class MainMemoryAgent:
             def _rank(entry: Dict[str, Any]):
                 meta = entry.get("metadata") or {}
                 cog = str(meta.get("cognitive_pos") or "")
+                raw_trust = meta.get("trust_score")
                 try:
-                    trust = float(meta.get("trust_score") or 0.5)
+                    # trust_score 0.0 is a real (low) value, not "missing".
+                    trust = 0.5 if raw_trust is None else float(raw_trust)
                 except (TypeError, ValueError):
                     trust = 0.5
                 return (0 if cog == "nok" else 1, -trust)
@@ -1077,9 +1084,11 @@ class MainMemoryAgent:
             logger.debug("memory_briefing: knowledge lookup failed", exc_info=True)
 
         try:
-            exps = self.experience_agent.find_similar_tasks(
-                task_context="", task_type="", user_id=user_id,
-                profile=profile, min_success_rate=0.0, limit=30)
+            exp_kwargs = {"task_context": "", "task_type": "", "user_id": user_id,
+                          "profile": profile, "min_success_rate": 0.0, "limit": 30}
+            if project:
+                exp_kwargs["project"] = project
+            exps = self.experience_agent.find_similar_tasks(**exp_kwargs)
             exps = sorted(
                 exps,
                 key=lambda e: (-(e.get("frequency") or 1),
@@ -1088,6 +1097,10 @@ class MainMemoryAgent:
             for exp in exps[:3]:
                 summary = (exp.get("summary") or "").strip()
                 if summary:
+                    # Failed experiences are useful, but must not be presented
+                    # as established practice.
+                    if exp.get("success") is False:
+                        summary = "[failed] " + summary
                     items.append({"source": "experience", "content": summary})
         except Exception:
             logger.debug("memory_briefing: experience lookup failed", exc_info=True)
@@ -1598,7 +1611,9 @@ class MainMemoryAgent:
               tags: List[str] = None, origin_client: str = None,
               turn: int = 0, extract_knowledge: bool = True,
               author: Dict[str, Any] = None,
-              identity_extra: Dict[str, Any] = None) -> bool:
+              identity_extra: Dict[str, Any] = None,
+              generate_experience: bool = True,
+              infer_preferences: bool = True) -> bool:
         """
         Store a task interaction and update all memory layers.
 
@@ -1682,8 +1697,13 @@ class MainMemoryAgent:
             _mem_task = self.task_agent.store.get(stable_memory_key(user_id, task_id))
             if _mem_task is not None:
                 _mem_task.metadata["envelope"] = envelope
-            self._infer_user_preferences(context, user_id, platform=platform, profile=profile)
-            self._infer_habits(user_id, context, profile=profile)
+            # Automatic integrations (Claude Code / OpenCode hooks) store a
+            # transcript every turn. They pass infer_preferences=False: an
+            # auto-captured turn is not a user statement about preferences, and
+            # the assistant's own phrasing would otherwise be mined as one.
+            if infer_preferences:
+                self._infer_user_preferences(context, user_id, platform=platform, profile=profile)
+                self._infer_habits(user_id, context, profile=profile)
 
             # Extract task features (Shared by persistence and experience store)
             self._update_user_history(user_id, project, platform, profile=profile)
@@ -1693,7 +1713,7 @@ class MainMemoryAgent:
                 user_data = self.user_agent.get(user_id, platform=platform, profile=profile)
                 # Prepare experience data for the transaction
                 exp_data = None
-                if success or experience_summary:
+                if generate_experience and (success or experience_summary):
                     steps_from_context = [m["content"] for m in context if m["role"] != "system"]
                     best_reply = ""
                     for msg in context:
@@ -2202,7 +2222,14 @@ profile=profile, language=lang, experience_id=exp_id,
         infer_cfg = self.cfg.get_section("inference")
         min_occ = infer_cfg.get("min_occurrence", 2)
 
-        all_content = " ".join(m.get("content", "") for m in context)
+        # Infer only from what the USER wrote. Assistant prose ("I'll keep it
+        # concise", "using TypeScript here") is not evidence about the user's
+        # preferences and used to be mined on every store.
+        all_content = " ".join(
+            m.get("content", "") for m in context
+            if (m.get("role") or "user") == "user")
+        if not all_content.strip():
+            return
         # L-3 fix: match case-insensitively (English keywords like "Concise" /
         # "Python" would otherwise be missed). Chinese keywords are unaffected.
         all_content_lower = all_content.lower()
@@ -2269,7 +2296,9 @@ profile=profile, language=lang, experience_id=exp_id,
 
     def _infer_habits(self, user_id, context, profile="default"):
         """Analyze conversation to build user habits."""
-        all_content = " ".join(m.get("content", "") for m in context)
+        all_content = " ".join(
+            m.get("content", "") for m in context
+            if (m.get("role") or "user") == "user")
         habits = {}
         # Detect session time patterns (local wall clock, not UTC: "early_morning"
         # must match the user's actual time of day).

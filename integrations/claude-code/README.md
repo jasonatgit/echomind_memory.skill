@@ -35,7 +35,8 @@ Requires the EchoMind HTTP service to be running (default `http://127.0.0.1:8005
    ```
 
 3. Optional auth: set `ECHOMIND_API_KEY` in the environment Claude Code runs in.
-   The MCP entry and the HTTP hooks both read it.
+   The MCP entry and every hook (they all run through `scripts/echomind_hook.py`)
+   read it.
 
 ## Verify
 
@@ -54,13 +55,14 @@ Ask Claude a question that references an earlier session; the injected
 | Event | Transport | Behavior |
 |---|---|---|
 | `SessionStart` (`startup`/`resume`/`clear`/`compact`/`fork`) | command | `scripts/echomind_hook.py` → `POST /api/hooks/claude` → briefing |
-| `UserPromptSubmit` | http | recall for the submitted prompt |
-| `Stop` | http | store the completed turn (`extract_knowledge=false`) |
-| `PreCompact` (`manual`/`auto`) | http | store the transcript tail |
-| `SessionEnd` | http | store the last turn (fallback) |
+| `UserPromptSubmit` | command | recall for the submitted prompt |
+| `Stop` | command | store the completed turn (`extract_knowledge=false`) |
+| `PreCompact` (`manual`/`auto`) | command | store the transcript tail |
+| `SessionEnd` | command | store the last turn (fallback) |
 
-`SessionStart` must use a command hook: Claude Code supports only
-`command`/`mcp_tool` on that event, and MCP tools are not available at launch.
+All five events run the same stdlib script: it reads the event JSON from stdin,
+so `ECHOMIND_URL`, `ECHOMIND_API_KEY` and the identity overrides apply uniformly.
+Recall waits are capped at 3 s and store waits at 10 s.
 
 ## Configuration
 
@@ -70,8 +72,8 @@ Ask Claude a question that references an earlier session; the injected
 - `ECHOMIND_HOOK_USER` — override the user scope (default: EchoMind `default_user`)
 - `ECHOMIND_HOOK_PROFILE` — override the profile (default `default`)
 
-Windows note: `hooks/hooks.json` runs the SessionStart script with `python3`.
-If your interpreter is `python`/`py`, edit that hook's `command`.
+Windows note: `hooks/hooks.json` runs every hook with `python3`.
+If your interpreter is `python`/`py`, edit the hook `command`s.
 
 ## Privacy
 
