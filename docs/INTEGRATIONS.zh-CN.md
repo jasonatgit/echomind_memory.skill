@@ -1,4 +1,4 @@
-# 客户端集成 — Claude Code 与 OpenCode
+# 客户端集成 — Hermes / Claude Code / OpenCode
 
 > 本文的博客版本：[blog/echomind-client-integrations-article.md](../blog/echomind-client-integrations-article.md)。
 

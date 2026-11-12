@@ -1,4 +1,4 @@
-# EchoMind × Claude Code / OpenCode：让长期记忆自动流动
+# EchoMind × Hermes / Claude Code / OpenCode：让长期记忆自动流动
 
 > EchoMind v1.2.21 把 MCP 记忆工具升级为**自动记忆**：Claude Code 插件通过生命周期 Hook 自动召回/落库，OpenCode 插件以 V1/V2 双实现接入。会话开始与每轮提示时自动召回，轮次结束幂等落库，且记忆服务故障绝不阻塞对话。与此同时，Hermes Agent 的原生 MemoryProvider 集成已在 v1.2.20 完成 v0.23.1 适配——三种客户端共享同一份长期记忆。
 >

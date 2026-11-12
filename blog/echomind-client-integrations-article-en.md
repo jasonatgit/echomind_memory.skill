@@ -1,4 +1,4 @@
-# EchoMind × Claude Code / OpenCode: Automatic Long-Term Memory for Your Coding Agents
+# EchoMind × Hermes / Claude Code / OpenCode: Automatic Long-Term Memory for Your Agents
 
 > EchoMind v1.2.21 turns its MCP memory tools into **automatic** memory for two widely used coding agents: a Claude Code plugin with lifecycle hooks, and a dual V1/V2 OpenCode plugin. Recall arrives at session start and on every prompt; completed turns are stored idempotently; and a memory outage can never block the conversation. Hermes Agent's native MemoryProvider has been adapted to v0.23.1 since v1.2.20 — all three clients share the same long-term memory.
 >

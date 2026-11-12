@@ -118,7 +118,7 @@ EchoMind 记忆系统专门针对*科研方向*的记忆进行了优化，对查
 
 | 日期 | 标题 |
 |:-----|:------|
-| 2026-11 | 🔌[EchoMind × Claude Code / OpenCode：让长期记忆自动流动](blog/echomind-client-integrations-article.md) |
+| 2026-11 | 🔌[EchoMind × Hermes / Claude Code / OpenCode：让长期记忆自动流动](blog/echomind-client-integrations-article.md) |
 | 2026-10 | 🔁[EchoMind × Recuris：让记忆学会"归因"，而不只是"总结"](blog/echomind-recuris-absorption-article.md) |
 | 2026-08 | 🎯[ EchoMind： 集成 DSH 为长期记忆服务（MCP）— 实施报告](blog/echomind-dsh-mcp-integration-report.md) |
 | 2026-08 | 🧠[EchoMind: Markdown 呈现：让 AI 记忆从"黑盒"变为"可读文档"](blog/echomind-markdown-rendering-article.md) |

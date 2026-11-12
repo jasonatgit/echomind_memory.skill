@@ -1,4 +1,4 @@
-# Client integrations — Claude Code & OpenCode
+# Client integrations — Hermes, Claude Code & OpenCode
 
 > A blog version of this guide is available at
 > [blog/echomind-client-integrations-article-en.md](../blog/echomind-client-integrations-article-en.md).

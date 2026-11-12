@@ -119,7 +119,7 @@ When a query involves the following *domain keywords* or related *semantics*, th
 
 | Date | Title |
 |:-----|:------|
-| 2026-11 | 🔌[EchoMind × Claude Code / OpenCode: Automatic Long-Term Memory for Your Coding Agents](blog/echomind-client-integrations-article-en.md) |
+| 2026-11 | 🔌[EchoMind × Hermes / Claude Code / OpenCode: Automatic Long-Term Memory for Your Agents](blog/echomind-client-integrations-article-en.md) |
 | 2026-10 | 🔁[EchoMind × Recuris: Teaching Memory to Attribute, Not Just Summarize](blog/echomind-recuris-absorption-article-en.md) |
 | 2026-08 | 🎯[ EchoMind： 集成 DSH 为长期记忆服务（MCP）— 实施报告](blog/echomind-dsh-mcp-integration-report.md) |
 | 2026-08 | 🧠[EchoMind: Markdown Rendering: Turning AI Memory from a "Black Box" into a Readable Document](blog/echomind-markdown-rendering-article-en.md) |
