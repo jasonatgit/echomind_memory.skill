@@ -53,6 +53,13 @@ the existing MCP tool surface. No schema migration. 171 → 190 tests.
   retry-after-failure, compaction/idle dedupe, hook side effects and project
   filtering.
 
+**Install verification fixes (2026-11-13):** hook routes bind the JSON body with
+`Body(...)` (the previous `Any` signature made FastAPI look for a query parameter
+and returned 422); the OpenCode 1.19.x V1 loader is given a root `index.ts` (the
+implementation moved out of `src/`, package `exports` updated); `plugin.yaml`
+declares upper-bounded `python_dependencies` so Hermes installs numpy/PyYAML for
+the in-process provider.
+
 **Compatibility:** Claude Code 2.1.x; OpenCode 1.19.x (V1 runtime-tested). The
 V2 plugin path requires an OpenCode build that ships the V2 plugin API.
 **Migration:** none.

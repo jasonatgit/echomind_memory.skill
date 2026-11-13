@@ -7,7 +7,7 @@ import sys
 from typing import Any, Dict, List, Optional
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException, Depends, Request
+from fastapi import FastAPI, HTTPException, Depends, Request, Body
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import APIKeyHeader
 from fastapi.responses import JSONResponse, Response
@@ -634,7 +634,7 @@ def api_knowledge_evolution(knowledge_id: str, auth=Depends(verify_api_key)):
 # long-term memory is an enhancement, not a dependency of the conversation.
 
 @app.post("/api/hooks/claude")
-def api_hooks_claude(payload: Any, request: Request, auth=Depends(verify_api_key)):
+def api_hooks_claude(request: Request, payload: Any = Body(...), auth=Depends(verify_api_key)):
     try:
         from adapters.hooks_api import handle_claude_hook
         payload = _with_identity_headers(payload, request)
@@ -645,7 +645,7 @@ def api_hooks_claude(payload: Any, request: Request, auth=Depends(verify_api_key
 
 
 @app.post("/api/hooks/opencode")
-def api_hooks_opencode(payload: Any, request: Request, auth=Depends(verify_api_key)):
+def api_hooks_opencode(request: Request, payload: Any = Body(...), auth=Depends(verify_api_key)):
     try:
         from adapters.hooks_api import handle_opencode_hook
         payload = _with_identity_headers(payload, request)

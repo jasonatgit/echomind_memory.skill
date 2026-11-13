@@ -32,6 +32,11 @@ curl http://127.0.0.1:8005/health
 Configured local paths must be **directories**. OpenCode also discovers plugins
 under `~/.config/opencode/plugins/` and `.opencode/plugins/`.
 
+> V1 loads a local directory from a root `index.ts` (this 1.19.5 loader does not
+> use `server.ts`); that file is the single implementation. V2 loads the same
+> file through the package.json `exports` map. A re-export at the root is
+> silently skipped by the V1 loader, so keep the implementation in `index.ts`.
+
 > **V2 note:** a `setup(ctx)` path exists for a future `@opencode/plugin` V2
 > API, but that API is **not present in OpenCode 1.19.x** (the installed
 > `PluginInput` has no `session.hook`, and the config key is the singular

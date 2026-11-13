@@ -6,6 +6,15 @@ author: jasonatgit
 license: MIT
 homepage: https://github.com/jasonatgit/echomind_memory.skill
 
+# Python dependencies installed by Hermes for the in-process provider.
+# (fastapi/uvicorn are only needed by the standalone HTTP service.)
+python_dependencies:
+  - "numpy>=1.26,<3"
+  - "PyYAML>=6.0,<7"
+  - "pydantic>=2.7,<3"
+  - "requests>=2.28,<3"
+  - "python-dotenv>=1.0,<2"
+
 # Hermes Memory Provider plugin metadata
 # Install: cp -r . ~/.hermes/plugins/echomind/
 # Activate: hermes config set memory.provider echomind

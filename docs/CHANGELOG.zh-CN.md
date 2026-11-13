@@ -40,6 +40,8 @@
 - **溯源**：Hook 写入 `platform="http"`、`origin_client` = 客户端。
 - **验证**：补充注入转义、去重、指纹、失败重试、compaction/idle 去重、落库副作用与项目过滤的测试。
 
+**安装验证修复（2026-11-13）：** Hook 路由改用 `Body(...)` 绑定 JSON 请求体（此前的 `Any` 签名让 FastAPI 把 payload 当查询参数，返回 422）；OpenCode 1.19.x 的 V1 加载器改由根 `index.ts` 加载（实现移出 `src/`，`package.json` exports 同步更新）；`plugin.yaml` 声明带上限的 `python_dependencies`，Hermes 因此为进程内 provider 安装 numpy/PyYAML。
+
 **兼容性：** Claude Code 2.1.x；OpenCode 1.19.x（V1 已运行时验证）。V2 插件路径需要提供 V2 插件 API 的 OpenCode build。
 **迁移：** 无。
 

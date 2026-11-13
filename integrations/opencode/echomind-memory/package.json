@@ -5,10 +5,10 @@
   "description": "EchoMind long-term memory for OpenCode — dual V1/V2 plugin (automatic recall + idempotent store).",
   "license": "MIT",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./index.ts"
   },
   "files": [
-    "src"
+    "index.ts"
   ],
   "scripts": {
     "typecheck": "tsc --noEmit"
