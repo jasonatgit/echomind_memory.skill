@@ -2,7 +2,7 @@
 
 ## v1.2.21 — Claude Code 与 OpenCode 自动记忆 (2026-11-12)
 
-在现有 MCP 工具面之上，为 Claude Code 与 OpenCode 增加自动召回/落库集成。无 schema 迁移。测试 171 → 190。
+在现有 MCP 工具面之上，为 Claude Code 与 OpenCode 增加自动召回/落库集成。无 schema 迁移。测试 171 → 194。
 
 ### 服务端
 
@@ -41,6 +41,8 @@
 - **验证**：补充注入转义、去重、指纹、失败重试、compaction/idle 去重、落库副作用与项目过滤的测试。
 
 **安装验证修复（2026-11-13）：** Hook 路由改用 `Body(...)` 绑定 JSON 请求体（此前的 `Any` 签名让 FastAPI 把 payload 当查询参数，返回 422）；OpenCode 1.19.x 的 V1 加载器改由根 `index.ts` 加载（实现移出 `src/`，`package.json` exports 同步更新）；`plugin.yaml` 声明带上限的 `python_dependencies`，Hermes 因此为进程内 provider 安装 numpy/PyYAML。OpenCode 插件不再把预期的 V1 回退显示为 TUI toast；诊断仅写 debug 日志（`ECHOMIND_DEBUG=1`），`ECHOMIND_TOAST=1` 时真实故障最多每 10 分钟显示一次 2 秒 toast。
+
+**后续审计修复（2026-11-24）：** 知识召回改为用户/项目维度而非会话维度（移除 `session_id` 过滤，恢复跨会话召回——已实测：一个会话中存储的事实可在新会话召回）。Hook 召回不再因跨来源软惩罚被降权，同时 Hook 写入仍保留客户端 `origin_client` 溯源。Claude 落库事件只持久化最后一条 user/assistant 对，消除每轮重叠窗口导致的 `context_memory` 膨胀；OpenCode 的 `unseenMessages` 在消息滑出窗口时回退为最后两条，不再全量重存。新增 4 项回归：跨会话召回、传输无关召回、末轮对落库、路由级 JSON 请求体绑定。
 
 **兼容性：** 已对照当前智能体验证 — Hermes v0.23.3（`agent/memory_provider.py` 与 v0.23.1 逐字节一致）、Claude Code 2.1.331、OpenCode 1.19.6（V1 已运行时验证）。V2 插件路径面向 OpenCode 2.x（V2 GA，`@opencode/plugin` 2.4.x），待运行时验证。
 **迁移：** 无。

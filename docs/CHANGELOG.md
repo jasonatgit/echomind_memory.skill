@@ -3,7 +3,7 @@
 ## v1.2.21 — Automatic Memory for Claude Code & OpenCode (2026-11-12)
 
 Adds automatic recall/store integrations for Claude Code and OpenCode on top of
-the existing MCP tool surface. No schema migration. 171 → 190 tests.
+the existing MCP tool surface. No schema migration. 171 → 194 tests.
 
 ### Server
 
@@ -61,6 +61,17 @@ declares upper-bounded `python_dependencies` so Hermes installs numpy/PyYAML for
 the in-process provider. The OpenCode plugin also stops surfacing the expected V1
 fallback as a TUI toast; diagnostics are debug-log only (`ECHOMIND_DEBUG=1`), and
 `ECHOMIND_TOAST=1` enables a 2-second outage toast at most once per 10 minutes.
+
+**Follow-up audit fixes (2026-11-24):** knowledge recall is now user/project-scoped
+instead of session-scoped (the `session_id` filter was removed, restoring
+cross-session recall — verified live: a fact stored in one session is recalled in a
+new one). Hook recalls no longer get down-ranked by the cross-origin soft penalty,
+while hook stores keep the client `origin_client` provenance. Claude store events
+persist only the trailing user/assistant pair, removing overlapping-window bloat in
+`context_memory`; OpenCode's `unseenMessages` falls back to the last two messages
+when the stored id has slid out of the window, so it no longer re-stores the full
+window. Four new regressions cover cross-session recall, transport-agnostic recall,
+last-turn-pair storage and route-level JSON body binding.
 
 **Compatibility:** verified against current agents — Hermes v0.23.3
 (`agent/memory_provider.py` byte-identical to v0.23.1), Claude Code 2.1.331,
