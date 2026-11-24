@@ -33,11 +33,11 @@ Client-side waits are capped (2–3 s recall, 10 s store).
 
 | Client | Integration | Auto recall | Auto store | Pre-compaction | Version |
 |---|---|---|---|---|---|
-| **Hermes Agent** | Native MemoryProvider | ✅ `prefetch` | ✅ `sync_turn` | ✅ `on_pre_compress` | v0.23.1 |
+| **Hermes Agent** | Native MemoryProvider | ✅ `prefetch` | ✅ `sync_turn` | ✅ `on_pre_compress` | v0.23.3 |
 | **Claude Code** | Plugin + hooks | ✅ SessionStart / UserPromptSubmit | ✅ Stop / SessionEnd | ✅ PreCompact | 2.1.x |
-| **OpenCode** | V1/V2 plugin | ✅ context hook | ✅ session.idle | ✅ compaction | 1.19.x |
+| **OpenCode** | V1/V2 plugin | ✅ context hook | ✅ session.idle | ✅ compaction | 1.19.x / 2.x |
 
-## Hermes Agent (v0.23.1, native)
+## Hermes Agent (v0.23.3, native)
 
 Hermes is EchoMind's deepest and longest-standing integration: instead of hook
 scripts, it runs as a **MemoryProvider plugin** inside Hermes' agent loop.
@@ -53,7 +53,7 @@ scripts, it runs as a **MemoryProvider plugin** inside Hermes' agent loop.
 | `on_pre_compress` | Preserves memory before compaction |
 | Tools | All 8 `echomind_*` MCP tools remain available |
 
-### v0.23.1 adaptation (EchoMind v1.2.20)
+### v0.23.x adaptation (EchoMind v1.2.20; the `MemoryProvider` contract is byte-identical through v0.23.3)
 
 - **MemoryProvider subclass** — works with the default in-process loader and `plugins.isolation: host` (the parent proxies it as a subclass).
 - **Per-profile isolation (#140058)** — each provider instance owns its `ConfigManager` and `LLMClient`, so multiple profiles in one gateway cannot overwrite each other's endpoint/API key.
@@ -81,7 +81,7 @@ Hermes v0.20+ can also discover it via `register(ctx)`; `initialize` receives
 
 ### Version status
 
-- **v0.23.1** — adapted in EchoMind v1.2.20.
+- **v0.23.1–v0.23.3** — adapted (contract-identical; current support verified against v0.23.3).
 - Older Hermes — still works; the v0.23.x multiplex isolation and new hooks require EchoMind v1.2.20+.
 - Hermes does not use `/api/hooks/*`; those endpoints serve Claude Code / OpenCode only.
 
@@ -207,20 +207,26 @@ idempotent by turn (the last message id); each idle sends only messages added
 since the previous store, and compaction reuses the same turn key, so it cannot
 write a second row.
 
+The expected V1 fallback is **silent**. Set `ECHOMIND_DEBUG=1` for OpenCode
+log/console diagnostics, or `ECHOMIND_TOAST=1` for one 2-second outage toast at
+most every 10 minutes (the V1 fallback never toasts).
+
 ### Configuration
 
 `ECHOMIND_URL`, `ECHOMIND_API_KEY`, `ECHOMIND_HOOK_PROJECT`,
-`ECHOMIND_HOOK_USER`, `ECHOMIND_HOOK_PROFILE` (same meanings as Claude Code).
-The plugin sends `project` only when `ECHOMIND_HOOK_PROJECT` is set; otherwise
-the server's `hooks.project` / `default_project` applies. Failures are logged at
-most once per minute.
+`ECHOMIND_HOOK_USER`, `ECHOMIND_HOOK_PROFILE`, `ECHOMIND_DEBUG`,
+`ECHOMIND_TOAST` (same meanings as Claude Code). The plugin sends `project`
+only when `ECHOMIND_HOOK_PROJECT` is set; otherwise the server's
+`hooks.project` / `default_project` applies. Failures are debug-logged only
+(`ECHOMIND_DEBUG=1`); optionally a 2-second outage toast at most every 10
+minutes (`ECHOMIND_TOAST=1`).
 
 ### Version status
 
 | OpenCode | Plugin API | Status |
 |---|---|---|
-| 1.19.x (V1 loader) | `@opencode-ai/plugin` | runtime-tested (1.19.5) |
-| V2 (`@opencode/plugin` 2.x) | `setup(ctx)` | defensive no-op on 1.19.x; no verified V2 build |
+| 1.19.x (V1 loader, 1.19.6 = last 1.x) | `@opencode-ai/plugin` | runtime-tested (1.19.5; 1.19.6 is a patch) |
+| 2.x (V2 GA, `@opencode/plugin` 2.4.x) | `setup(ctx)` | implemented; runtime verification pending an OpenCode 2 upgrade |
 
 The `tsconfig.json` is loose and does not depend on `@opencode-ai/plugin`, so
 `npm run typecheck` is a syntax check, not a check against the real V2 API.

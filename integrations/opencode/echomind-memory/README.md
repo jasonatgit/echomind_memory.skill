@@ -67,6 +67,8 @@ under `~/.config/opencode/plugins/` and `.opencode/plugins/`.
 | `ECHOMIND_HOOK_PROJECT` | server `hooks.project` → `basename(cwd)` | project scope; sent only when set |
 | `ECHOMIND_HOOK_USER` | EchoMind `default_user` | user scope |
 | `ECHOMIND_HOOK_PROFILE` | `default` | profile scope |
+| `ECHOMIND_DEBUG` | off | write diagnostics to the OpenCode log/console (debug level) |
+| `ECHOMIND_TOAST` | off | real service failures show a 2-second warning toast, at most once per 10 minutes |
 
 ## Behavior
 
@@ -78,8 +80,10 @@ under `~/.config/opencode/plugins/` and `.opencode/plugins/`.
 - **Compaction** sends only messages not yet stored, under the **same turn key**
   as the last idle, so the server dedupes it instead of writing a second row.
 - Hooks **fail open**: if EchoMind is down or slow, the conversation continues
-  without memory. Failures are logged at most once per minute via
-  `console.warn`, including the HTTP status or error name.
+  without memory. The expected V1 fallback is **silent**; diagnostics go to the
+  OpenCode log/console only when `ECHOMIND_DEBUG=1`. With `ECHOMIND_TOAST=1`,
+  a real service failure shows one 2-second warning toast at most every 10
+  minutes (the V1 fallback never toasts).
 
 ## Version compatibility
 

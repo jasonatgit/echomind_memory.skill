@@ -1,6 +1,6 @@
 # EchoMind × Hermes / Claude Code / OpenCode：让长期记忆自动流动
 
-> EchoMind v1.2.21 把 MCP 记忆工具升级为**自动记忆**：Claude Code 插件通过生命周期 Hook 自动召回/落库，OpenCode 插件以 V1/V2 双实现接入。会话开始与每轮提示时自动召回，轮次结束幂等落库，且记忆服务故障不会使轮次失败（客户端等待有上限）。与此同时，Hermes Agent 的原生 MemoryProvider 集成已在 v1.2.20 完成 v0.23.1 适配——三种客户端共享同一份长期记忆。
+> EchoMind v1.2.21 把 MCP 记忆工具升级为**自动记忆**：Claude Code 插件通过生命周期 Hook 自动召回/落库，OpenCode 插件以 V1/V2 双实现接入。会话开始与每轮提示时自动召回，轮次结束幂等落库，且记忆服务故障不会使轮次失败（客户端等待有上限）。与此同时，Hermes Agent 的原生 MemoryProvider 集成已适配 Hermes v0.23.x（最新 v0.23.3，契约一致）——三种客户端共享同一份长期记忆。
 >
 > 作者：EchoMind 团队
 > 日期：2026 年 11 月
@@ -36,11 +36,11 @@ Hook 端点为 **fail-open**：EchoMind 未启动或负载异常时，客户端�
 
 | 客户端 | 接入方式 | 自动召回 | 自动落库 | 压缩前保留 | 版本 |
 |---|---|---|---|---|---|
-| **Hermes Agent** | 原生 MemoryProvider | ✅ `prefetch` | ✅ `sync_turn` | ✅ `on_pre_compress` | v0.23.1 |
+| **Hermes Agent** | 原生 MemoryProvider | ✅ `prefetch` | ✅ `sync_turn` | ✅ `on_pre_compress` | v0.23.3 |
 | **Claude Code** | 插件 + Hooks | ✅ SessionStart / UserPromptSubmit | ✅ Stop / SessionEnd | ✅ PreCompact | 2.1.x |
-| **OpenCode** | V1/V2 插件 | ✅ context hook | ✅ session.idle | ✅ compaction | 1.19.x |
+| **OpenCode** | V1/V2 插件 | ✅ context hook | ✅ session.idle | ✅ compaction | 1.19.x / 2.x |
 
-## Hermes Agent（v0.23.1，原生支持）
+## Hermes Agent（v0.23.3，原生支持）
 
 Hermes 是 EchoMind 集成最深、也是最早支持的客户端：它不是通过 Hook 脚本，而是以 **MemoryProvider 插件**在 Hermes 的 agent 循环内直接工作。
 
@@ -55,7 +55,7 @@ Hermes 是 EchoMind 集成最深、也是最早支持的客户端：它不是通
 | `on_pre_compress` | 压缩前保留记忆 |
 | 工具 | 8 个 `echomind_*` MCP 工具始终可用 |
 
-### v0.23.1 适配要点（EchoMind v1.2.20）
+### v0.23.x 适配要点（EchoMind v1.2.20；`MemoryProvider` 契约至 v0.23.3 逐字节一致）
 
 - **MemoryProvider 子类**：兼容默认 in-process 与 `plugins.isolation: host`（父进程以子类代理）。
 - **多 profile 隔离（#140058）**：每个 provider 实例持有独立 `ConfigManager` 与 `LLMClient`，同一 gateway 进程内多个 profile 的 endpoint / API key 不再互相覆盖。
@@ -82,7 +82,7 @@ Hermes v0.20+ 也可通过 `register(ctx)` 自动发现；`initialize` 会收到
 
 ### 版本状态
 
-- **v0.23.1**：已适配（EchoMind v1.2.20 完成）。
+- **v0.23.1–v0.23.3**：已适配（契约一致；已对照最新 v0.23.3 验证）。
 - 旧版本 Hermes：仍可运行；v0.23.x 的多 profile 隔离与新钩子需要 EchoMind v1.2.20+。
 - Hermes 不经过 `/api/hooks/*`；这些端点仅服务 Claude Code / OpenCode。
 
@@ -197,12 +197,16 @@ OpenCode 1.19.x 使用单数 `plugin` 键，元素为字符串路径（或
 `<echomind-memory>` 块（不写入历史）。落库按轮次幂等（轮次键为最后一条消息
 id）；每次 idle 只发送新消息，压缩复用同一轮次键，因此不会写出第二行。
 
+V1 回退默认**静默**。需要诊断时设 `ECHOMIND_DEBUG=1`（写 OpenCode 日志/控制台）；
+设 `ECHOMIND_TOAST=1` 时，真实故障最多每 10 分钟显示一次 2 秒警告 toast
+（V1 回退不弹）。
+
 ### 版本状态
 
 | OpenCode | 插件 API | 状态 |
 |---|---|---|
-| 1.19.x（V1 加载器） | `@opencode-ai/plugin` | 已运行时验证（1.19.5） |
-| V2（`@opencode/plugin` 2.x） | `setup(ctx)` | 防御性惰性实现；1.19.x 无 V2 API |
+| 1.19.x（V1 加载器；1.19.6 为最后一版 1.x） | `@opencode-ai/plugin` | 已运行时验证（1.19.5；1.19.6 为补丁） |
+| 2.x（V2 GA，`@opencode/plugin` 2.4.x） | `setup(ctx)` | 已实现；待 OpenCode 2 升级后运行时验证 |
 
 `tsconfig.json` 较宽松且未依赖 `@opencode-ai/plugin`，因此
 `npm run typecheck` 只是语法检查，不代表与真实 V2 API 的契约一致。

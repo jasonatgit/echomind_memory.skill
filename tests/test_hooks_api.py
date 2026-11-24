@@ -227,11 +227,76 @@ def test_hook_store_uses_http_platform_and_skips_inference(memory_agent):
                      {"role": "assistant", "content": "hello"}],
     })
     assert out["status"] == "stored"
-    assert captured["platform"] == "http"
+    # Provenance: origin_* carry the producing client; platform is the client
+    # too (v1.2.21 install-verification fix; recall uses an empty platform so
+    # the cross-origin soft penalty never halves hook recalls).
+    assert captured["platform"] == "opencode"
     assert captured["origin_client"] == "opencode"
     assert captured["generate_experience"] is False
     assert captured["infer_preferences"] is False
     assert captured["success"] is False
+
+
+def test_hook_recall_is_transport_agnostic(memory_agent):
+    """Hook recall must use an empty platform (no cross-origin soft penalty).
+    Cross-session knowledge recall is fixed at the knowledge_agent level (the
+    session_id filter was removed); the session_id here only keys the trace."""
+    captured = {}
+
+    def fake_retrieve(**kwargs):
+        captured.update(kwargs)
+        return {"retrieved_memories": [], "raw_memory_sources": {}}
+
+    memory_agent.retrieve_for_task = fake_retrieve
+    from adapters.hooks_api import handle_opencode_hook
+    handle_opencode_hook(memory_agent, {
+        "action": "recall", "session_id": "os-sess", "cwd": "/tmp/oproj",
+        "user_id": "u9", "query": "anything",
+    })
+    assert captured["platform"] == ""
+
+    captured.clear()
+    from adapters.hooks_api import handle_claude_hook
+    handle_claude_hook(memory_agent, {
+        "hook_event_name": "UserPromptSubmit", "session_id": "cs1",
+        "cwd": "/tmp/x", "user_id": "u9", "prompt": "anything",
+    })
+    assert captured["platform"] == ""
+
+
+def test_knowledge_recall_across_sessions():
+    """P1-1 root fix: knowledge stored in an earlier session must be recalled
+    in a new session (session_id is not a filter)."""
+    from core.agents.knowledge_agent import KnowledgeMemoryAgent
+    a = KnowledgeMemoryAgent()
+    a.add_document("Prior-session fact about postgres tuning",
+                   {"user_id": "u1", "session_id": "session-A", "project": "proj"})
+    hits = a.search("postgres tuning", user_id="u1", project="proj",
+                    session_id="session-B", top_k=10)
+    assert any("postgres" in h["content"] for h in hits)
+
+
+def test_claude_stop_stores_only_last_turn_pair(memory_agent, tmp_path):
+    from adapters.hooks_api import handle_claude_hook
+    transcript = tmp_path / "t2.jsonl"
+    transcript.write_text("\n".join([
+        json.dumps({"type": "user", "message": {"role": "user", "content": "turn1 q"}}),
+        json.dumps({"type": "assistant", "message": {"role": "assistant", "content": "turn1 a"}}),
+        json.dumps({"type": "user", "message": {"role": "user", "content": "turn2 q"}}),
+        json.dumps({"type": "assistant", "message": {"role": "assistant", "content": "turn2 a"}}),
+    ]), encoding="utf-8")
+    handle_claude_hook(memory_agent, {
+        "hook_event_name": "Stop", "session_id": "pair-session",
+        "cwd": "/tmp/pair-proj", "user_id": "pairuser",
+        "transcript_path": str(transcript),
+    })
+    row = memory_agent.db._conn.execute(
+        "SELECT messages FROM context_memory WHERE user_id=?", ("pairuser",)
+    ).fetchone()
+    stored = json.loads(row["messages"])
+    assert len(stored) == 2
+    assert stored[0]["content"] == "turn2 q"
+    assert stored[1]["content"] == "turn2 a"
 
 
 def test_seen_reservation_released_when_store_fails(memory_agent):
@@ -282,3 +347,31 @@ def test_context_exists(sqlite_store):
     sqlite_store.save_context("sess-x", "u", [{"role": "user", "content": "hi"}])
     assert sqlite_store.context_exists("sess-x") is True
     assert sqlite_store.context_exists("missing") is False
+
+
+# ── route-level regression: hook payloads must bind as JSON BODY ──────────
+# The v1.2.21 hook routes originally declared `payload: Any` without Body(),
+# so FastAPI looked for a *query* parameter and answered 422 for every real
+# hook call. These tests pin the body binding (no lifespan → no persistence).
+
+def _hook_client():
+    from fastapi.testclient import TestClient
+    from adapters.http_api import app
+    return TestClient(app)  # no context manager → lifespan (persistence) not run
+
+
+def test_hook_routes_accept_json_body():
+    client = _hook_client()
+    r = client.post("/api/hooks/claude", json={
+        "hook_event_name": "UserPromptSubmit", "session_id": "rt1",
+        "cwd": "/tmp/rt", "user_id": "rtuser", "prompt": "route body check",
+    })
+    assert r.status_code == 200
+    assert isinstance(r.json(), dict)
+
+    r2 = client.post("/api/hooks/opencode", json={
+        "action": "recall", "session_id": "rt2", "cwd": "/tmp/rt",
+        "user_id": "rtuser", "query": "route body check",
+    })
+    assert r2.status_code == 200
+    assert isinstance(r2.json(), dict)

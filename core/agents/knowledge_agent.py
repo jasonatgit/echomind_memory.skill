@@ -88,8 +88,11 @@ class KnowledgeMemoryAgent:
                 continue
             if profile and entry.metadata.get("profile") not in (profile, None, ""):
                 continue
-            if session_id and entry.metadata.get("session_id") not in (session_id, None, ""):
-                continue
+            # v1.2.21: session_id is intentionally NOT a filter. Knowledge is
+            # long-term: a recall in a NEW session must still see entries that
+            # were stored in earlier sessions (each store stamps its own
+            # session id). The parameter stays for API compatibility and is
+            # ignored here; context/task isolation is handled elsewhere.
             # v1.2.14: tags_match is case-insensitive (casefold) and supports
             # OR (default) / AND (tags_match_all) semantics; empty query tags
             # mean no filtering.

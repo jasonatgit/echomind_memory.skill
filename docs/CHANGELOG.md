@@ -58,10 +58,14 @@ the existing MCP tool surface. No schema migration. 171 → 190 tests.
 and returned 422); the OpenCode 1.19.x V1 loader is given a root `index.ts` (the
 implementation moved out of `src/`, package `exports` updated); `plugin.yaml`
 declares upper-bounded `python_dependencies` so Hermes installs numpy/PyYAML for
-the in-process provider.
+the in-process provider. The OpenCode plugin also stops surfacing the expected V1
+fallback as a TUI toast; diagnostics are debug-log only (`ECHOMIND_DEBUG=1`), and
+`ECHOMIND_TOAST=1` enables a 2-second outage toast at most once per 10 minutes.
 
-**Compatibility:** Claude Code 2.1.x; OpenCode 1.19.x (V1 runtime-tested). The
-V2 plugin path requires an OpenCode build that ships the V2 plugin API.
+**Compatibility:** verified against current agents — Hermes v0.23.3
+(`agent/memory_provider.py` byte-identical to v0.23.1), Claude Code 2.1.331,
+OpenCode 1.19.6 (V1 runtime-tested). The V2 plugin path targets OpenCode 2.x
+(V2 GA, `@opencode/plugin` 2.4.x) and is pending runtime verification.
 **Migration:** none.
 
 ---

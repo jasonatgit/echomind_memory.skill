@@ -53,7 +53,7 @@
 | **Knowledge Provenance Tracking** | Provenance chain (origin_agent, origin_session_id, origin_turn) stored in knowledge_evolution for memory-supply-chain auditing |
 | **Markdown Memory Dossier** | `export_memory_to_markdown()` generates a complete 9-section .md document (health / profile / knowledge partitioned by epistemic mode / experience / task / context / research / reflection / self-reflection score); zero new dependencies |
 | **Compact Injection Layer** | `<memory-context>` compact Markdown block for LLM context injection (Hermes v0.20+ compatible) |
-| **Hermes v0.23.1 Adaptation** | Root `register(ctx)` entry point + `plugin.yaml` `kind: exclusive`; `MemoryProvider` subclass, per-profile config/LLM isolation (multiplex #140058), context-propagating background threads, `recall_status`/`identity_signature` hooks — compatible with Hermes v0.13–v0.23.1 |
+| **Hermes v0.23.3 Adaptation** | Root `register(ctx)` entry point + `plugin.yaml` `kind: exclusive`; `MemoryProvider` subclass, per-profile config/LLM isolation (multiplex #140058), context-propagating background threads, `recall_status`/`identity_signature` hooks — compatible with Hermes v0.13–v0.23.3 |
 
 ### Retrieval & Optimization (RL-Enhanced Self-Learning)
 | Capability | Description |
@@ -98,7 +98,7 @@ When a query involves the following *domain keywords* or related *semantics*, th
 
 | Framework | Integration Method | Reliability |
 |------|----------|--------|
-| **Hermes-Agent** | MemoryProvider Plugin (automatic, v0.13.0–v0.23.1) | ★★★★★ 100% |
+| **Hermes-Agent** | MemoryProvider Plugin (automatic, v0.13.0–v0.23.3) | ★★★★★ 100% |
 | **OpenClaw** | `skill.yaml` + HTTP API tool invocation | ★★★★☆ LLM-decision |
 | **OpenCode** | MCP + dual V1/V2 plugin (automatic recall/store) + HTTP API | ★★★★★ 100% |
 | **Claude Code** | MCP + plugin hooks (automatic recall/store) + HTTP API | ★★★★★ 100% |
@@ -289,9 +289,9 @@ When the user executes `/undo N` to truncate conversation history, EchoMind auto
 
 Yes. EchoMind v1.2.0+ fully supports Hermes v0.17.0's MemoryProvider interface, including `get_config_schema()`, `backup_paths()`, and `save_config()` methods.
 
-### Q: Is EchoMind compatible with Hermes v0.23.1?
+### Q: Is EchoMind compatible with Hermes v0.23.3?
 
-Yes. EchoMind v1.2.20 adapts to the v0.23.1 `MemoryProvider` contract: it subclasses the ABC (works with both in-process and `plugins.isolation: host`), isolates per-profile LLM config so a multi-profile gateway cannot leak one profile's endpoint/api_key into another (#140058), runs background reflection under the profile's context, exposes `recall_status`/`identity_signature`/`unavailable_reason`, records `turn_author`/gateway identities as provenance, and reads the `ECHOMIND_API_KEY` env var written by `hermes memory setup`. Compatibility range: Hermes v0.13.0 – v0.23.1.
+Yes. EchoMind v1.2.20 adapts to the v0.23.x `MemoryProvider` contract (v0.23.1–v0.23.3, byte-identical): it subclasses the ABC (works with both in-process and `plugins.isolation: host`), isolates per-profile LLM config so a multi-profile gateway cannot leak one profile's endpoint/api_key into another (#140058), runs background reflection under the profile's context, exposes `recall_status`/`identity_signature`/`unavailable_reason`, records `turn_author`/gateway identities as provenance, and reads the `ECHOMIND_API_KEY` env var written by `hermes memory setup`. Compatibility range: Hermes v0.13.0 – v0.23.3.
 
 </details>
 

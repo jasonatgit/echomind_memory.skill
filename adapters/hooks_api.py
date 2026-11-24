@@ -248,6 +248,33 @@ def normalize_messages(raw: Any) -> List[Dict[str, str]]:
     return messages[-MAX_TRANSCRIPT_MESSAGES:]
 
 
+def _last_turn_pair(messages: List[Dict[str, str]]) -> List[Dict[str, str]]:
+    """Trailing user+assistant pair of a transcript window (the completed turn).
+
+    Claude Stop fires after EVERY turn and the transcript tail contains many
+    earlier turns; storing the whole window would duplicate overlapping content
+    into a new context row each turn. The pair is enough: earlier turns were
+    already stored at their own Stop.
+    """
+    if not messages:
+        return []
+    last_a = None
+    for i in range(len(messages) - 1, -1, -1):
+        if messages[i].get("role") == "assistant":
+            last_a = i
+            break
+    if last_a is None:
+        return messages[-1:]
+    last_u = None
+    for i in range(last_a - 1, -1, -1):
+        if messages[i].get("role") == "user":
+            last_u = i
+            break
+    if last_u is None:
+        return [messages[last_a]]
+    return [messages[last_u], messages[last_a]]
+
+
 # ── recall / briefing ──────────────────────────────────────────────────────
 
 def _recall_block(agent, query: str, user_id: str, profile: str,
@@ -260,7 +287,10 @@ def _recall_block(agent, query: str, user_id: str, profile: str,
         result = agent.retrieve_for_task(
             task_context=query or "",
             user_id=user_id,
-            platform=client,
+            # Empty platform: hook recalls are transport-agnostic. Ranking must
+            # not apply the cross-origin soft penalty (origin_platform of rows
+            # stored by ANY transport would otherwise be down-weighted 0.5).
+            platform="",
             project=project,
             session_id=session_id,
             profile=profile,
@@ -319,11 +349,12 @@ def _store_messages(agent, *, client: str, user_id: str, profile: str,
             task_status="in_progress",
             success=False,
             # A hook-captured turn is not a curated experience, and the
-            # assistant's prose must not be mined as user preferences.
+            # assistant's own phrasing must not be mined as user preferences.
             generate_experience=False,
             infer_preferences=False,
-            # Transport, not client: origin_client carries claude-code/opencode.
-            platform="http",
+            # Provenance: the origin_* columns carry the producing client
+            # (claude-code/opencode); the transport columns stay accurate too.
+            platform=client,
             origin_client=client,
             project=project,
             session_id=session_id,
@@ -379,7 +410,10 @@ def handle_claude_hook(agent, payload: Dict[str, Any]) -> Dict[str, Any]:
         transcript = payload.get("transcript_path")
         if event == "SubagentStop":
             transcript = payload.get("agent_transcript_path") or transcript
-        messages = read_claude_transcript(transcript)
+        # Store only the completed turn (trailing user+assistant pair): the
+        # full window overlaps every previously stored turn and would bloat
+        # context_memory.
+        messages = _last_turn_pair(read_claude_transcript(transcript))
         _store_messages(
             agent, client="claude-code", user_id=user_id, profile=profile,
             project=project, session_id=session_id, messages=messages,

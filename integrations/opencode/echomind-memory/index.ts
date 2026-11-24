@@ -35,15 +35,70 @@ const recallCache = new Map<string, string>();
 /** Last message id already persisted, per session (delta storage). */
 const lastStored = new Map<string, string>();
 
-let lastWarnAt = 0;
-function warnThrottled(message: string): void {
-  const now = Date.now();
-  if (now - lastWarnAt < 60_000) return;
-  lastWarnAt = now;
+const DEBUG = /^(1|true|yes|on)$/i.test(String(ENV.ECHOMIND_DEBUG || "").trim());
+const TOAST = /^(1|true|yes|on)$/i.test(String(ENV.ECHOMIND_TOAST || "").trim());
+
+/**
+ * The V1 `server(input)` and the V2 `setup(ctx)` both hand us a client/context;
+ * remember it so diagnostics can go to OpenCode's structured log instead of
+ * console.warn (which the TUI renders as a long-lived toast).
+ */
+let logClient: any = null;
+let v1FallbackSeen = false;
+function setLogClient(client: any): void {
+  if (client && !logClient) logClient = client;
+}
+
+function fire(fn: () => any): void {
   try {
-    console.warn(`[echomind] ${message}`);
+    const result = fn();
+    if (result && typeof result.catch === "function") result.catch(() => {});
+  } catch {
+    // logging/notification is best-effort; never break the hook
+  }
+}
+
+const lastLogAt = new Map<string, number>();
+/** Diagnostics are opt-in: ECHOMIND_DEBUG=1 writes to the service log. */
+function debugLog(message: string): void {
+  if (!DEBUG) return;
+  const now = Date.now();
+  if (now - (lastLogAt.get(message) || 0) < 60_000) return;
+  lastLogAt.set(message, now);
+  const client = logClient;
+  if (client?.app?.log) {
+    fire(() => client.app.log({
+      body: { service: "echomind", level: "debug", message },
+    }));
+  }
+  // Also emit to the client console (visible with --print-logs / OpenCode logs).
+  // This is gated by ECHOMIND_DEBUG, so the default plugin is completely silent.
+  try {
+    console.log(`[echomind] ${message}`);
   } catch {
     // no console available
+  }
+}
+
+const TOAST_INTERVAL_MS = 10 * 60_000;
+const TOAST_DURATION_MS = 2000;
+let lastToastAt = 0;
+
+/** Real service failures may show a SHORT toast, at most once per 10 minutes. */
+function notifyFailure(message: string): void {
+  if (!TOAST) return;
+  const now = Date.now();
+  if (now - lastToastAt < TOAST_INTERVAL_MS) return;
+  lastToastAt = now;
+  const client = logClient;
+  const payload = { message, variant: "warning", duration: TOAST_DURATION_MS };
+  if (client?.tui?.showToast) {
+    fire(() => client.tui.showToast({ body: payload }));
+    return;
+  }
+  // V2 contexts expose domains directly (ctx.tui), not under a client.
+  if (client?.showToast) {
+    fire(() => client.showToast(payload));
   }
 }
 
@@ -61,13 +116,15 @@ async function postJSON(path: string, body: AnyRec, timeoutMs = 8000): Promise<A
       signal: controller.signal,
     });
     if (!res.ok) {
-      warnThrottled(`hook ${path} returned HTTP ${res.status}`);
+      debugLog(`hook ${path} returned HTTP ${res.status}`);
+      notifyFailure(`EchoMind memory service is unavailable (HTTP ${res.status})`);
       return {};
     }
     const data = await res.json();
     return data && typeof data === "object" ? (data as AnyRec) : {};
   } catch (err) {
-    warnThrottled(`hook ${path} unreachable: ${(err as any)?.name || err}`);
+    debugLog(`hook ${path} unreachable: ${(err as any)?.name || err}`);
+    notifyFailure("EchoMind memory service is unreachable");
     return {};
   } finally {
     clearTimeout(timer);
@@ -131,7 +188,12 @@ function unseenMessages(messages: AnyRec[], sessionID: string): AnyRec[] {
   const lastId = lastStored.get(sessionID);
   if (!lastId) return messages;
   const idx = messages.findIndex((m) => String(m.id || "") === lastId);
-  if (idx < 0) return messages;
+  if (idx < 0) {
+    // The window slid past the stored id (long session / compaction): the
+    // unseen delta is unknown, so send only the latest turn instead of
+    // re-storing the whole window.
+    return messages.slice(-2);
+  }
   return messages.slice(idx + 1);
 }
 
@@ -187,11 +249,16 @@ async function readSessionMessages(client: any, sessionID: string): Promise<AnyR
 // ── V2 API (documented @opencode/plugin) ──────────────────────────────────
 
 async function setup(ctx: any): Promise<() => void> {
+  setLogClient(ctx?.client || ctx);
   // The V2 API is not present in the 1.19.x loader. Stay inert rather than
-  // throwing when a V1 host happens to call setup().
+  // throwing when a V1 host happens to call setup(). This fallback is the
+  // NORMAL path on 1.19.x, so it stays out of the TUI (debug log only).
   if (typeof ctx?.session?.hook !== "function"
       || typeof ctx?.event?.subscribe !== "function") {
-    warnThrottled("V2 plugin API not available; V1 hook path is used");
+    // `setup` may run before the V1 `server(input)` that carries the client;
+    // server() emits the opt-in diagnostic once the logger is available.
+    v1FallbackSeen = true;
+    debugLog("V2 plugin API not available; V1 hook path is used");
     return () => {};
   }
   const directory = String(ctx?.location?.directory || ctx?.location?.project?.directory || "");
@@ -256,6 +323,11 @@ async function setup(ctx: any): Promise<() => void> {
 
 async function server(input: any = {}): Promise<AnyRec> {
   const client = input?.client;
+  setLogClient(client);
+  if (v1FallbackSeen) {
+    // Now that the structured logger is available, emit the (opt-in) diagnostic.
+    debugLog("V2 plugin API not available; V1 hook path is used");
+  }
   const directory = String(input?.directory || "");
 
   return {

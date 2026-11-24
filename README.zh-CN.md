@@ -54,7 +54,7 @@
 | **知识溯源追踪** | knowledge_evolution 中存储溯源链（origin_agent、origin_session_id、origin_turn），实现记忆供应链审计 |
 | **Markdown 记忆档案** | `export_memory_to_markdown()` 生成完整 9 节 .md 文档（健康/画像/知识按认知模式分区/经验/任务/上下文/研究/反思/自我反思评分）；零新依赖 |
 | **紧凑注入层** | `<memory-context>` 紧凑 Markdown 块为 LLM 上下文注入（Hermes v0.20+ 兼容） |
-| **Hermes v0.23.1 适配** | 根 `register(ctx)` 入口 + `plugin.yaml` `kind: exclusive`；`MemoryProvider` 子类、按 profile 隔离配置/LLM（multiplex #140058）、上下文感知的后台线程、`recall_status`/`identity_signature` 钩子——兼容 Hermes v0.13–v0.23.1 |
+| **Hermes v0.23.3 适配** | 根 `register(ctx)` 入口 + `plugin.yaml` `kind: exclusive`；`MemoryProvider` 子类、按 profile 隔离配置/LLM（multiplex #140058）、上下文感知的后台线程、`recall_status`/`identity_signature` 钩子——兼容 Hermes v0.13–v0.23.3 |
 
 ### 检索与优化（RL强化自学习）
 | 功能 | 说明 |
@@ -97,7 +97,7 @@ EchoMind 记忆系统专门针对*科研方向*的记忆进行了优化，对查
 
 | 框架 | 支持方式 | 可靠性 |
 |------|----------|--------|
-| **Hermes-Agent** | MemoryProvider 插件 (自动, v0.13.0–v0.23.1) | ★★★★★ 100% |
+| **Hermes-Agent** | MemoryProvider 插件 (自动, v0.13.0–v0.23.3) | ★★★★★ 100% |
 | **OpenClaw** | `skill.yaml` + HTTP API 工具调用 | ★★★★☆ LLM 决策 |
 | **OpenCode** | MCP + V1/V2 双插件（自动召回/落库）+ HTTP API | ★★★★★ 100% |
 | **Claude Code** | MCP + 插件 Hook（自动召回/落库）+ HTTP API | ★★★★★ 100% |
@@ -288,9 +288,9 @@ cp ~/.echomind/memory.db ~/.echomind/memory.db.backup-$(date +%Y%m%d)
 
 是。EchoMind v1.2.0+ 完整支持 Hermes v0.17.0 的 MemoryProvider 接口，包括 `get_config_schema()`、`backup_paths()`、`save_config()` 方法。
 
-### Q: EchoMind 是否兼容 Hermes v0.23.1？
+### Q: EchoMind 是否兼容 Hermes v0.23.3？
 
-是。EchoMind v1.2.20 适配 v0.23.1 的 `MemoryProvider` 契约：继承 ABC（同时支持 in-process 与 `plugins.isolation: host`），按 profile 隔离 LLM 配置，避免多 profile gateway 中一个 profile 的 endpoint/api_key 泄漏到另一个（#140058）；后台反思在所属 profile 的上下文中运行；提供 `recall_status`/`identity_signature`/`unavailable_reason`；把 `turn_author`/网关身份记为 provenance；并读取 `hermes memory setup` 写入的 `ECHOMIND_API_KEY` 环境变量。兼容范围：Hermes v0.13.0 – v0.23.1。
+是。EchoMind v1.2.20 适配 v0.23.x 的 `MemoryProvider` 契约（v0.23.1–v0.23.3 逐字节一致）：继承 ABC（同时支持 in-process 与 `plugins.isolation: host`），按 profile 隔离 LLM 配置，避免多 profile gateway 中一个 profile 的 endpoint/api_key 泄漏到另一个（#140058）；后台反思在所属 profile 的上下文中运行；提供 `recall_status`/`identity_signature`/`unavailable_reason`；把 `turn_author`/网关身份记为 provenance；并读取 `hermes memory setup` 写入的 `ECHOMIND_API_KEY` 环境变量。兼容范围：Hermes v0.13.0 – v0.23.3。
 
 </details>
 
